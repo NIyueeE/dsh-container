@@ -64,7 +64,20 @@ journalctl -u dsh.service -f
      即可定时拉取新镜像并重启容器。
    - Compose 可手动 `docker compose pull && docker compose up -d` 完成同样效果。
 
-## 5. 远程访问(仅限本机回环之外的场景)
+## 5. 安全注意事项
+
+dsh 的 agent 能在容器内执行任意命令(远程代码执行能力是它的本职工作),请按以下基线使用:
+
+- **不要往容器里挂载宿主密钥**: 避免绑定挂载 `~/.ssh`、`~/.aws`、`~/.config/gh`、
+  云厂商凭据等(参考 [Claude Code 官方容器安全警告](https://code.claude.com/docs/en/devcontainer))。
+  Agent 可以读取容器内一切可访问内容,包括挂载进来的凭据。
+- **DSH_HOME 里存有 API Key**: `dsh-home` 卷包含模型 API 凭据与 session 数据,
+  注意卷的访问权限与备份;不要把该卷共享给不受信任的容器。
+- **只跑可信仓库的任务**: 即使有审批机制,也不要让 agent 处理不受信任的代码仓库。
+- **远程访问只走 SSH 隧道**: dsh 只监听 127.0.0.1 是安全设计(见第 6 节),
+  不要在宿主网络上直接暴露。
+
+## 6. 远程访问(仅限本机回环之外的场景)
 
 dsh 只监听 127.0.0.1 是安全设计(Web UI 有远程代码执行能力,绑定到网络会把
 RCE 暴露给局域网)。远程使用推荐 **SSH 隧道**,不要改绑定地址:
@@ -77,7 +90,7 @@ ssh -L 3080:127.0.0.1:3080 user@your-host
 如确需在宿主网络上暴露,请在宿主机配置带认证的反向代理(如 Caddy + basic auth),
 并考虑 dsh 的 `--trusted-host` 选项。
 
-## 6. 离线使用
+## 7. 离线使用
 
 - 构建镜像时把 `DSH_AUTO_UPDATE` 相关行为固化: 运行时设 `DSH_AUTO_UPDATE=0`
   (compose 里 `DSH_AUTO_UPDATE: "0"`,quadlet 里 `Environment=DSH_AUTO_UPDATE=0`)。
@@ -98,7 +111,29 @@ quadlet 加 `Exec=--port 8080`,然后访问新端口。
 **Podman rootless + 绑定目录**
 确认目录属主为你的 uid,且路径可被容器读取;SELinux 保留 `:Z` 标签。
 
-## 8. 镜像更新发布
+## 8. 可复现构建与版本固定
+
+镜像内所有可变组件都支持 `--build-arg` 固定(CI 只传 git 信息,其余用默认值):
+
+| 构建参数 | 默认 | 说明 |
+|---|---|---|
+| `BASE_IMAGE` | `universal:6-noble` | 基础镜像(可固定 `6.1.1-noble` 等精确 tag) |
+| `DSH_VERSION` | `latest` | dsh 版本;固定后运行时建议同时 `DSH_AUTO_UPDATE=0` |
+| `RUST_TOOLCHAIN` | `stable` | rust 工具链(如 `1.88.0`) |
+| `UV_VERSION` | `0.12.3` | uv 版本(从官方镜像 COPY,不跑安装脚本) |
+| `BUILD_GIT_SHA` / `BUILD_GIT_REF` | `unknown` | 写入 OCI labels(`org.opencontainers.image.*`) |
+
+例(与 Claude Code 的 `DISABLE_AUTOUPDATER=1` 思路一致: 固定版本 + 关掉运行时自动更新):
+
+```bash
+podman build --build-arg DSH_VERSION=0.1.0-rc.6 \
+             --build-arg RUST_TOOLCHAIN=1.88.0 \
+             --build-arg UV_VERSION=0.12.3 \
+             -t dsh-container .
+# 运行时: DSH_AUTO_UPDATE=0
+```
+
+## 9. 镜像更新发布
 
 推送 `main` 分支或 `v*` tag 到 GitHub 即触发
 [`.github/workflows/image.yml`](../.github/workflows/image.yml):
