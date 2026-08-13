@@ -12,7 +12,7 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 
 | 组件 | 说明 |
 |---|---|
-| 基础镜像 | `mcr.microsoft.com/devcontainers/universal:6-noble`(Ubuntu 24.04,体积大但工具链齐全;可用 `BASE_IMAGE` 构建参数固定精确 tag) |
+| 基础镜像 | `mcr.microsoft.com/devcontainers/universal:latest`(Ubuntu 24.04,体积大但工具链齐全;当前与 `6.1.1-noble` 同 digest;可用 `BASE_IMAGE` 构建参数固定精确 tag) |
 | 自带工具链 | Node.js 22/24(nvm)、Python、Go、Java、Docker CLI/Engine、git、build-essential 等 |
 | 补装工具链 | Rust/cargo(rustup minimal profile,`RUST_TOOLCHAIN` 可固定)、uv(从官方镜像 COPY 固定版本,默认 0.12.3) |
 | dsh | npm 全局安装 `@deepseek-ai/dsh`,与官方 README 的 `npx @deepseek-ai/dsh web` 同源;`DSH_VERSION` 可固定 |

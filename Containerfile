@@ -22,7 +22,9 @@
 
 # ---- 构建参数(全部有默认值, 无硬编码) ------------------------------------
 # BASE_IMAGE 必须声明在 FROM 之前; 其余 ARG 在 FROM 之后重新声明才对本阶段可见。
-ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:6-noble
+# 默认 latest(当前与 6.1.1-noble 同 digest); 需要可复现构建时固定精确 tag, 例如:
+#   --build-arg BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:6.1.1-noble
+ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:latest
 
 FROM ${BASE_IMAGE}
 

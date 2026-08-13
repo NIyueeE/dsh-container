@@ -117,7 +117,7 @@ quadlet 加 `Exec=--port 8080`,然后访问新端口。
 
 | 构建参数 | 默认 | 说明 |
 |---|---|---|
-| `BASE_IMAGE` | `universal:6-noble` | 基础镜像(可固定 `6.1.1-noble` 等精确 tag) |
+| `BASE_IMAGE` | `universal:latest` | 基础镜像(当前与 `6.1.1-noble` 同 digest;可固定精确 tag) |
 | `DSH_VERSION` | `latest` | dsh 版本;固定后运行时建议同时 `DSH_AUTO_UPDATE=0` |
 | `RUST_TOOLCHAIN` | `stable` | rust 工具链(如 `1.88.0`) |
 | `UV_VERSION` | `0.12.3` | uv 版本(从官方镜像 COPY,不跑安装脚本) |
