@@ -41,7 +41,7 @@ ENV DSH_HOME=/dsh \
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path; \
-    ln -s /usr/local/cargo/bin/* /usr/local/bin/; \
+    for b in /usr/local/cargo/bin/*; do ln -s "$b" /usr/local/bin/; done; \
     curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh; \
     rustc --version; \
     cargo --version; \
@@ -57,7 +57,10 @@ ARG DSH_VERSION=latest
 RUN set -eux; \
     NPM_PREFIX="$(npm prefix -g)"; \
     npm install --global --no-fund --no-audit "@deepseek-ai/dsh@${DSH_VERSION}"; \
-    chown -R 1000:1000 "$NPM_PREFIX"; \
+    case "$NPM_PREFIX" in \
+      /usr/local|/usr) echo "WARN: npm prefix $NPM_PREFIX left root-owned" ;; \
+      *) chown -R 1000:1000 "$NPM_PREFIX" ;; \
+    esac; \
     dsh --version
 
 # 入口与更新脚本
