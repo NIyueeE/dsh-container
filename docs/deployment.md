@@ -141,3 +141,7 @@ podman build --build-arg DSH_VERSION=0.1.0-rc.6 \
 - main → `latest` + `<sha>`;tag → `v*` + `<sha>`;
 - 每个构建都跑冒烟测试(Web UI 可访问、dsh/工具链版本、更新脚本幂等);
 - PR 只构建 + 冒烟,不推送。
+
+**首次发布需手动把 GHCR 包改为 public**(GitHub 已移除改可见性的 REST API):
+<https://github.com/users/NIyueeE/packages/container/package/dsh-container/settings>
+→ Danger Zone → Change visibility → Public。之后 compose/Quadlet 才能匿名拉取。

@@ -99,6 +99,17 @@ docs/
 | `<commit-sha>` | 每次 push | 精确可复现 |
 | `v*`(如 `v1.2.0`) | 版本 tag | 语义化版本 |
 
+## 首次发布(一次性手动步骤)
+
+GHCR 新建包默认 **private**,而 GitHub 已移除通过 REST API 修改包可见性的端点
+(`POST/PATCH /user/packages/container/<name>/visibility` 均返回 404),因此
+**首次 CI 发布后需手动把包改为 public**(包已通过 `org.opencontainers.image.source`
+标签自动链接到本仓库,访问权限随仓库继承,只有可见性需要手动设置一次):
+
+1. 打开 <https://github.com/users/NIyueeE/packages/container/package/dsh-container/settings>
+2. **Danger Zone → Change visibility → Public**
+3. 完成后 `docker pull ghcr.io/niyueee/dsh-container:latest` 应可匿名拉取
+
 ## 开发
 
 ```sh
