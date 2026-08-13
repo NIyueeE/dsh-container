@@ -64,17 +64,22 @@ ENV DSH_HOME=/dsh \
 # ---------------------------------------------------------------------------
 # 场景开发环境补装
 # universal 镜像未包含 Rust/cargo 与 uv; 按场景需求补齐。
-# uv 直接从官方镜像 COPY 固定版本(比 curl|sh 更可复现、更快);
-# rustup 安装固定工具链。均装在 /usr/local, 运行时用户(uid 1000)可用。
-# 缓存挂载按版本参数区分 id, 避免不同版本共享同一份缓存。
+# uv 直接从官方镜像 COPY 固定版本(比 curl|sh 更可复现、更快)。
+# rustup 安装固定工具链: 注意 --mount=type=cache 的内容不会进入镜像层,
+# 因此缓存挂载放在独立的 /opt 缓存目录, 装完后 cp -a 拷回 /usr/local
+# (真实镜像层), 再建 /usr/local/bin 符号链接供运行时用户(uid 1000)使用。
 # ---------------------------------------------------------------------------
 COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
 
-RUN --mount=type=cache,target=/usr/local/rustup,id=rustup-${RUST_TOOLCHAIN} \
-    --mount=type=cache,target=/usr/local/cargo,id=cargo-${RUST_TOOLCHAIN} \
+RUN --mount=type=cache,target=/opt/rustup-cache,id=rustup-${RUST_TOOLCHAIN} \
+    --mount=type=cache,target=/opt/cargo-cache,id=cargo-${RUST_TOOLCHAIN} \
     set -eux; \
-    curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path \
-        --default-toolchain "${RUST_TOOLCHAIN}"; \
+    mkdir -p /usr/local/rustup /usr/local/cargo; \
+    RUSTUP_HOME=/opt/rustup-cache CARGO_HOME=/opt/cargo-cache \
+        curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
+            --no-modify-path --default-toolchain "${RUST_TOOLCHAIN}"; \
+    cp -a /opt/rustup-cache/. /usr/local/rustup/; \
+    cp -a /opt/cargo-cache/. /usr/local/cargo/; \
     for b in /usr/local/cargo/bin/*; do ln -s "$b" /usr/local/bin/; done; \
     rustc --version; \
     cargo --version; \
@@ -90,15 +95,21 @@ RUN --mount=type=cache,target=/root/.npm,id=npm-${DSH_VERSION} \
     set -eux; \
     NPM_PREFIX="$(npm prefix -g)"; \
     npm install --global --no-fund --no-audit "@deepseek-ai/dsh@${DSH_VERSION}"; \
+    # npm 11.16+ 的 allow-scripts 机制: 显式批准全部 install scripts,
+    # 固化允许列表(原生模块 node-pty/koffi 等依赖这些脚本), 也保证
+    # 容器内运行时 dsh 自动更新时脚本能正常执行。
+    npm approve-scripts --all >/dev/null 2>&1 || true; \
     case "$NPM_PREFIX" in \
       /usr/local|/usr) echo "WARN: npm prefix $NPM_PREFIX left root-owned" ;; \
       *) chown -R 1000:1000 "$NPM_PREFIX" ;; \
     esac; \
     dsh --version
 
-# 入口与更新脚本
-COPY container/entrypoint.sh container/dsh-update.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/dsh-update.sh
+# 入口与更新脚本: 安装时去掉 .sh 扩展名(容器内命令名为 entrypoint / dsh-update)
+# 显式 755: 源文件权限可能不完整, 运行时用户必须可读可执行。
+COPY container/entrypoint.sh /usr/local/bin/entrypoint
+COPY container/dsh-update.sh /usr/local/bin/dsh-update
+RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
 
 WORKDIR /workspace
 EXPOSE 3080
@@ -108,4 +119,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS http://127.0.0.1:3080/ >/dev/null || exit 1
 
 USER 1000
-ENTRYPOINT ["entrypoint.sh"]
+ENTRYPOINT ["entrypoint"]

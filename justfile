@@ -2,9 +2,10 @@
 
 container := if command -v podman >/dev/null 2>&1 { "podman" } else { "docker" }
 
-# 本地构建镜像(不推送)
+# 本地构建镜像(不推送)。--format docker 保留 HEALTHCHECK
+# (podman 默认 OCI 格式会丢弃 HEALTHCHECK, 与 GHCR 发布镜像保持一致)。
 build:
-    {{container}} build -t ghcr.io/niyueee/dsh-container:local .
+    {{container}} build --format docker -t ghcr.io/niyueee/dsh-container:local .
 
 # 前台调试运行(host 网络, 关闭自动更新, 数据放临时目录)
 debug:
