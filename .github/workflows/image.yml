@@ -1,0 +1,95 @@
+name: Image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate:
+    name: Validate scripts and examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Shell syntax check
+        run: bash -n container/*.sh
+
+      - name: Validate compose example
+        run: docker compose -f examples/compose.yaml config --quiet
+
+      - name: Validate quadlet example
+        run: |
+          sudo mkdir -p /etc/containers/systemd
+          sudo cp examples/dsh.container /etc/containers/systemd/
+          sudo systemctl daemon-reload
+          systemctl cat dsh.service >/dev/null
+
+  image:
+    name: Build and publish image
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          # PR 只构建不推送; main 与 tag 推送。
+          # 单平台(universal 基础镜像仅 amd64), load 后本地可直接冒烟。
+          push: ${{ github.event_name != 'pull_request' }}
+          load: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}:latest', github.repository) || '' }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('ghcr.io/{0}:{1}', github.repository, github.ref_name) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${{ github.repository }}:${{ github.sha }}"
+          cid="$(docker run -d --rm --name dsh-smoke --network host \
+            -e DSH_HOME=/tmp/dsh-smoke-home \
+            -e DSH_AUTO_UPDATE=0 \
+            "$image")"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+
+          # 等待 Web UI 就绪(首次启动需自动初始化 web profile)
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3080/ 2>/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:3080/ | grep -q '<title>DeepSeek Harness</title>'
+
+          # 工具链与 dsh 版本
+          docker exec "$cid" dsh --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
+          docker exec "$cid" node --version | grep -Eq '^v[0-9]+\.'
+          docker exec "$cid" cargo --version | grep -Eq '^cargo [0-9]+\.'
+          docker exec "$cid" uv --version | grep -Eq '^uv [0-9]+\.'
+
+          # 自动更新脚本幂等: 已是最新时输出 already up to date;
+          # 若恰逢新版本发布也会正常升级并输出 updating/now。
+          docker exec "$cid" dsh-update | grep -Eq 'already up to date|updating|^\[dsh-update\] now'
