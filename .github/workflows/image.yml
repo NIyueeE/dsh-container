@@ -73,6 +73,17 @@ jobs:
             BUILD_GIT_SHA=${{ github.sha }}
             BUILD_GIT_REF=${{ github.ref_name }}
 
+      # GHCR 新建包默认 private; 设为 public 才能让 compose/Quadlet 匿名拉取。
+      - name: Make GHCR package public
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d '{"visibility":"public"}' \
+            "https://api.github.com/user/packages/container/dsh-container/visibility"
+
       - name: Smoke test
         run: |
           set -euo pipefail
