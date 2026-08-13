@@ -21,10 +21,16 @@
 #     (dsh 出于安全考虑拒绝 --host 0.0.0.0, 编排时需使用 host 网络, 见 examples/)
 
 # ---- 构建参数(全部有默认值, 无硬编码) ------------------------------------
-# BASE_IMAGE 必须声明在 FROM 之前; 其余 ARG 在 FROM 之后重新声明才对本阶段可见。
+# BASE_IMAGE / UV_VERSION 声明在 FROM 之前(全局作用域), 供 FROM 行使用;
+# 其余 ARG 在 FROM 之后重新声明才对本阶段可见。
 # 默认 latest(当前与 6.1.1-noble 同 digest); 需要可复现构建时固定精确 tag, 例如:
 #   --build-arg BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:6.1.1-noble
 ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:latest
+ARG UV_VERSION=0.12.3
+
+# uv 固定版本: BuildKit 不支持 COPY --from 里的变量展开, 用独立 stage 规避
+# (FROM 行支持全局 ARG 展开)。
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-stage
 
 FROM ${BASE_IMAGE}
 
@@ -64,12 +70,12 @@ ENV DSH_HOME=/dsh \
 # ---------------------------------------------------------------------------
 # 场景开发环境补装
 # universal 镜像未包含 Rust/cargo 与 uv; 按场景需求补齐。
-# uv 直接从官方镜像 COPY 固定版本(比 curl|sh 更可复现、更快)。
+# uv 从上面的 uv-stage COPY 固定版本(比 curl|sh 更可复现、更快)。
 # rustup 安装固定工具链: 注意 --mount=type=cache 的内容不会进入镜像层,
 # 因此缓存挂载放在独立的 /opt 缓存目录, 装完后 cp -a 拷回 /usr/local
 # (真实镜像层), 再建 /usr/local/bin 符号链接供运行时用户(uid 1000)使用。
 # ---------------------------------------------------------------------------
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
+COPY --from=uv-stage /uv /uvx /bin/
 
 RUN --mount=type=cache,target=/opt/rustup-cache,id=rustup-${RUST_TOOLCHAIN} \
     --mount=type=cache,target=/opt/cargo-cache,id=cargo-${RUST_TOOLCHAIN} \
