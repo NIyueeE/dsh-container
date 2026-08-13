@@ -49,6 +49,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # GHCR 要求仓库名全小写, 而 github.repository 可能含大写(如 NIyueeE)。
+      - name: Compute lowercase image name
+        id: image
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -59,9 +64,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           load: true
           tags: |
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-            ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}:latest', github.repository) || '' }}
-            ${{ startsWith(github.ref, 'refs/tags/v') && format('ghcr.io/{0}:{1}', github.repository, github.ref_name) || '' }}
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && format('{0}:latest', steps.image.outputs.name) || '' }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', steps.image.outputs.name, github.ref_name) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
@@ -71,7 +76,7 @@ jobs:
       - name: Smoke test
         run: |
           set -euo pipefail
-          image="ghcr.io/${{ github.repository }}:${{ github.sha }}"
+          image="${{ steps.image.outputs.name }}:${{ github.sha }}"
           cid="$(docker run -d --rm --name dsh-smoke --network host \
             -e DSH_HOME=/tmp/dsh-smoke-home \
             -e DSH_AUTO_UPDATE=0 \
