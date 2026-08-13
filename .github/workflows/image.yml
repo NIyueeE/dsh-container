@@ -74,15 +74,43 @@ jobs:
             BUILD_GIT_REF=${{ github.ref_name }}
 
       # GHCR 新建包默认 private; 设为 public 才能让 compose/Quadlet 匿名拉取。
+      # 含诊断输出与重试: 包元数据在推送后可能有传播延迟。
       - name: Make GHCR package public
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          curl -fsS -X POST \
+          set -euo pipefail
+          sleep 30
+          echo "== packages list =="
+          curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/user/packages?package_type=container" | head -c 500
+          echo
+          for i in $(seq 1 5); do
+            code="$(curl -s -o /tmp/get.json -w '%{http_code}' \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/user/packages/container/dsh-container")"
+            echo "GET package: $code"
+            if [ "$code" = "200" ]; then break; fi
+            cat /tmp/get.json 2>/dev/null | head -c 200; echo
+            sleep 20
+          done
+          post_code="$(curl -s -o /tmp/post.json -w '%{http_code}' -X POST \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
             -d '{"visibility":"public"}' \
-            "https://api.github.com/user/packages/container/dsh-container/visibility"
+            "https://api.github.com/user/packages/container/dsh-container/visibility")"
+          echo "POST visibility: $post_code"
+          cat /tmp/post.json; echo
+          # 验证匿名可拉取
+          for i in $(seq 1 6); do
+            anon="$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://ghcr.io/v2/${{ steps.image.outputs.name }}/manifests/latest")"
+            echo "anonymous pull: $anon"
+            [ "$anon" = "200" ] && exit 0
+            sleep 10
+          done
+          echo "package still not public"; exit 1
 
       - name: Smoke test
         run: |
