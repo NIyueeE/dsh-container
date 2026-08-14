@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -54,6 +54,51 @@ jobs:
         id: image
         run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+      # 版本号对齐: 打 v* tag 时, release 版本 == 镜像 tag(v1.2.0) ==
+      # OCI 版本 label(1.2.0); main 上 label 为 latest, 与滚动 tag 一致。
+      - name: Compute version metadata
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "label=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 镜像内容与 release 版本对齐: tag 对应版本在 npm 存在时把 DSH_VERSION
+      # 固定为该版本(镜像 v1.2.0 内含 dsh 1.2.0); 不存在则保持默认 latest 并告警
+      # (镜像发布版本与 dsh npm 版本可以解耦)。
+      - name: Resolve dsh version for release tag
+        id: dsh
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          if npm view "@deepseek-ai/dsh@${ver}" version --no-fund --no-audit >/dev/null 2>&1; then
+            echo "version=$ver" >> "$GITHUB_OUTPUT"
+          else
+            echo "WARN: @deepseek-ai/dsh@$ver not found on npm; keeping DSH_VERSION=latest" >&2
+          fi
+
+      # 组装 build args: 仅在非空时传 BUILD_VERSION / DSH_VERSION,
+      # 避免空值覆盖 Containerfile 里的默认值。
+      - name: Compute build args
+        id: args
+        run: |
+          {
+            echo "BUILD_GIT_SHA=${{ github.sha }}"
+            echo "BUILD_GIT_REF=${{ github.ref_name }}"
+            echo "BUILD_VERSION=$label"
+            [ -z "$dsh" ] || echo "DSH_VERSION=$dsh"
+          } > /tmp/build-args.txt
+          {
+            echo "args<<EOF"
+            cat /tmp/build-args.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          label: ${{ steps.version.outputs.label }}
+          dsh: ${{ steps.dsh.outputs.version }}
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -69,13 +114,11 @@ jobs:
             ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', steps.image.outputs.name, github.ref_name) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILD_GIT_SHA=${{ github.sha }}
-            BUILD_GIT_REF=${{ github.ref_name }}
+          build-args: ${{ steps.args.outputs.args }}
 
       # 注: GHCR 新建包默认 private。GitHub 已移除改可见性的 REST API
       # (POST/PATCH /user/packages/container/<name>/visibility 均 404),
-      # 首次发布后需在包设置页手动改为 public, 见 README「首次发布」一节。
+      # 首次发布后需在包设置页手动改为 public, 见 docs/releasing.md。
       # 包通过 org.opencontainers.image.source 标签自动链接到本仓库,
       # 访问权限随仓库继承, 只有可见性需手动设置一次。
 
@@ -107,3 +150,21 @@ jobs:
           # 自动更新脚本幂等: 已是最新时输出 already up to date;
           # 若恰逢新版本发布也会正常升级并输出 updating/now。
           docker exec "$cid" dsh-update | grep -Eq 'already up to date|updating|^\[dsh-update\] now'
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: image
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      # 镜像构建 + 冒烟通过后才创建 Release 页面;
+      # 版本号与镜像 tag 对齐(均由 git tag 派生, 如 v1.2.0)。
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          make_latest: true

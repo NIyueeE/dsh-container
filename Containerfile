@@ -8,12 +8,14 @@
 # https://github.com/deepseek-ai/deepseek-harness 介绍的 npm 方式安装 dsh。
 #
 # 可复现性: 基础镜像 tag、uv、rust 工具链、dsh 版本全部支持构建参数固定
-# (CI 只传 BUILD_GIT_SHA/REF, 其余用默认值):
+# (CI 只传 BUILD_GIT_SHA/REF、BUILD_VERSION, 其余用默认值):
 #   podman build --build-arg BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:6.1.1-noble \
 #                --build-arg DSH_VERSION=0.1.0-rc.6 \
 #                --build-arg RUST_TOOLCHAIN=1.88.0 \
 #                --build-arg UV_VERSION=0.12.3 \
 #                -t dsh-container .
+# BUILD_VERSION 写入 OCI 版本 label: CI 打 v* tag 时传 release 版本(如 1.2.0),
+# 与镜像 tag 对齐; 未传时默认 latest。
 #
 # 运行时行为由 container/entrypoint.sh 控制:
 #   - 启动时自动把 dsh 更新到 npm 最新版(DSH_AUTO_UPDATE=1, 默认开启)
@@ -35,6 +37,7 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-stage
 FROM ${BASE_IMAGE}
 
 ARG DSH_VERSION=latest
+ARG BUILD_VERSION=latest
 ARG RUST_TOOLCHAIN=stable
 ARG UV_VERSION=0.12.3
 ARG BUILD_GIT_SHA=unknown
@@ -43,7 +46,7 @@ ARG BUILD_GIT_REF=unknown
 LABEL org.opencontainers.image.title="DeepSeek Harness (dsh) container image" \
       org.opencontainers.image.description="Universal dev-container based image for the DeepSeek Harness Web UI, with dsh auto-update on boot" \
       org.opencontainers.image.source="https://github.com/niyueee/dsh-container" \
-      org.opencontainers.image.version="${DSH_VERSION}" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.revision="${BUILD_GIT_SHA}"
 
 # ---------------------------------------------------------------------------
