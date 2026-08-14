@@ -37,6 +37,14 @@ services:
     # privileged: true
     # 可选: 换端口(默认 3080, 需同步改上面的 ports 映射):
     # command: ["--port", "8080"]
+    # 可选: 浏览器信任围栏(/api 请求的 Host 校验, 防 DNS 重绑定与跨站攻击)。
+    # 仅当用非回环地址访问界面时需要, 例如局域网 IP、域名、公网 IP, 或经
+    # 保留 Host 头的反向代理; 本机 http://127.0.0.1:3080 访问无需配置。
+    # 值为裸 host 或 host:port(可重复, 例):
+    # command: ["--trusted-host", "192.168.1.50:3080"]
+    # command: ["--trusted-host", "dsh.example.com:3080"]
+    # 不带端口表示该主机名任意端口均信任。注意: 围栏不是认证, 只信任自己
+    # 控制的主机/域名; 详见 docs/deployment.md 远程访问一节。
 
 volumes:
   dsh-home:
