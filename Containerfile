@@ -19,9 +19,10 @@
 #
 # 运行时行为由 container/entrypoint.sh 控制:
 #   - 启动时自动把 dsh 更新到 npm 最新版(DSH_AUTO_UPDATE=1, 默认开启)
-#   - 随后以 `dsh web --host $DSH_WEB_HOST` 启动 Web UI, 默认监听 0.0.0.0:3080
-#     (上游 dsh 默认仅监听 127.0.0.1, 本镜像默认 0.0.0.0 以配合桥接+端口映射;
-#      设 DSH_WEB_HOST=127.0.0.1 可恢复仅回环, 见 examples/)
+#   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
+#     (npm 发布版拒绝 --host 0.0.0.0, 上游 main 分支已支持但尚未发布)
+#   - DSH_WEB_HOST=0.0.0.0(默认)时由 socat 转发 0.0.0.0:3080 -> 127.0.0.1:3080,
+#     以配合桥接+端口映射; 设 DSH_WEB_HOST=127.0.0.1 则不开转发, 仅回环可达
 
 # ---- 构建参数(全部有默认值, 无硬编码) ------------------------------------
 # BASE_IMAGE / UV_VERSION 声明在 FROM 之前(全局作用域), 供 FROM 行使用;
@@ -65,6 +66,11 @@ RUN set -eux; \
 
 # dsh 数据目录(profiles / sessions / 插件)与默认工作区, 归运行时用户所有
 RUN mkdir -p /dsh /workspace && chown 1000:1000 /dsh /workspace
+
+# socat: 轻量端口转发(npm 发布版 dsh 拒绝 --host 0.0.0.0,
+# 由 entrypoint 用 socat 把 0.0.0.0:3080 转发到 127.0.0.1:3080)。
+RUN apt-get update && apt-get install -y --no-install-recommends socat \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV DSH_HOME=/dsh \
     DSH_AUTO_UPDATE=1 \
@@ -125,7 +131,8 @@ RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
 WORKDIR /workspace
 EXPOSE 3080
 
-# dsh web 监听 0.0.0.0:3080(桥接 + 端口映射下即宿主 127.0.0.1:3080); universal 自带 curl。
+# dsh web 经 socat 转发后对外监听 0.0.0.0:3080(桥接 + 端口映射下即宿主
+# 127.0.0.1:3080); universal 自带 curl。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS http://127.0.0.1:3080/ >/dev/null || exit 1
 

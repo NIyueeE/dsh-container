@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # DeepSeek Harness 容器入口:
 #   1. (可选) 把 dsh 自动更新到 npm 最新版, 默认开启(DSH_AUTO_UPDATE=1)
-#   2. 以 `dsh web` 启动 Web UI, 默认监听 0.0.0.0:3080(DSH_WEB_HOST,
-#      上游 dsh 默认仅 127.0.0.1; 设 DSH_WEB_HOST=127.0.0.1 恢复仅回环)
+#   2. 以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080(npm 发布版拒绝 --host 0.0.0.0)
+#   3. DSH_WEB_HOST=0.0.0.0(默认)时由 socat 做轻量端口转发:
+#      0.0.0.0:$PORT -> 127.0.0.1:$PORT, 以支持桥接 + 端口映射;
+#      设 DSH_WEB_HOST=127.0.0.1 则不开转发, 仅回环可达(端口映射将无效)。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
 set -euo pipefail
 
@@ -21,4 +23,22 @@ if [ "${DSH_AUTO_UPDATE:-1}" = "1" ]; then
   fi
 fi
 
-exec dsh web --host "${DSH_WEB_HOST:-0.0.0.0}" "$@"
+# 从附加参数中提取 --port <N> / --port=<N>, 使转发端口与 dsh 实际监听端口一致。
+PORT=3080
+prev=
+for a in "$@"; do
+  case "$a" in
+    --port=*) PORT="${a#--port=}" ;;
+  esac
+  if [ "$prev" = "--port" ]; then PORT="$a"; fi
+  prev="$a"
+done
+
+# 默认 0.0.0.0: 由 socat 转发(端口被占用时立即失败, 不静默降级)。
+if [ "${DSH_WEB_HOST:-0.0.0.0}" = "0.0.0.0" ]; then
+  socat TCP-LISTEN:"$PORT",fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:"$PORT" &
+  sleep 0.3
+  kill -0 $! 2>/dev/null || { echo "[entrypoint] socat failed to bind 0.0.0.0:$PORT" >&2; exit 1; }
+fi
+
+exec dsh web "$@"

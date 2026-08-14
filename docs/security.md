@@ -5,21 +5,21 @@ day job — so follow this baseline when running it:
 
 ## Networking & exposure
 
-Upstream `dsh web` binds `127.0.0.1` by default; `--host 0.0.0.0` is supported only as an explicit,
-all-interface opt-in and any other address value is rejected (see the
-[upstream bind-address note](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-07-22-web-bind-address.md)).
-There is no TLS or authentication, so a non-loopback bind exposes the Web UI — which can execute
-arbitrary commands — to that network.
+`dsh web` listens on `127.0.0.1` by default, and the npm releases reject `--host 0.0.0.0`
+(upstream main supports an explicit all-interface opt-in, but it is not published yet). This image
+exposes the UI anyway by running a small **socat forwarder** (`0.0.0.0:3080 → 127.0.0.1:3080`)
+when `DSH_WEB_HOST=0.0.0.0` (the default), and the orchestration examples publish port `3080` on
+plain bridge networking.
 
-This image **defaults to `DSH_WEB_HOST=0.0.0.0`**, and the orchestration examples publish port `3080`
-on plain bridge networking. This is an intentional design decision: the UI is reachable from the LAN
-out of the box, at the cost of network exposure — the host firewall is the first line of defense.
-Two ways to tighten it:
+There is no TLS or authentication, so anyone who can reach port `3080` can drive the agent — remote
+code execution. This is an intentional design decision: the UI is reachable from the LAN out of the
+box, at the cost of network exposure — the host firewall is the first line of defense. Two ways to
+tighten it:
 
 - keep the published port host-only: `127.0.0.1:3080:3080` (compose) /
   `PublishPort=127.0.0.1:3080:3080` (quadlet);
-- restore loopback-only inside the container: `DSH_WEB_HOST=127.0.0.1` — port mapping then no longer
-  works, so you need host networking or a tunnel/forwarder (see
+- restore loopback-only inside the container: `DSH_WEB_HOST=127.0.0.1` (no forwarder) — port
+  mapping then no longer works, so you need host networking or a tunnel/forwarder (see
   [deployment.md](deployment.md)).
 
 ## Don't mount host credentials

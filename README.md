@@ -32,7 +32,7 @@ All mutable components (base image / dsh / rust / uv) can be pinned with `--buil
 |---|---|---|
 | `DSH_HOME` | `/dsh` | dsh data directory (profiles / sessions / plugins); mount a persistent volume |
 | `DSH_AUTO_UPDATE` | `1` | Auto-update dsh to the latest npm release on boot; keeps the in-image version when offline or on failure |
-| `DSH_WEB_HOST` | `0.0.0.0` | `dsh web` bind host; `127.0.0.1` restores loopback-only (port mapping then won't work) |
+| `DSH_WEB_HOST` | `0.0.0.0` | Expose dsh via an in-container socat forwarder (dsh itself listens on `127.0.0.1`; npm releases reject `--host 0.0.0.0`); `127.0.0.1` = loopback only (port mapping then won't work) |
 | `DSH_UPDATE_ONLY` | `0` | Set to `1` to only run the dsh update and exit (for timer/cron updates) |
 
 Extra `dsh web` arguments can be passed through the container `command`, e.g. `["--port", "8080"]`.
@@ -57,10 +57,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 ```
 
-> **Networking** — Upstream `dsh web` binds `127.0.0.1` only; this image defaults to
-> `DSH_WEB_HOST=0.0.0.0` to work with plain bridge networking and port publishing, so both examples
-> publish port `3080`. See [security.md](docs/security.md) and the
-> [deployment guide](docs/deployment.md) for details.
+> **Networking** — `dsh web` listens on `127.0.0.1` (npm releases reject `--host 0.0.0.0`); the
+> entrypoint runs a socat forwarder so the container accepts connections on `0.0.0.0:3080`, and both
+> examples use plain bridge networking with port `3080` published. See
+> [security.md](docs/security.md) and the [deployment guide](docs/deployment.md) for details.
 
 ## Documentation
 
