@@ -129,7 +129,11 @@ jobs:
             fi
             sleep 2
           done
-          curl -fsS http://127.0.0.1:3080/ | grep -q '<title>DeepSeek Harness</title>'
+          if ! curl -fsS http://127.0.0.1:3080/ | grep -q '<title>DeepSeek Harness</title>'; then
+            echo "=== dsh-smoke container logs ===" >&2
+            docker logs "$cid" >&2 2>&1 || true
+            exit 1
+          fi
 
           # 工具链与 dsh 版本
           docker exec "$cid" dsh --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'

@@ -34,11 +34,19 @@ for a in "$@"; do
   prev="$a"
 done
 
-# 默认 0.0.0.0: 由 socat 转发(端口被占用时立即失败, 不静默降级)。
+# 默认 0.0.0.0: 由 socat 转发对外暴露。注意 socat 不能绑定 0.0.0.0:
+# dsh 已占用 127.0.0.1:$PORT, Linux 下通配地址与具体地址互斥(EADDRINUSE),
+# 因此绑定容器的非回环 IP(桥接 + 端口映射的 DNAT 目标正是该 IP)。
+# 端口被占用时立即失败, 不静默降级。
 if [ "${DSH_WEB_HOST:-0.0.0.0}" = "0.0.0.0" ]; then
-  socat TCP-LISTEN:"$PORT",fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:"$PORT" &
+  BIND_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [ -z "$BIND_IP" ]; then
+    echo "[entrypoint] cannot determine container IP for socat forwarder; set DSH_WEB_HOST=127.0.0.1 for loopback-only" >&2
+    exit 1
+  fi
+  socat TCP-LISTEN:"$PORT",fork,reuseaddr,bind="$BIND_IP" TCP:127.0.0.1:"$PORT" &
   sleep 0.3
-  kill -0 $! 2>/dev/null || { echo "[entrypoint] socat failed to bind 0.0.0.0:$PORT" >&2; exit 1; }
+  kill -0 $! 2>/dev/null || { echo "[entrypoint] socat failed to bind ${BIND_IP}:$PORT" >&2; exit 1; }
 fi
 
 exec dsh web "$@"

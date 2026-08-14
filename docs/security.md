@@ -7,7 +7,7 @@ day job — so follow this baseline when running it:
 
 `dsh web` listens on `127.0.0.1` by default, and the npm releases reject `--host 0.0.0.0`
 (upstream main supports an explicit all-interface opt-in, but it is not published yet). This image
-exposes the UI anyway by running a small **socat forwarder** (`0.0.0.0:3080 → 127.0.0.1:3080`)
+exposes the UI anyway by running a small **socat forwarder** (container IP `:3080` → `127.0.0.1:3080`)
 when `DSH_WEB_HOST=0.0.0.0` (the default), and the orchestration examples publish port `3080` on
 plain bridge networking.
 

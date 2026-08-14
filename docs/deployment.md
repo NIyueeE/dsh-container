@@ -29,8 +29,8 @@ the first release exists, replace the image tag with a published version or buil
 (see [releasing.md](releasing.md) / [build.md](build.md)).
 
 - `compose.yaml` publishes port `3080` on the host (`ports: ["3080:3080"]`, plain bridge networking).
-  Inside the container, a socat forwarder listens on `0.0.0.0` and forwards to dsh on `127.0.0.1`
-  (`DSH_WEB_HOST`, see [security.md](security.md) for the exposure tradeoff):
+  Inside the container, a socat forwarder listens on the container IP and forwards to dsh on
+  `127.0.0.1` (`DSH_WEB_HOST`, see [security.md](security.md) for the exposure tradeoff):
   - host-only publishing: change the mapping to `"127.0.0.1:3080:3080"`;
   - loopback-only inside the container: set `DSH_WEB_HOST=127.0.0.1` — port mapping then no longer
     works (use host networking or a tunnel/forwarder instead).
