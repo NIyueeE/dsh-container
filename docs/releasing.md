@@ -4,20 +4,19 @@
 
 | Tag | Source | Description |
 |---|---|---|
-| `latest` | main branch | rolling updates |
-| `<commit-sha>` | every push | exactly reproducible |
-| `v*` (e.g. `v1.2.0`) | version tags | semantic versions |
+| `v*` (e.g. `v1.2.0`) | version tags | semantic versions — the release artifact |
+| `latest` | newest `v*` release | points to the most recent release; what the examples pull |
+| `<commit-sha>` | release builds | exactly reproducible |
 
 ## CI release workflow
 
-Pushing `main` or a `v*` tag to GitHub triggers
-[`.github/workflows/image.yml`](../.github/workflows/image.yml):
+Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/image.yml):
 
-- main → `latest` + `<sha>`; tag → `v*` + `<sha>`;
-- every build runs smoke tests (Web UI reachable, dsh/toolchain versions, idempotent update script);
-- PRs only build + smoke test, no push;
-- a `v*` tag additionally creates a **GitHub Release page** (auto-generated notes) once the image is
-  built and smoke-tested — the release is not created if the build or smoke test fails.
+- **main / PR / manual dispatch**: build + smoke test a temporary image only — **nothing is pushed
+  to GHCR**. CI validates that the image is usable, nothing more.
+- **`v*` tag (release)**: build + smoke test, and only after the smoke test passes push
+  `v*` + `<sha>` + `latest` to GHCR, then create a **GitHub Release page** (auto-generated notes).
+  A broken image never reaches the registry; the release is not created if build or smoke fails.
 
 ### Version alignment (image version only)
 
@@ -63,8 +62,8 @@ gh api /user/packages/container/dsh-container/versions --jq '.[].id' | while rea
 done
 ```
 
-- Deleting **versions** keeps the package (and its public visibility); the next CI publish
-  recreates `latest` + `<sha>` on the next main push.
+- Deleting **versions** keeps the package (and its public visibility); the next release tag
+  recreates `v*` + `<sha>` + `latest`.
 - Deleting the **whole package** (`gh api --method DELETE /user/packages/container/dsh-container`)
   also drops the visibility setting — a freshly published package defaults back to **private** and
   the "First release" manual step must be repeated.

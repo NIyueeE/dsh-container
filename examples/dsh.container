@@ -8,6 +8,8 @@
 #   sudo systemctl enable --now dsh.service
 #
 # 镜像直接从 GitHub Container Registry 拉取, 不在本地构建。
+# 镜像只在 v* tag 发布时推送; :latest 指向最近一次发布,
+# 首次部署前请确认仓库至少发布过一个版本(或用具体版本替换 Image)。
 # 访问 http://127.0.0.1:3080(PublishPort 映射, 默认桥接网络)。
 
 [Unit]

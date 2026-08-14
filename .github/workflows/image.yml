@@ -42,7 +42,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -87,19 +87,20 @@ jobs:
           label: ${{ steps.version.outputs.label }}
           dsh: ${{ vars.DSH_VERSION }}
 
-      - name: Build and push
+      # 只有 v* tag(正式发布)才推送镜像; 其余事件(main / PR / dispatch)
+      # 只构建 + 冒烟验证临时镜像, 不产生任何 GHCR 产物。
+      # 单平台(universal 基础镜像仅 amd64), load 后本地可直接冒烟。
+      - name: Build image (validation)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Containerfile
-          # PR 只构建不推送; main 与 tag 推送。
-          # 单平台(universal 基础镜像仅 amd64), load 后本地可直接冒烟。
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
           load: true
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.sha }}
-            ${{ github.ref == 'refs/heads/main' && format('{0}:latest', steps.image.outputs.name) || '' }}
             ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', steps.image.outputs.name, github.ref_name) || '' }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:latest', steps.image.outputs.name) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: ${{ steps.args.outputs.args }}
@@ -139,6 +140,17 @@ jobs:
           # 自动更新脚本幂等: 已是最新时输出 already up to date;
           # 若恰逢新版本发布也会正常升级并输出 updating/now。
           docker exec "$cid" dsh-update | grep -Eq 'already up to date|updating|^\[dsh-update\] now'
+
+      # 冒烟通过后才推送(正式发布): v* 版本 tag + sha + latest(指向最近一次发布,
+      # 供示例直接拉取)。坏镜像不会进入 GHCR。
+      - name: Push image (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.name }}"
+          docker push "$image:${{ github.sha }}"
+          docker push "$image:${{ github.ref_name }}"
+          docker push "$image:latest"
 
   release:
     name: Create GitHub Release

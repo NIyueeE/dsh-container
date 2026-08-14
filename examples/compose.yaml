@@ -2,6 +2,8 @@
 # podman-compose -f examples/compose.yaml up -d
 #
 # 镜像直接从 GitHub Container Registry 拉取, 不在本地构建。
+# 镜像只在 v* tag 发布时推送; :latest 指向最近一次发布,
+# 首次部署前请确认仓库至少发布过一个版本(或用具体版本替换 image)。
 # 完整部署说明见 docs/deployment.md。
 #
 # 网络: 普通桥接网络 + 端口映射。dsh web 本身监听 127.0.0.1(npm 发布版拒绝
