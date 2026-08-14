@@ -32,8 +32,6 @@ Consequences:
   SSH tunnel in front — don't rely on the raw port; there is still no TLS on `3081` itself.
 - Loopback-only hardening still applies: publish host-only (`127.0.0.1:3081:3081`) or don't
   publish the port at all.
-- `DSH_TRUSTED_HOSTS` is retained only for compatibility (raw `--trusted-host` passthrough);
-  it is **not** a substitute for the proxy's auth.
 
 ## Don't mount host credentials
 

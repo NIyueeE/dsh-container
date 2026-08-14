@@ -40,9 +40,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    `DSH_PROXY_USER` + `DSH_PROXY_PASSWORD` add basic auth (Caddyfile `basicauth` directive on the
    distro caddy 2.6 — renamed `basic_auth` upstream in 2.7; password bcrypt-hashed via
    `caddy hash-password`).
-5. Starts `dsh web` with `--trusted-host` args derived from `DSH_TRUSTED_HOSTS` (space- or
-   comma-separated `host[:port]` list; retained for compatibility only) plus any extra container
-   `command` args.
+5. Starts `dsh web` with any extra container `command` args (e.g. `--port`).
 
 ### Hard constraints from upstream dsh (do not fight these)
 
@@ -69,8 +67,9 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 - **Ports**: exposed/external port is `3081`; `127.0.0.1:3080` is dsh's internal port only. Keep
   them distinct everywhere. The proxy binds `0.0.0.0:3081` because it differs from dsh's port —
   do not reintroduce container-IP binding tricks.
-- **`DSH_TRUSTED_HOSTS`/`--trusted-host` is compatibility-only** now (the header rewrite makes the
-  fence see loopback); docs must not present it as the way to enable remote access.
+- **Remote access is proxy-only**: the header rewrite is the one and only exposure path. There is
+  no `DSH_TRUSTED_HOSTS`/`--trusted-host` compatibility layer — do not reintroduce it; basic auth
+  (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`) is the access control.
 - **Keep examples and docs in sync with code.** Changing ports, env vars, defaults, or entrypoint
   behavior requires updating all of: `container/entrypoint.sh` header, `Containerfile` comments,
   `examples/compose.yaml`, `examples/dsh.container`, `README.md` + `README.zh.md`,
@@ -100,8 +99,8 @@ just update-only  # run dsh-update in a throwaway container
 
 1. `bash -n container/entrypoint.sh`
 2. Examples parse: `docker compose -f examples/compose.yaml config --quiet` (or podman-compose)
-3. No stale references to the old design: `DSH_WEB_HOST`, `/dsh` or `/workspace` mount targets,
-   port-`3080` host mappings (grep the repo)
+3. No stale references to old designs: `DSH_WEB_HOST`, `DSH_TRUSTED_HOSTS`, `--trusted-host`,
+   `/dsh` or `/workspace` mount targets, port-`3080` host mappings (grep the repo)
 4. README/README.zh parity: equal heading count, link count, and code-fence count
 5. If you changed networking/trust behavior, verify end to end in a container: a loopback-only
    privileged method (`settings.describe`) must return **200 through the proxy** (header rewrite

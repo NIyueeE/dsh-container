@@ -33,7 +33,6 @@ All mutable components (base image / dsh / rust / uv) can be pinned with `--buil
 |---|---|---|
 | `DSH_HOME` | `$HOME/dsh` | dsh data directory (profiles / sessions / plugins); resolved by the entrypoint from the runtime user's home (`/home/codespace/dsh` on universal 6.x); mount a persistent volume |
 | `DSH_WORKSPACE` | `$HOME/workspace` | Task workspace; the entrypoint creates it and runs dsh from it (`/home/codespace/workspace` on universal 6.x) |
-| `DSH_TRUSTED_HOSTS` | *(empty)* | *(compat)* Space- or comma-separated `host[:port]` authorities passed as `--trusted-host`; no longer needed because the proxy rewrites requests to loopback, retained for raw-passthrough setups |
 | `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(empty)* | Enable basic auth on the exposed proxy (recommended): without it, anyone who can reach port `3081` can drive the agent **and** read/write all settings & credentials (see [security.md](docs/security.md) "Security boundary") |
 | `DSH_AUTO_UPDATE` | `1` | Auto-update dsh to the latest npm release on boot; keeps the in-image version when offline or on failure |
 | `DSH_UPDATE_ONLY` | `0` | Set to `1` to only run the dsh update and exit (for timer/cron updates) |

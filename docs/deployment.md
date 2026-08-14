@@ -97,8 +97,9 @@ ssh -L 3081:127.0.0.1:3081 user@your-host
 # open http://127.0.0.1:3081 in your local browser
 ```
 
-- `DSH_TRUSTED_HOSTS` / `--trusted-host` is no longer required for remote access (the proxy makes
-  every request look loopback); it is retained only for raw passthrough compatibility.
+The proxy's header rewrite makes every request look loopback, so there is no trust configuration
+to set for remote access — basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) is the access
+control.
 
 ## 6. Offline use
 

@@ -30,7 +30,6 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 |---|---|---|
 | `DSH_HOME` | `$HOME/dsh` | dsh 数据目录(profiles / sessions / 插件),由入口脚本按运行时用户 home 解析(universal 6.x 即 `/home/codespace/dsh`),建议挂载持久化卷 |
 | `DSH_WORKSPACE` | `$HOME/workspace` | 任务工作区,入口脚本自动创建并以此为工作目录(universal 6.x 即 `/home/codespace/workspace`) |
-| `DSH_TRUSTED_HOSTS` | *(空)* | *(兼容保留)* 空格或逗号分隔的 `host[:port]` 列表,透传为 `--trusted-host`;代理已把请求改写为回环,一般不再需要,仅为裸透传场景保留 |
 | `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(空)* | 启用对外代理的 basic auth(建议启用):不启用时,能访问 3081 端口的任何人都可以驱动代理**并**读取/修改全部设置与凭据(见 [security.md](docs/security.md) 安全边界一节) |
 | `DSH_AUTO_UPDATE` | `1` | 容器启动时自动更新 dsh 到 npm 最新版;离线或失败时沿用镜像内版本 |
 | `DSH_UPDATE_ONLY` | `0` | 设为 `1` 时只执行 dsh 更新并退出(供 timer/cron 定时更新) |

@@ -29,8 +29,6 @@
 #     127.0.0.1:3080。dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
 #     也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理
 #     (可配 basic auth), 见 docs/security.md
-#   - DSH_TRUSTED_HOSTS(空格/逗号分隔的 host[:port] 列表)仍可透传为
-#     `dsh web --trusted-host`(头改写后一般不再需要, 保留兼容)
 
 # ---- 构建参数(全部有默认值, 无硬编码) ------------------------------------
 # BASE_IMAGE / UV_VERSION 声明在 FROM 之前(全局作用域), 供 FROM 行使用;

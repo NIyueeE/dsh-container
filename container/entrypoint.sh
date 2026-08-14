@@ -11,8 +11,6 @@
 #      远程浏览器也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界
 #      随之转移到代理 —— 设置 DSH_PROXY_USER + DSH_PROXY_PASSWORD 启用
 #      basic auth(见 docs/security.md)。
-#   5. DSH_TRUSTED_HOSTS(空格或逗号分隔的 host[:port] 列表)逐个转成
-#      `--trusted-host`(头改写后一般不再需要, 保留兼容)。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
 set -euo pipefail
 
@@ -88,15 +86,4 @@ caddy run --config "$CADDYFILE" --adapter caddyfile &
 sleep 0.5
 kill -0 $! 2>/dev/null || { echo "[entrypoint] caddy failed to start (config below):" >&2; cat "$CADDYFILE" >&2; exit 1; }
 
-# DSH_TRUSTED_HOSTS: 空格或逗号分隔的 host[:port] 列表(与附加参数中的
-# --trusted-host 并存, 取并集)。裸 host 表示该主机名任意端口均信任。
-# 注意: Caddy 头改写后围栏一律视为回环, 该变量一般不再需要, 仅为兼容保留。
-args=("$@")
-if [ -n "${DSH_TRUSTED_HOSTS:-}" ]; then
-  IFS=' ,' read -ra trusted <<< "$DSH_TRUSTED_HOSTS" || true
-  for t in "${trusted[@]}"; do
-    [ -n "$t" ] && args+=(--trusted-host "$t")
-  done
-fi
-
-exec dsh web "${args[@]}"
+exec dsh web "$@"
