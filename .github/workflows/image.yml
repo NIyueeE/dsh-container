@@ -7,9 +7,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 同一 ref 的并发构建串行化(避免两个 tag 连续推送时竞争 latest)
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+# 默认只读; 需要写权限的 job 单独声明
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   validate:
@@ -35,6 +40,9 @@ jobs:
     name: Build and validate image
     runs-on: ubuntu-latest
     needs: validate
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v5
 
@@ -150,9 +158,14 @@ jobs:
             --data '{"type":"client-request","rpcId":"1","method":"settings.describe","payload":{}}')"
           [ "$settings_code" = "200" ]
 
-          # 自动更新脚本幂等: 已是最新时输出 already up to date;
-          # 若恰逢新版本发布也会正常升级并输出 updating/now。
-          docker exec "$cid" dsh-update | grep -Eq 'already up to date|updating|^\[dsh-update\] now'
+          # 真实更新链路: 卸载后由 dsh-update 重新安装。验证 uid 1000 的
+          # 全局 npm install(含 node-pty 等原生模块的 install scripts)全链路
+          # 可用 —— 此前只验证了"已是最新"的空操作路径, 真正的安装从未被 CI 覆盖。
+          docker exec "$cid" npm uninstall --global --no-fund --no-audit @deepseek-ai/dsh
+          docker exec "$cid" dsh-update | grep -Eq 'installing|installed|updating|already up to date'
+          docker exec "$cid" dsh --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
+          # 幂等: 再次运行不再安装
+          docker exec "$cid" dsh-update | grep -q 'already up to date'
 
           # basic auth 模式: 未带凭据 401, 带凭据 200。
           auth_cid="$(docker run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
