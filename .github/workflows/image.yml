@@ -54,8 +54,10 @@ jobs:
         id: image
         run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      # 版本号对齐: 打 v* tag 时, release 版本 == 镜像 tag(v1.2.0) ==
-      # OCI 版本 label(1.2.0); main 上 label 为 latest, 与滚动 tag 一致。
+      # 版本号对齐(仅指镜像自身的版本): 打 v* tag 时, release 版本 ==
+      # 镜像 tag(v1.2.0) == OCI 版本 label(1.2.0); main 上 label 为 latest。
+      # 镜像版本与 dsh npm 版本完全解耦: dsh 版本由 DSH_VERSION 决定,
+      # 默认构建时 npm latest + 运行时自动更新, 与 tag 无关。
       - name: Compute version metadata
         id: version
         run: |
@@ -65,22 +67,8 @@ jobs:
             echo "label=latest" >> "$GITHUB_OUTPUT"
           fi
 
-      # 镜像内容与 release 版本对齐: tag 对应版本在 npm 存在时把 DSH_VERSION
-      # 固定为该版本(镜像 v1.2.0 内含 dsh 1.2.0); 不存在则保持默认 latest 并告警
-      # (镜像发布版本与 dsh npm 版本可以解耦)。
-      - name: Resolve dsh version for release tag
-        id: dsh
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          if npm view "@deepseek-ai/dsh@${ver}" version --no-fund --no-audit >/dev/null 2>&1; then
-            echo "version=$ver" >> "$GITHUB_OUTPUT"
-          else
-            echo "WARN: @deepseek-ai/dsh@$ver not found on npm; keeping DSH_VERSION=latest" >&2
-          fi
-
-      # 组装 build args: 仅在非空时传 BUILD_VERSION / DSH_VERSION,
-      # 避免空值覆盖 Containerfile 里的默认值。
+      # 组装 build args: DSH_VERSION 仅当仓库变量(Settings → Variables → DSH_VERSION)
+      # 设置了才传, 避免空值覆盖 Containerfile 里的默认值。
       - name: Compute build args
         id: args
         run: |
@@ -97,7 +85,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
         env:
           label: ${{ steps.version.outputs.label }}
-          dsh: ${{ steps.dsh.outputs.version }}
+          dsh: ${{ vars.DSH_VERSION }}
 
       - name: Build and push
         uses: docker/build-push-action@v7

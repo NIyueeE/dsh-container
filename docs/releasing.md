@@ -19,16 +19,20 @@ Pushing `main` or a `v*` tag to GitHub triggers
 - a `v*` tag additionally creates a **GitHub Release page** (auto-generated notes) once the image is
   built and smoke-tested — the release is not created if the build or smoke test fails.
 
-### Version alignment
+### Version alignment (image version only)
 
-For a tag build, one version string flows through everything:
+For a tag build, one version string flows through the image's own release:
 
 - git tag `v1.2.0` → Release page `v1.2.0` → image tag `ghcr.io/niyueee/dsh-container:v1.2.0`
 - OCI label `org.opencontainers.image.version` = `1.2.0` (leading `v` stripped), via the
   `BUILD_VERSION` build arg (`latest` on main, matching the rolling tag)
-- if `@deepseek-ai/dsh@1.2.0` exists on npm, `DSH_VERSION` is pinned to `1.2.0` so the in-image dsh
-  matches the release; otherwise CI warns and keeps `DSH_VERSION=latest` (the image version and the
-  dsh npm version are intentionally decouplable)
+
+The image version is **decoupled from the dsh npm version**: `DSH_VERSION` is not derived from the
+tag. By default every build installs the npm `latest` at build time, and the runtime auto-update
+(`DSH_AUTO_UPDATE=1`) keeps dsh current on each boot. To pin dsh inside a published image, set the
+repository variable **`DSH_VERSION`** (Settings → Variables → Actions); CI passes it as a build arg
+when set. Local/manual builds can pin directly with `--build-arg DSH_VERSION=x.y.z`
+(see [build.md](build.md)).
 
 ## First release (one-time manual step)
 

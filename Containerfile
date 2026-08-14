@@ -8,7 +8,8 @@
 # https://github.com/deepseek-ai/deepseek-harness 介绍的 npm 方式安装 dsh。
 #
 # 可复现性: 基础镜像 tag、uv、rust 工具链、dsh 版本全部支持构建参数固定
-# (CI 只传 BUILD_GIT_SHA/REF、BUILD_VERSION, 其余用默认值):
+# (CI 只传 BUILD_GIT_SHA/REF、BUILD_VERSION, 以及可选的仓库变量 DSH_VERSION,
+# 其余用默认值):
 #   podman build --build-arg BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:6.1.1-noble \
 #                --build-arg DSH_VERSION=0.1.0-rc.6 \
 #                --build-arg RUST_TOOLCHAIN=1.88.0 \
