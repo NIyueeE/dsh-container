@@ -36,7 +36,8 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 3. Runs `dsh-update` unless `DSH_AUTO_UPDATE=0` (offline-safe; keeps the in-image version on failure).
 4. Starts a **Caddy reverse proxy**: listens on `0.0.0.0:3081` and forwards to dsh's
    `127.0.0.1:$PORT` (default 3080, parsed from `--port` args), rewriting `Host`/`Origin` to
-   loopback. The Caddyfile is generated at runtime into `/tmp/dsh-caddy/Caddyfile`;
+   loopback and gzip-compressing UI assets; it restarts itself if it crashes (config errors still
+   fail fast at startup). The Caddyfile is generated at runtime into `/tmp/dsh-caddy/Caddyfile`;
    `DSH_PROXY_USER` + `DSH_PROXY_PASSWORD` add basic auth (Caddyfile `basicauth` directive on the
    distro caddy 2.6 — renamed `basic_auth` upstream in 2.7; password bcrypt-hashed via
    `caddy hash-password`).

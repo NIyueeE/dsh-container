@@ -64,9 +64,10 @@ journalctl -u dsh.service -f
 Two layers that don't conflict:
 
 1. **dsh itself (inside the container)** — on container start `entrypoint.sh` calls `dsh-update`:
-   - compares `dsh --version` with `npm view @deepseek-ai/dsh version`;
-   - on mismatch runs `npm install -g` (the in-image npm global directory is owned by uid 1000,
-     so no root needed);
+   - compares `dsh --version` with `npm view @deepseek-ai/dsh version` (semver: only upgrades —
+     never downgrades a version pinned at build time);
+   - when the npm latest is newer, runs `npm install -g` (the in-image npm global directory is
+     owned by uid 1000, so no root needed);
    - when offline or on failure it prints a warning and keeps the in-image version — availability
      is not affected.
    - Manual update: `docker exec dsh dsh-update` / `systemctl restart dsh`.
@@ -134,3 +135,15 @@ browser reaches the published port `3081`.
 **Podman rootless + bind mounts**
 Make sure the directory is owned by your uid and readable by the container; keep the `:Z` label
 with SELinux.
+
+**Remote access feels slow**
+The proxy itself does not buffer: SSE responses are flushed immediately and WebSocket streams pass
+through unchanged (verified against Caddy 2.6). The dominant remote-side factor is transfer size —
+UI assets are ~1.3 MB uncompressed, and the in-container proxy gzip-compresses them (≈360 KB).
+Remaining factors are inherent to the setup: `3081` is plain HTTP (no HTTP/2 multiplexing), every
+request costs one TCP round trip, and with basic auth enabled each request also pays one bcrypt
+check (~50–100 ms). For anything beyond the LAN, put an authenticated TLS reverse proxy in front.
+If agent output stops updating in the UI while `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` is enabled,
+the browser may not be attaching the basic-auth credentials to the WebSocket handshake (UA
+behavior); verify with a WebSocket client that sends `Authorization`, or terminate authentication
+at an outer proxy instead.

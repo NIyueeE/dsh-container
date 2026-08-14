@@ -9,7 +9,9 @@ day job — so follow this baseline when running it:
 `--host 0.0.0.0` (an intentional upstream safety design: without an auth layer it would expose
 remote code execution to the network). This image exposes the UI through a **Caddy reverse proxy**
 (`0.0.0.0:3081` → `127.0.0.1:3080`), and the orchestration examples publish port `3081` on plain
-bridge networking.
+bridge networking. The proxy gzip-compresses UI assets, passes SSE/WebSocket streams through
+unbuffered, and restarts itself if it crashes (the container HEALTHCHECK marks it unhealthy while
+the proxy stays down).
 
 ### The proxy is the security boundary
 

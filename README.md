@@ -20,7 +20,7 @@ way the official README describes: install Node.js, then npm-install `@deepseek-
 | Added toolchain | Rust/cargo (rustup minimal profile, pinnable via `RUST_TOOLCHAIN`), uv (COPYed from the official image at a pinned version, default 0.12.3) |
 | dsh | Global npm install of `@deepseek-ai/dsh`, same source as the official README's `npx @deepseek-ai/dsh web`; pinnable via `DSH_VERSION` |
 | Auto-update | Updates dsh to the latest npm release on container start (can be disabled); the image itself supports `Pull=newer` / `AutoUpdate=registry` |
-| Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) rewriting `Host`/`Origin` to loopback, with optional basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) |
+| Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) rewriting `Host`/`Origin` to loopback, gzip-compressing UI assets (≈1.3 MB → ≈360 KB), with optional basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) |
 | Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`codespace` on universal 6.x, `vscode` on legacy 2.x — handled automatically) |
 
@@ -39,7 +39,10 @@ All mutable components (base image / dsh / rust / uv) can be pinned with `--buil
 
 The exposed port is `3081`: a **Caddy reverse proxy** inside the container listens on
 `0.0.0.0:3081` and forwards to `dsh web` on `127.0.0.1:3080`, rewriting `Host`/`Origin` to loopback.
-dsh's `/api` browser-trust fence checks HTTP headers only, so remote browsers pass every endpoint —
+UI assets are gzip-compressed by the proxy (≈1.3 MB → ≈360 KB), which matters most for remote
+access; SSE/WebSocket streams pass through unbuffered (verified against Caddy 2.6), so agent
+output is not delayed by the proxy. dsh's `/api` browser-trust fence checks HTTP headers only, so
+remote browsers pass every endpoint —
 including settings/credentials methods that are otherwise loopback-only. **The proxy is therefore
 the security boundary**: anyone who can reach `3081` gets full control, so enable
 `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` and keep the port firewalled. Extra `dsh web` arguments can
