@@ -20,7 +20,8 @@ way the official README describes: install Node.js, then npm-install `@deepseek-
 | Added toolchain | Rust/cargo (rustup minimal profile, pinnable via `RUST_TOOLCHAIN`), uv (COPYed from the official image at a pinned version, default 0.12.3) |
 | dsh | Global npm install of `@deepseek-ai/dsh`, same source as the official README's `npx @deepseek-ai/dsh web`; pinnable via `DSH_VERSION` |
 | Auto-update | Updates dsh to the latest npm release on container start (can be disabled); the image itself supports `Pull=newer` / `AutoUpdate=registry` |
-| Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3081) |
+| Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) rewriting `Host`/`Origin` to loopback, with optional basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) |
+| Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`codespace` on universal 6.x, `vscode` on legacy 2.x — handled automatically) |
 
 All mutable components (base image / dsh / rust / uv) can be pinned with `--build-arg`; see

@@ -28,7 +28,7 @@
 #   - Caddy 反向代理监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后转发到 dsh 的
 #     127.0.0.1:3080。dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
 #     也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理
-#     (可配 basic_auth), 见 docs/security.md
+#     (可配 basic auth), 见 docs/security.md
 #   - DSH_TRUSTED_HOSTS(空格/逗号分隔的 host[:port] 列表)仍可透传为
 #     `dsh web --trusted-host`(头改写后一般不再需要, 保留兼容)
 
@@ -149,7 +149,7 @@ EXPOSE 3081
 
 # Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:3080(桥接 + 端口映射
 # 下即宿主 127.0.0.1:3081); universal 自带 curl。健康检查: dsh 直接可达
-# (127.0.0.1:3080)且代理有响应即可 —— 代理路径不要求 200, 因为启用 basic_auth
+# (127.0.0.1:3080)且代理有响应即可 —— 代理路径不要求 200, 因为启用 basic auth
 # 时未带凭据的请求是 401, 但代理本身存活。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS http://127.0.0.1:3080/ >/dev/null && curl -sS -o /dev/null http://127.0.0.1:3081/ >/dev/null || exit 1

@@ -29,7 +29,7 @@ PublishPort=3081:3081
 Environment=DSH_HOME=/home/codespace/dsh
 # 容器启动时自动把 dsh 更新到 npm 最新版; 设为 0 可关闭。
 Environment=DSH_AUTO_UPDATE=1
-# 可选: 代理 basic_auth(强烈建议启用)。Caddy 代理会把 Host/Origin 改写为回环,
+# 可选: 代理 basic auth(强烈建议启用)。Caddy 代理会把 Host/Origin 改写为回环,
 # 使远程浏览器也能通过 dsh 的全部接口 —— 包括设置/凭据等原本仅回环放行的
 # 方法, 因此**代理就是安全边界**: 能访问 3081 的人即可读取/修改全部配置与
 # 凭据。设置下面两个变量即启用基本认证(用户名+密码):

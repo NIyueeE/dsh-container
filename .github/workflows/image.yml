@@ -154,7 +154,7 @@ jobs:
           # 若恰逢新版本发布也会正常升级并输出 updating/now。
           docker exec "$cid" dsh-update | grep -Eq 'already up to date|updating|^\[dsh-update\] now'
 
-          # basic_auth 模式: 未带凭据 401, 带凭据 200。
+          # basic auth 模式: 未带凭据 401, 带凭据 200。
           auth_cid="$(docker run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
             -e DSH_HOME=/tmp/dsh-smoke-auth-home \
             -e DSH_AUTO_UPDATE=0 \

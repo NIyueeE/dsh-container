@@ -10,7 +10,7 @@
 #      127.0.0.1:$PORT(默认 3080)。dsh 的 /api 信任围栏只检查 HTTP 头, 改写后
 #      远程浏览器也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界
 #      随之转移到代理 —— 设置 DSH_PROXY_USER + DSH_PROXY_PASSWORD 启用
-#      basic_auth(见 docs/security.md)。
+#      basic auth(见 docs/security.md)。
 #   5. DSH_TRUSTED_HOSTS(空格或逗号分隔的 host[:port] 列表)逐个转成
 #      `--trusted-host`(头改写后一般不再需要, 保留兼容)。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
@@ -55,7 +55,7 @@ done
 # 转发到 dsh 的 127.0.0.1:$PORT。dsh 的 /api 信任围栏只看 HTTP 头, 因此经
 # 代理的远程访问也能通过全部接口 —— 包括设置/凭据等原本仅回环放行的特权
 # 方法。**安全边界随之转移到代理**: 能访问 3081 的任何人都可以读取/修改
-# 全部配置与凭据, 必须配合 basic_auth(下面两个变量)或防火墙/反代收口,
+# 全部配置与凭据, 必须配合 basic auth(下面两个变量)或防火墙/反代收口,
 # 详见 docs/security.md。设置 DSH_PROXY_USER + DSH_PROXY_PASSWORD 启用认证。
 # Caddy 启动失败时立即退出, 不静默降级。
 mkdir -p /tmp/dsh-caddy
