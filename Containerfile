@@ -20,10 +20,15 @@
 #
 # 运行时行为由 container/entrypoint.sh 控制:
 #   - 启动时自动把 dsh 更新到 npm 最新版(DSH_AUTO_UPDATE=1, 默认开启)
+#   - DSH_HOME / DSH_WORKSPACE 默认取运行时用户 home 下的 dsh / workspace
+#     (universal 6.x = /home/codespace/dsh 与 /home/codespace/workspace,
+#     旧版 2.x = /home/vscode/...), 由 entrypoint 解析, 不烘焙进 ENV
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
 #     (npm 发布版拒绝 --host 0.0.0.0, 上游 main 分支已支持但尚未发布)
 #   - DSH_WEB_HOST=0.0.0.0(默认)时由 socat 转发(容器 IP:3080 -> 127.0.0.1:3080),
 #     以配合桥接+端口映射; 设 DSH_WEB_HOST=127.0.0.1 则不开转发, 仅回环可达
+#   - DSH_TRUSTED_HOSTS(空格/逗号分隔的 host[:port] 列表)逐个转成
+#     `dsh web --trusted-host`, 供 /api 浏览器信任围栏放行非回环访问
 
 # ---- 构建参数(全部有默认值, 无硬编码) ------------------------------------
 # BASE_IMAGE / UV_VERSION 声明在 FROM 之前(全局作用域), 供 FROM 行使用;
@@ -65,16 +70,23 @@ RUN set -eux; \
         echo dsh > /etc/dsh-container-user; \
     fi
 
-# dsh 数据目录(profiles / sessions / 插件)与默认工作区, 归运行时用户所有
-RUN mkdir -p /dsh /workspace && chown 1000:1000 /dsh /workspace
+# dsh 数据目录(profiles / sessions / 插件)与默认工作区: 建在运行时用户 home
+# 下($HOME/dsh、$HOME/workspace; universal 6.x 即 /home/codespace/...),
+# 归运行时用户所有。entrypoint 按同一规则解析默认值(见上), 两处保持一致。
+RUN set -eux; \
+    USER_HOME="$(getent passwd "$(cat /etc/dsh-container-user)" | cut -d: -f6)"; \
+    mkdir -p "$USER_HOME/dsh" "$USER_HOME/workspace"; \
+    chown -R 1000:1000 "$USER_HOME/dsh" "$USER_HOME/workspace"
 
 # socat: 轻量端口转发(npm 发布版 dsh 拒绝 --host 0.0.0.0,
 # 由 entrypoint 用 socat 把 0.0.0.0:3080 转发到 127.0.0.1:3080)。
 RUN apt-get update && apt-get install -y --no-install-recommends socat \
     && rm -rf /var/lib/apt/lists/*
 
-ENV DSH_HOME=/dsh \
-    DSH_AUTO_UPDATE=1 \
+# DSH_HOME / DSH_WORKSPACE 不烘焙: entrypoint 按运行时用户 home 解析默认值
+# (universal 6.x = /home/codespace/dsh 与 /home/codespace/workspace), 使
+# 旧版 2.x(vscode 用户)等其它基础镜像自动跟随其 home; 显式设置的环境变量优先。
+ENV DSH_AUTO_UPDATE=1 \
     DSH_WEB_HOST=0.0.0.0 \
     RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo
@@ -129,7 +141,7 @@ COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-update.sh /usr/local/bin/dsh-update
 RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
 
-WORKDIR /workspace
+WORKDIR /home/codespace/workspace
 EXPOSE 3080
 
 # dsh web 经 socat 转发后对外监听 0.0.0.0:3080(桥接 + 端口映射下即宿主

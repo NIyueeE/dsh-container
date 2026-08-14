@@ -30,8 +30,9 @@ Agents can read everything reachable inside the container, including mounted cre
 
 ## DSH_HOME holds API keys
 
-The `dsh-home` volume contains model API credentials and session data. Mind the volume's access
-permissions and backups; don't share it with untrusted containers.
+The `dsh-home` volume (default `$DSH_HOME` = `/home/codespace/dsh`) contains model API credentials
+and session data. Mind the volume's access permissions and backups; don't share it with untrusted
+containers.
 
 ## Only run trusted repositories
 
@@ -45,4 +46,5 @@ With bridge networking the service is LAN-reachable by default, so treat it like
 - for anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) on the
   host, or use an SSH tunnel — don't rely on the raw port;
 - when browsers access the UI from other machines, the `/api` browser-trust fence may require
-  `--trusted-host <host>:3080` (pass it via the container `command` / `Exec=--trusted-host ...`).
+  declaring the access authority via `DSH_TRUSTED_HOSTS` (e.g. `Environment=DSH_TRUSTED_HOSTS=host:3080`;
+  space- or comma-separated `host[:port]` list).

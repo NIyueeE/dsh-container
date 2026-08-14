@@ -30,7 +30,9 @@ All mutable components (base image / dsh / rust / uv) can be pinned with `--buil
 
 | Variable | Default | Description |
 |---|---|---|
-| `DSH_HOME` | `/dsh` | dsh data directory (profiles / sessions / plugins); mount a persistent volume |
+| `DSH_HOME` | `$HOME/dsh` | dsh data directory (profiles / sessions / plugins); resolved by the entrypoint from the runtime user's home (`/home/codespace/dsh` on universal 6.x); mount a persistent volume |
+| `DSH_WORKSPACE` | `$HOME/workspace` | Task workspace; the entrypoint creates it and runs dsh from it (`/home/codespace/workspace` on universal 6.x) |
+| `DSH_TRUSTED_HOSTS` | *(empty)* | Space- or comma-separated `host[:port]` authorities the `/api` browser-trust fence accepts, e.g. `192.168.1.50:3080 dsh.example.com`; each entry becomes `--trusted-host` (see [deployment.md](docs/deployment.md) "Remote access") |
 | `DSH_AUTO_UPDATE` | `1` | Auto-update dsh to the latest npm release on boot; keeps the in-image version when offline or on failure |
 | `DSH_WEB_HOST` | `0.0.0.0` | Expose dsh via an in-container socat forwarder (dsh itself listens on `127.0.0.1`; npm releases reject `--host 0.0.0.0`); `127.0.0.1` = loopback only (port mapping then won't work) |
 | `DSH_UPDATE_ONLY` | `0` | Set to `1` to only run the dsh update and exit (for timer/cron updates) |

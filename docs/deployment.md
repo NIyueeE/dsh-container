@@ -34,8 +34,9 @@ the first release exists, replace the image tag with a published version or buil
   - host-only publishing: change the mapping to `"127.0.0.1:3080:3080"`;
   - loopback-only inside the container: set `DSH_WEB_HOST=127.0.0.1` — port mapping then no longer
     works (use host networking or a tunnel/forwarder instead).
-- Data persistence: the `dsh-home` named volume holds `$DSH_HOME` (profiles / sessions / plugins);
-  `./workspace` is bind-mounted to `/workspace` as the task workspace.
+- Data persistence: the `dsh-home` named volume holds `$DSH_HOME` (default `$HOME/dsh`, i.e.
+  `/home/codespace/dsh` on universal 6.x — profiles / sessions / plugins); `./workspace` is
+  bind-mounted to `/home/codespace/workspace` (default `$DSH_WORKSPACE`) as the task workspace.
 - On SELinux hosts (Fedora etc.) keep the `:Z` label in the volume definitions.
 
 ## 3. Podman Quadlet deployment (recommended)
@@ -93,8 +94,9 @@ ssh -L 3080:127.0.0.1:3080 user@your-host
 ```
 
 - when browsers access the UI from other machines, the `/api` browser-trust fence may require
-  `--trusted-host <host>:3080` (compose: `command: ["--trusted-host", "host:3080"]`;
-  quadlet: `Exec=--trusted-host host:3080`).
+  declaring the access authority: compose `environment: DSH_TRUSTED_HOSTS: "host:3080"`; quadlet
+  `Environment=DSH_TRUSTED_HOSTS=host:3080` (space- or comma-separated list of `host[:port]`; the
+  raw `--trusted-host` flag also passes through via the container `command` / `Exec=`).
 
 ## 6. Offline use
 
@@ -106,7 +108,8 @@ ssh -L 3080:127.0.0.1:3080 user@your-host
 ## 7. FAQ
 
 **Permission errors when writing to the workspace in the container**
-The host workspace directory must be owned by uid 1000: `sudo chown -R 1000:1000 workspace`.
+The host workspace directory (bind-mounted to `/home/codespace/workspace`, default `$DSH_WORKSPACE`)
+must be owned by uid 1000: `sudo chown -R 1000:1000 workspace`.
 
 **Port 3080 already in use**
 `dsh web` supports `--port`; in compose add `command: ["--port", "8080"]` **and** change the ports

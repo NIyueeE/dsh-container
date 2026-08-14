@@ -20,7 +20,8 @@ services:
       - "3080:3080"
     environment:
       # dsh 数据目录(profiles / sessions / 插件), 挂载命名卷持久化。
-      DSH_HOME: /dsh
+      # 默认 $HOME/dsh(universal 6.x = /home/codespace/dsh), 由入口脚本解析。
+      DSH_HOME: /home/codespace/dsh
       # 容器启动时自动把 dsh 更新到 npm 最新版; 离线或失败时沿用镜像内版本。
       # 设为 0 可关闭。
       DSH_AUTO_UPDATE: "${DSH_AUTO_UPDATE:-1}"
@@ -28,11 +29,12 @@ services:
       # 127.0.0.1 = 仅回环(端口映射无效, 需 host 网络或隧道)。
       DSH_WEB_HOST: "${DSH_WEB_HOST:-0.0.0.0}"
     volumes:
-      - dsh-home:/dsh
-      # 任务工作区。目录属主需为 uid 1000(容器内用户), 例如:
+      - dsh-home:/home/codespace/dsh
+      # 任务工作区(默认 $HOME/workspace, 即容器内 /home/codespace/workspace)。
+      # 目录属主需为 uid 1000(容器内用户), 例如:
       #   mkdir -p workspace && sudo chown -R 1000:1000 workspace
       # SELinux 主机(Fedora 等)请保留 :Z。
-      - ./workspace:/workspace:Z
+      - ./workspace:/home/codespace/workspace:Z
     # 可选: universal 镜像自带 Docker CLI/Engine, 如需容器内 docker-in-docker:
     # privileged: true
     # 可选: 换端口(默认 3080, 需同步改上面的 ports 映射):
@@ -40,9 +42,8 @@ services:
     # 可选: 浏览器信任围栏(/api 请求的 Host 校验, 防 DNS 重绑定与跨站攻击)。
     # 仅当用非回环地址访问界面时需要, 例如局域网 IP、域名、公网 IP, 或经
     # 保留 Host 头的反向代理; 本机 http://127.0.0.1:3080 访问无需配置。
-    # 值为裸 host 或 host:port(可重复, 例):
-    # command: ["--trusted-host", "192.168.1.50:3080"]
-    # command: ["--trusted-host", "dsh.example.com:3080"]
+    # 值为空格或逗号分隔的裸 host 或 host:port(可多个, 例):
+    # DSH_TRUSTED_HOSTS: "192.168.1.50:3080 dsh.example.com:3080"
     # 不带端口表示该主机名任意端口均信任。注意: 围栏不是认证, 只信任自己
     # 控制的主机/域名; 详见 docs/deployment.md 远程访问一节。
 

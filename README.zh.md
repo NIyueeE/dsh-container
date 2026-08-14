@@ -27,7 +27,9 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DSH_HOME` | `/dsh` | dsh 数据目录(profiles / sessions / 插件),建议挂载持久化卷 |
+| `DSH_HOME` | `$HOME/dsh` | dsh 数据目录(profiles / sessions / 插件),由入口脚本按运行时用户 home 解析(universal 6.x 即 `/home/codespace/dsh`),建议挂载持久化卷 |
+| `DSH_WORKSPACE` | `$HOME/workspace` | 任务工作区,入口脚本自动创建并以此为工作目录(universal 6.x 即 `/home/codespace/workspace`) |
+| `DSH_TRUSTED_HOSTS` | *(空)* | 空格或逗号分隔的 `host[:port]` 信任列表,如 `192.168.1.50:3080 dsh.example.com`;每个条目转成 `--trusted-host`,供 `/api` 浏览器信任围栏放行非回环访问(见 [deployment.md](docs/deployment.md) 远程访问一节) |
 | `DSH_AUTO_UPDATE` | `1` | 容器启动时自动更新 dsh 到 npm 最新版;离线或失败时沿用镜像内版本 |
 | `DSH_WEB_HOST` | `0.0.0.0` | 由容器内 socat 转发对外暴露(dsh 本身监听 `127.0.0.1`,npm 发布版拒绝 `--host 0.0.0.0`);`127.0.0.1` = 仅回环(此时端口映射无效) |
 | `DSH_UPDATE_ONLY` | `0` | 设为 `1` 时只执行 dsh 更新并退出(供 timer/cron 定时更新) |
