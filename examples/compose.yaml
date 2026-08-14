@@ -35,7 +35,7 @@ services:
       - ./workspace:/workspace:Z
     # 可选: universal 镜像自带 Docker CLI/Engine, 如需容器内 docker-in-docker:
     # privileged: true
-    # 可选: 换端口(默认 3080):
+    # 可选: 换端口(默认 3080, 需同步改上面的 ports 映射):
     # command: ["--port", "8080"]
 
 volumes:

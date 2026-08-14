@@ -32,7 +32,7 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 | `DSH_WEB_HOST` | `0.0.0.0` | 由容器内 socat 转发对外暴露(dsh 本身监听 `127.0.0.1`,npm 发布版拒绝 `--host 0.0.0.0`);`127.0.0.1` = 仅回环(此时端口映射无效) |
 | `DSH_UPDATE_ONLY` | `0` | 设为 `1` 时只执行 dsh 更新并退出(供 timer/cron 定时更新) |
 
-`dsh web` 的附加参数可通过容器 `command` 透传,例如 `["--port", "8080"]`。
+`dsh web` 的附加参数可通过容器 `command` 透传,例如 `["--port", "8080"]`(需同步发布该端口)。
 
 ## 快速开始
 
@@ -55,7 +55,7 @@ sudo systemctl enable --now dsh.service
 ```
 
 > **网络** — `dsh web` 监听 `127.0.0.1`(npm 发布版拒绝 `--host 0.0.0.0`);入口脚本用 socat
-> 转发使容器对外监听 `0.0.0.0:3080`,两个编排示例都用普通桥接网络并发布端口 `3080`。
+> 转发,因此两个编排示例都可以用普通桥接网络并发布端口 `3080`。
 > 详见 [security.md](docs/security.md) 与[部署指南](docs/deployment.md)。
 
 ## 文档

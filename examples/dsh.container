@@ -20,7 +20,7 @@ Wants=network-online.target
 [Container]
 Image=ghcr.io/niyueee/dsh-container:latest
 ContainerName=dsh
-# 端口映射: 宿主 3080 -> 容器 3080(容器内 socat 转发 0.0.0.0:3080 ->
+# 端口映射: 宿主 3080 -> 容器 3080(容器内 socat 转发: 容器 IP:3080 ->
 # dsh 的 127.0.0.1:3080, 见 DSH_WEB_HOST); 只在本机使用可改为
 # PublishPort=127.0.0.1:3080:3080。
 PublishPort=3080:3080

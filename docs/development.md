@@ -18,7 +18,7 @@ docs/
   design.md              # design references
   development.md         # this file
 .github/workflows/
-  image.yml              # build & publish to GHCR (incl. smoke tests)
+  image.yml              # build + validate image; publish + GitHub Release on v* tags
 ```
 
 ## Local development

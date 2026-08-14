@@ -80,8 +80,8 @@ Two layers that don't conflict:
 ## 5. Remote access
 
 With bridge networking the service is LAN-reachable by default (port `3080` published; a socat
-forwarder exposes dsh on `0.0.0.0` inside the container — see [security.md](security.md)). Treat it
-like any network service:
+forwarder exposes the UI on the container's network interface — see [security.md](security.md)).
+Treat it like any network service:
 
 - keep port `3080` closed in the host firewall unless LAN access is actually needed;
 - for anything beyond the LAN, use an authenticated reverse proxy on the host (e.g. Caddy + basic
@@ -109,8 +109,9 @@ ssh -L 3080:127.0.0.1:3080 user@your-host
 The host workspace directory must be owned by uid 1000: `sudo chown -R 1000:1000 workspace`.
 
 **Port 3080 already in use**
-`dsh web` supports `--port`; in compose add `command: ["--port", "8080"]`,
-in quadlet add `Exec=--port 8080`, then use the new port.
+`dsh web` supports `--port`; in compose add `command: ["--port", "8080"]` **and** change the ports
+mapping to `"8080:8080"`; in quadlet add `Exec=--port 8080` **and** `PublishPort=8080:8080`, then
+use the new port.
 
 **`npm registry unreachable` in the startup logs**
 The container couldn't reach the npm registry and kept the in-image dsh version; restart after

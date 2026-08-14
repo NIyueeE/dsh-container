@@ -35,7 +35,8 @@ All mutable components (base image / dsh / rust / uv) can be pinned with `--buil
 | `DSH_WEB_HOST` | `0.0.0.0` | Expose dsh via an in-container socat forwarder (dsh itself listens on `127.0.0.1`; npm releases reject `--host 0.0.0.0`); `127.0.0.1` = loopback only (port mapping then won't work) |
 | `DSH_UPDATE_ONLY` | `0` | Set to `1` to only run the dsh update and exit (for timer/cron updates) |
 
-Extra `dsh web` arguments can be passed through the container `command`, e.g. `["--port", "8080"]`.
+Extra `dsh web` arguments can be passed through the container `command`, e.g.
+`["--port", "8080"]` (then publish that port too).
 
 ## Quick start
 
@@ -58,9 +59,9 @@ sudo systemctl enable --now dsh.service
 ```
 
 > **Networking** — `dsh web` listens on `127.0.0.1` (npm releases reject `--host 0.0.0.0`); the
-> entrypoint runs a socat forwarder so the container accepts connections on `0.0.0.0:3080`, and both
-> examples use plain bridge networking with port `3080` published. See
-> [security.md](docs/security.md) and the [deployment guide](docs/deployment.md) for details.
+> entrypoint runs a socat forwarder so the examples can use plain bridge networking with port `3080`
+> published. See [security.md](docs/security.md) and the
+> [deployment guide](docs/deployment.md) for details.
 
 ## Documentation
 
