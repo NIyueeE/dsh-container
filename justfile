@@ -9,7 +9,7 @@ build:
 
 # 前台调试运行(桥接 + 端口映射, 关闭自动更新, 数据放临时目录)
 debug:
-    {{container}} run --rm -p 3080:3080 \
+    {{container}} run --rm -p 3081:3081 \
         -e DSH_HOME=/tmp/dsh-debug-home \
         -e DSH_AUTO_UPDATE=0 \
         ghcr.io/niyueee/dsh-container:local

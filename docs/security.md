@@ -7,20 +7,18 @@ day job — so follow this baseline when running it:
 
 `dsh web` listens on `127.0.0.1` by default, and the npm releases reject `--host 0.0.0.0`
 (upstream main supports an explicit all-interface opt-in, but it is not published yet). This image
-exposes the UI anyway by running a small **socat forwarder** (container IP `:3080` → `127.0.0.1:3080`)
-when `DSH_WEB_HOST=0.0.0.0` (the default), and the orchestration examples publish port `3080` on
-plain bridge networking.
+exposes the UI anyway by running a small **socat forwarder** (`0.0.0.0:3081` → `127.0.0.1:3080`),
+and the orchestration examples publish port `3081` on plain bridge networking.
 
-There is no TLS or authentication, so anyone who can reach port `3080` can drive the agent — remote
+There is no TLS or authentication, so anyone who can reach port `3081` can drive the agent — remote
 code execution. This is an intentional design decision: the UI is reachable from the LAN out of the
-box, at the cost of network exposure — the host firewall is the first line of defense. Two ways to
+box, at the cost of network exposure — the host firewall is the first line of defense. Ways to
 tighten it:
 
-- keep the published port host-only: `127.0.0.1:3080:3080` (compose) /
-  `PublishPort=127.0.0.1:3080:3080` (quadlet);
-- restore loopback-only inside the container: `DSH_WEB_HOST=127.0.0.1` (no forwarder) — port
-  mapping then no longer works, so you need host networking or a tunnel/forwarder (see
-  [deployment.md](deployment.md)).
+- keep the published port host-only: `127.0.0.1:3081:3081` (compose) /
+  `PublishPort=127.0.0.1:3081:3081` (quadlet);
+- don't publish the port at all for loopback-only use (the `/api` trust fence already only allows
+  loopback hosts unless `DSH_TRUSTED_HOSTS` declares otherwise).
 
 ## Don't mount host credentials
 
@@ -42,9 +40,9 @@ Even with the approval mechanism in place, don't let agents process untrusted co
 
 With bridge networking the service is LAN-reachable by default, so treat it like any network service:
 
-- keep port `3080` closed in the host firewall unless LAN access is actually needed;
+- keep port `3081` closed in the host firewall unless LAN access is actually needed;
 - for anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) on the
   host, or use an SSH tunnel — don't rely on the raw port;
 - when browsers access the UI from other machines, the `/api` browser-trust fence may require
-  declaring the access authority via `DSH_TRUSTED_HOSTS` (e.g. `Environment=DSH_TRUSTED_HOSTS=host:3080`;
+  declaring the access authority via `DSH_TRUSTED_HOSTS` (e.g. `Environment=DSH_TRUSTED_HOSTS=host:3081`;
   space- or comma-separated `host[:port]` list).

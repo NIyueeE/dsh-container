@@ -20,7 +20,7 @@ way the official README describes: install Node.js, then npm-install `@deepseek-
 | Added toolchain | Rust/cargo (rustup minimal profile, pinnable via `RUST_TOOLCHAIN`), uv (COPYed from the official image at a pinned version, default 0.12.3) |
 | dsh | Global npm install of `@deepseek-ai/dsh`, same source as the official README's `npx @deepseek-ai/dsh web`; pinnable via `DSH_VERSION` |
 | Auto-update | Updates dsh to the latest npm release on container start (can be disabled); the image itself supports `Pull=newer` / `AutoUpdate=registry` |
-| Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080) |
+| Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3081) |
 | Runtime user | uid 1000 (`codespace` on universal 6.x, `vscode` on legacy 2.x — handled automatically) |
 
 All mutable components (base image / dsh / rust / uv) can be pinned with `--build-arg`; see
@@ -32,13 +32,15 @@ All mutable components (base image / dsh / rust / uv) can be pinned with `--buil
 |---|---|---|
 | `DSH_HOME` | `$HOME/dsh` | dsh data directory (profiles / sessions / plugins); resolved by the entrypoint from the runtime user's home (`/home/codespace/dsh` on universal 6.x); mount a persistent volume |
 | `DSH_WORKSPACE` | `$HOME/workspace` | Task workspace; the entrypoint creates it and runs dsh from it (`/home/codespace/workspace` on universal 6.x) |
-| `DSH_TRUSTED_HOSTS` | *(empty)* | Space- or comma-separated `host[:port]` authorities the `/api` browser-trust fence accepts, e.g. `192.168.1.50:3080 dsh.example.com`; each entry becomes `--trusted-host` (see [deployment.md](docs/deployment.md) "Remote access") |
+| `DSH_TRUSTED_HOSTS` | *(empty)* | Space- or comma-separated `host[:port]` authorities the `/api` browser-trust fence accepts, e.g. `192.168.1.50:3081 dsh.example.com`; each entry becomes `--trusted-host` (see [deployment.md](docs/deployment.md) "Remote access") |
 | `DSH_AUTO_UPDATE` | `1` | Auto-update dsh to the latest npm release on boot; keeps the in-image version when offline or on failure |
-| `DSH_WEB_HOST` | `0.0.0.0` | Expose dsh via an in-container socat forwarder (dsh itself listens on `127.0.0.1`; npm releases reject `--host 0.0.0.0`); `127.0.0.1` = loopback only (port mapping then won't work) |
 | `DSH_UPDATE_ONLY` | `0` | Set to `1` to only run the dsh update and exit (for timer/cron updates) |
 
-Extra `dsh web` arguments can be passed through the container `command`, e.g.
-`["--port", "8080"]` (then publish that port too).
+The exposed port is `3081`: a socat forwarder inside the container listens on `0.0.0.0:3081` and
+forwards to `dsh web` on `127.0.0.1:3080` (npm releases reject `--host 0.0.0.0`; the ports differ so
+the forwarder can bind the wildcard address). Extra `dsh web` arguments can be passed through the
+container `command`, e.g. `["--port", "8080"]` (changes only dsh's internal port; the exposed port
+stays `3081`).
 
 ## Quick start
 
@@ -47,7 +49,7 @@ Extra `dsh web` arguments can be passed through the container `command`, e.g.
 ```bash
 mkdir -p workspace && sudo chown -R 1000:1000 workspace   # align ownership with the container user
 docker compose -f examples/compose.yaml up -d
-# open http://127.0.0.1:3080
+# open http://127.0.0.1:3081
 ```
 
 ### Podman Quadlet (Linux, recommended)
@@ -61,9 +63,9 @@ sudo systemctl enable --now dsh.service
 ```
 
 > **Networking** — `dsh web` listens on `127.0.0.1` (npm releases reject `--host 0.0.0.0`); the
-> entrypoint runs a socat forwarder so the examples can use plain bridge networking with port `3080`
-> published. See [security.md](docs/security.md) and the
-> [deployment guide](docs/deployment.md) for details.
+> entrypoint runs a socat forwarder on `0.0.0.0:3081` (→ dsh's `127.0.0.1:3080`), so the examples
+> can use plain bridge networking with port `3081` published. See [security.md](docs/security.md)
+> and the [deployment guide](docs/deployment.md) for details.
 
 ## Documentation
 

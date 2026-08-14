@@ -115,8 +115,8 @@ jobs:
         run: |
           set -euo pipefail
           image="${{ steps.image.outputs.name }}:${{ github.sha }}"
-          # 桥接 + 端口映射, 与默认部署方式一致。
-          cid="$(docker run -d --rm --name dsh-smoke -p 3080:3080 \
+          # 桥接 + 端口映射, 与默认部署方式一致(对外端口 3081)。
+          cid="$(docker run -d --rm --name dsh-smoke -p 3081:3081 \
             -e DSH_HOME=/tmp/dsh-smoke-home \
             -e DSH_AUTO_UPDATE=0 \
             "$image")"
@@ -124,12 +124,12 @@ jobs:
 
           # 等待 Web UI 就绪(首次启动需自动初始化 web profile)
           for _ in $(seq 1 60); do
-            if curl -fsS -o /dev/null http://127.0.0.1:3080/ 2>/dev/null; then
+            if curl -fsS -o /dev/null http://127.0.0.1:3081/ 2>/dev/null; then
               break
             fi
             sleep 2
           done
-          if ! curl -fsS http://127.0.0.1:3080/ | grep -q '<title>DeepSeek Harness</title>'; then
+          if ! curl -fsS http://127.0.0.1:3081/ | grep -q '<title>DeepSeek Harness</title>'; then
             echo "=== dsh-smoke container logs ===" >&2
             docker logs "$cid" >&2 2>&1 || true
             exit 1

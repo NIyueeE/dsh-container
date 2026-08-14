@@ -7,17 +7,16 @@
 # 完整部署说明见 docs/deployment.md。
 #
 # 网络: 普通桥接网络 + 端口映射。dsh web 本身监听 127.0.0.1(npm 发布版拒绝
-# --host 0.0.0.0), 容器内由 socat 转发(容器 IP:3080 -> 127.0.0.1:3080)对外暴露
-# (DSH_WEB_HOST=0.0.0.0, 默认), 以支持端口映射与局域网访问。
-# 只在本机使用时可把映射改为 "127.0.0.1:3080:3080"; 若设 DSH_WEB_HOST=127.0.0.1
-# 恢复仅回环, 端口映射将无效(需 host 网络或隧道)。
+# --host 0.0.0.0), 容器内由 socat 监听 0.0.0.0:3081 转发到 127.0.0.1:3080
+# 对外暴露(转发端口与 dsh 监听端口错开, 无需绑定容器 IP)。
+# 只在本机使用时不发布端口即可(或把映射改为 "127.0.0.1:3081:3081")。
 services:
   dsh:
     image: ghcr.io/niyueee/dsh-container:latest
     container_name: dsh
     restart: unless-stopped
     ports:
-      - "3080:3080"
+      - "3081:3081"
     environment:
       # dsh 数据目录(profiles / sessions / 插件), 挂载命名卷持久化。
       # 默认 $HOME/dsh(universal 6.x = /home/codespace/dsh), 由入口脚本解析。
@@ -25,9 +24,6 @@ services:
       # 容器启动时自动把 dsh 更新到 npm 最新版; 离线或失败时沿用镜像内版本。
       # 设为 0 可关闭。
       DSH_AUTO_UPDATE: "${DSH_AUTO_UPDATE:-1}"
-      # dsh web 对外暴露方式: 0.0.0.0 = 内置 socat 转发(配合上面的端口映射);
-      # 127.0.0.1 = 仅回环(端口映射无效, 需 host 网络或隧道)。
-      DSH_WEB_HOST: "${DSH_WEB_HOST:-0.0.0.0}"
     volumes:
       - dsh-home:/home/codespace/dsh
       # 任务工作区(默认 $HOME/workspace, 即容器内 /home/codespace/workspace)。
@@ -37,13 +33,14 @@ services:
       - ./workspace:/home/codespace/workspace:Z
     # 可选: universal 镜像自带 Docker CLI/Engine, 如需容器内 docker-in-docker:
     # privileged: true
-    # 可选: 换端口(默认 3080, 需同步改上面的 ports 映射):
+    # 可选: 换 dsh 内部监听端口(默认 3080, 对外端口固定 3081, 一般无需改动;
+    # 不要改成 3081, 会与 socat 转发端口冲突):
     # command: ["--port", "8080"]
     # 可选: 浏览器信任围栏(/api 请求的 Host 校验, 防 DNS 重绑定与跨站攻击)。
     # 仅当用非回环地址访问界面时需要, 例如局域网 IP、域名、公网 IP, 或经
-    # 保留 Host 头的反向代理; 本机 http://127.0.0.1:3080 访问无需配置。
-    # 值为空格或逗号分隔的裸 host 或 host:port(可多个, 例):
-    # DSH_TRUSTED_HOSTS: "192.168.1.50:3080 dsh.example.com:3080"
+    # 保留 Host 头的反向代理; 本机 http://127.0.0.1:3081 访问无需配置。
+    # 值为空格或逗号分隔的裸 host 或 host:port(可多个, 例; 端口用对外端口 3081):
+    # DSH_TRUSTED_HOSTS: "192.168.1.50:3081 dsh.example.com:3081"
     # 不带端口表示该主机名任意端口均信任。注意: 围栏不是认证, 只信任自己
     # 控制的主机/域名; 详见 docs/deployment.md 远程访问一节。
 

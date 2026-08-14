@@ -25,8 +25,8 @@
 #     旧版 2.x = /home/vscode/...), 由 entrypoint 解析, 不烘焙进 ENV
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
 #     (npm 发布版拒绝 --host 0.0.0.0, 上游 main 分支已支持但尚未发布)
-#   - DSH_WEB_HOST=0.0.0.0(默认)时由 socat 转发(容器 IP:3080 -> 127.0.0.1:3080),
-#     以配合桥接+端口映射; 设 DSH_WEB_HOST=127.0.0.1 则不开转发, 仅回环可达
+#   - socat 监听 0.0.0.0:3081 转发到 127.0.0.1:3080 对外暴露(端口错开,
+#     可直接绑定通配地址); 端口映射与示例统一用 3081
 #   - DSH_TRUSTED_HOSTS(空格/逗号分隔的 host[:port] 列表)逐个转成
 #     `dsh web --trusted-host`, 供 /api 浏览器信任围栏放行非回环访问
 
@@ -79,7 +79,7 @@ RUN set -eux; \
     chown -R 1000:1000 "$USER_HOME/dsh" "$USER_HOME/workspace"
 
 # socat: 轻量端口转发(npm 发布版 dsh 拒绝 --host 0.0.0.0,
-# 由 entrypoint 用 socat 把 0.0.0.0:3080 转发到 127.0.0.1:3080)。
+# 由 entrypoint 用 socat 把 0.0.0.0:3081 转发到 127.0.0.1:3080)。
 RUN apt-get update && apt-get install -y --no-install-recommends socat \
     && rm -rf /var/lib/apt/lists/*
 
@@ -87,7 +87,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends socat \
 # (universal 6.x = /home/codespace/dsh 与 /home/codespace/workspace), 使
 # 旧版 2.x(vscode 用户)等其它基础镜像自动跟随其 home; 显式设置的环境变量优先。
 ENV DSH_AUTO_UPDATE=1 \
-    DSH_WEB_HOST=0.0.0.0 \
     RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo
 
@@ -142,12 +141,12 @@ COPY container/dsh-update.sh /usr/local/bin/dsh-update
 RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
 
 WORKDIR /home/codespace/workspace
-EXPOSE 3080
+EXPOSE 3081
 
-# dsh web 经 socat 转发后对外监听 0.0.0.0:3080(桥接 + 端口映射下即宿主
-# 127.0.0.1:3080); universal 自带 curl。
+# socat 把 0.0.0.0:3081 转发到 dsh 的 127.0.0.1:3080(桥接 + 端口映射下即宿主
+# 127.0.0.1:3081); universal 自带 curl。健康检查走转发链路, 验证完整服务路径。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:3080/ >/dev/null || exit 1
+    CMD curl -fsS http://127.0.0.1:3081/ >/dev/null || exit 1
 
 USER 1000
 ENTRYPOINT ["entrypoint"]

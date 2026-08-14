@@ -10,7 +10,7 @@
 # 镜像直接从 GitHub Container Registry 拉取, 不在本地构建。
 # 镜像只在 v* tag 发布时推送; :latest 指向最近一次发布,
 # 首次部署前请确认仓库至少发布过一个版本(或用具体版本替换 Image)。
-# 访问 http://127.0.0.1:3080(PublishPort 映射, 默认桥接网络)。
+# 访问 http://127.0.0.1:3081(PublishPort 映射, 默认桥接网络)。
 
 [Unit]
 Description=DeepSeek Harness (dsh) Web UI
@@ -20,18 +20,15 @@ Wants=network-online.target
 [Container]
 Image=ghcr.io/niyueee/dsh-container:latest
 ContainerName=dsh
-# 端口映射: 宿主 3080 -> 容器 3080(容器内 socat 转发: 容器 IP:3080 ->
-# dsh 的 127.0.0.1:3080, 见 DSH_WEB_HOST); 只在本机使用可改为
-# PublishPort=127.0.0.1:3080:3080。
-PublishPort=3080:3080
+# 端口映射: 宿主 3081 -> 容器 3081(容器内 socat 监听 0.0.0.0:3081, 转发到
+# dsh 的 127.0.0.1:3080, 端口错开无需绑定容器 IP); 只在本机使用可改为
+# PublishPort=127.0.0.1:3081:3081。
+PublishPort=3081:3081
 # dsh 数据目录(profiles / sessions / 插件)持久化。默认 $HOME/dsh
 # (universal 6.x = /home/codespace/dsh), 由入口脚本解析。
 Environment=DSH_HOME=/home/codespace/dsh
 # 容器启动时自动把 dsh 更新到 npm 最新版; 设为 0 可关闭。
 Environment=DSH_AUTO_UPDATE=1
-# dsh 对外暴露方式: 0.0.0.0 = 内置 socat 转发(配合上面的 PublishPort);
-# 127.0.0.1 = 仅回环(端口映射无效, 需 host 网络或隧道)。
-Environment=DSH_WEB_HOST=0.0.0.0
 # 任务工作区(默认 $HOME/workspace, 即容器内 /home/codespace/workspace):
 # 路径按需修改, 属主需为 uid 1000; SELinux 主机保留 :Z。
 Volume=dsh-home:/home/codespace/dsh
@@ -46,9 +43,9 @@ Restart=on-failure
 TimeoutStartSec=300
 # 可选: 浏览器信任围栏(/api 请求的 Host 校验, 防 DNS 重绑定与跨站攻击)。
 # 仅当用非回环地址访问界面时需要, 例如局域网 IP、域名、公网 IP, 或经
-# 保留 Host 头的反向代理; 本机 http://127.0.0.1:3080 访问无需配置。
-# 值为空格或逗号分隔的裸 host 或 host:port(可多个, 例):
-# Environment=DSH_TRUSTED_HOSTS=192.168.1.50:3080 dsh.example.com:3080
+# 保留 Host 头的反向代理; 本机 http://127.0.0.1:3081 访问无需配置。
+# 值为空格或逗号分隔的裸 host 或 host:port(可多个, 例; 端口用对外端口 3081):
+# Environment=DSH_TRUSTED_HOSTS=192.168.1.50:3081 dsh.example.com:3081
 # 不带端口表示该主机名任意端口均信任。注意: 围栏不是认证, 只信任自己
 # 控制的主机/域名; 详见 docs/deployment.md 远程访问一节。
 

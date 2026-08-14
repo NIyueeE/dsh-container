@@ -17,7 +17,7 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 | 补装工具链 | Rust/cargo(rustup minimal profile,`RUST_TOOLCHAIN` 可固定)、uv(从官方镜像 COPY 固定版本,默认 0.12.3) |
 | dsh | npm 全局安装 `@deepseek-ai/dsh`,与官方 README 的 `npx @deepseek-ai/dsh web` 同源;`DSH_VERSION` 可固定 |
 | 自动更新 | 容器启动时自动把 dsh 更新到 npm 最新版(可关闭);镜像本身支持 `Pull=newer` / `AutoUpdate=registry` |
-| 可观测性 | OCI labels(`org.opencontainers.image.*` 含 git revision)、`HEALTHCHECK`(curl 3080) |
+| 可观测性 | OCI labels(`org.opencontainers.image.*` 含 git revision)、`HEALTHCHECK`(curl 3081) |
 | 运行时用户 | uid 1000(universal 6.x 为 `codespace`,旧版 2.x 为 `vscode`,自动兼容) |
 
 全部可变组件(基础镜像/dsh/rust/uv)均可用 `--build-arg` 固定版本,
@@ -29,12 +29,13 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 |---|---|---|
 | `DSH_HOME` | `$HOME/dsh` | dsh 数据目录(profiles / sessions / 插件),由入口脚本按运行时用户 home 解析(universal 6.x 即 `/home/codespace/dsh`),建议挂载持久化卷 |
 | `DSH_WORKSPACE` | `$HOME/workspace` | 任务工作区,入口脚本自动创建并以此为工作目录(universal 6.x 即 `/home/codespace/workspace`) |
-| `DSH_TRUSTED_HOSTS` | *(空)* | 空格或逗号分隔的 `host[:port]` 信任列表,如 `192.168.1.50:3080 dsh.example.com`;每个条目转成 `--trusted-host`,供 `/api` 浏览器信任围栏放行非回环访问(见 [deployment.md](docs/deployment.md) 远程访问一节) |
+| `DSH_TRUSTED_HOSTS` | *(空)* | 空格或逗号分隔的 `host[:port]` 信任列表,如 `192.168.1.50:3081 dsh.example.com`;每个条目转成 `--trusted-host`,供 `/api` 浏览器信任围栏放行非回环访问(见 [deployment.md](docs/deployment.md) 远程访问一节) |
 | `DSH_AUTO_UPDATE` | `1` | 容器启动时自动更新 dsh 到 npm 最新版;离线或失败时沿用镜像内版本 |
-| `DSH_WEB_HOST` | `0.0.0.0` | 由容器内 socat 转发对外暴露(dsh 本身监听 `127.0.0.1`,npm 发布版拒绝 `--host 0.0.0.0`);`127.0.0.1` = 仅回环(此时端口映射无效) |
 | `DSH_UPDATE_ONLY` | `0` | 设为 `1` 时只执行 dsh 更新并退出(供 timer/cron 定时更新) |
 
-`dsh web` 的附加参数可通过容器 `command` 透传,例如 `["--port", "8080"]`(需同步发布该端口)。
+对外端口为 `3081`:容器内 socat 监听 `0.0.0.0:3081` 转发到 `dsh web` 的 `127.0.0.1:3080`
+(npm 发布版拒绝 `--host 0.0.0.0`;两端口错开,转发器可直接绑定通配地址)。`dsh web` 的附加
+参数可通过容器 `command` 透传,例如 `["--port", "8080"]`(只改 dsh 内部端口,对外端口仍是 3081)。
 
 ## 快速开始
 
@@ -43,7 +44,7 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 ```bash
 mkdir -p workspace && sudo chown -R 1000:1000 workspace   # 工作区属主对齐容器用户
 docker compose -f examples/compose.yaml up -d
-# 打开 http://127.0.0.1:3080
+# 打开 http://127.0.0.1:3081
 ```
 
 ### Podman Quadlet(Linux,推荐)
@@ -57,8 +58,8 @@ sudo systemctl enable --now dsh.service
 ```
 
 > **网络** — `dsh web` 监听 `127.0.0.1`(npm 发布版拒绝 `--host 0.0.0.0`);入口脚本用 socat
-> 转发,因此两个编排示例都可以用普通桥接网络并发布端口 `3080`。
-> 详见 [security.md](docs/security.md) 与[部署指南](docs/deployment.md)。
+> 监听 `0.0.0.0:3081`(转发到 dsh 的 `127.0.0.1:3080`),因此两个编排示例都可以用普通桥接网络
+> 并发布端口 `3081`。详见 [security.md](docs/security.md) 与[部署指南](docs/deployment.md)。
 
 ## 文档
 

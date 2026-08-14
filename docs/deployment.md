@@ -8,7 +8,7 @@ the Compose example also works on Docker Desktop for macOS/Windows).
 - Linux host (Docker Engine ≥ 24 or Podman ≥ 4.4) — or Docker Desktop for the Compose example
 - Access to `ghcr.io` and `registry.npmjs.org` (the dsh auto-update on container start needs the npm
   registry; offline environments: see "Offline use" below)
-- Port `3080` free
+- Port `3081` free (the exposed port; dsh itself listens on `127.0.0.1:3080` inside the container)
 
 ## 2. Docker Compose deployment
 
@@ -21,19 +21,20 @@ docker compose -f examples/compose.yaml up -d
 docker compose -f examples/compose.yaml logs -f
 ```
 
-Open `http://127.0.0.1:3080`. On first use, follow the Web UI wizard to configure a model (API key)
+Open `http://127.0.0.1:3081`. On first use, follow the Web UI wizard to configure a model (API key)
 and pick a workspace.
 
 Images are published only by `v*` release tags; `:latest` points to the most recent release. Before
 the first release exists, replace the image tag with a published version or build locally
 (see [releasing.md](releasing.md) / [build.md](build.md)).
 
-- `compose.yaml` publishes port `3080` on the host (`ports: ["3080:3080"]`, plain bridge networking).
-  Inside the container, a socat forwarder listens on the container IP and forwards to dsh on
-  `127.0.0.1` (`DSH_WEB_HOST`, see [security.md](security.md) for the exposure tradeoff):
-  - host-only publishing: change the mapping to `"127.0.0.1:3080:3080"`;
-  - loopback-only inside the container: set `DSH_WEB_HOST=127.0.0.1` — port mapping then no longer
-    works (use host networking or a tunnel/forwarder instead).
+- `compose.yaml` publishes port `3081` on the host (`ports: ["3081:3081"]`, plain bridge networking).
+  Inside the container, a socat forwarder listens on `0.0.0.0:3081` and forwards to dsh on
+  `127.0.0.1:3080` — the ports deliberately differ, so the forwarder can bind the wildcard address
+  (see [security.md](security.md) for the exposure tradeoff):
+  - host-only publishing: change the mapping to `"127.0.0.1:3081:3081"`;
+  - loopback-only: just don't publish the port (the `/api` trust fence already only allows loopback
+    unless `DSH_TRUSTED_HOSTS` declares otherwise).
 - Data persistence: the `dsh-home` named volume holds `$DSH_HOME` (default `$HOME/dsh`, i.e.
   `/home/codespace/dsh` on universal 6.x — profiles / sessions / plugins); `./workspace` is
   bind-mounted to `/home/codespace/workspace` (default `$DSH_WORKSPACE`) as the task workspace.
@@ -52,8 +53,8 @@ systemctl status dsh.service
 journalctl -u dsh.service -f
 ```
 
-- `dsh.container` publishes port `3080` via `PublishPort=3080:3080` (default bridge network);
-  access `http://127.0.0.1:3080`. For host-only publishing use `PublishPort=127.0.0.1:3080:3080`.
+- `dsh.container` publishes port `3081` via `PublishPort=3081:3081` (default bridge network);
+  access `http://127.0.0.1:3081`. For host-only publishing use `PublishPort=127.0.0.1:3081:3081`.
 - After changing the workspace path, re-run `daemon-reload` + `restart`.
 - For user-level (rootless podman) deployment, put the file in `~/.config/containers/systemd/`
   and change `WantedBy` in `[Install]` to `default.target`.
@@ -80,22 +81,22 @@ Two layers that don't conflict:
 
 ## 5. Remote access
 
-With bridge networking the service is LAN-reachable by default (port `3080` published; a socat
-forwarder exposes the UI on the container's network interface — see [security.md](security.md)).
+With bridge networking the service is LAN-reachable by default (port `3081` published; a socat
+forwarder on `0.0.0.0:3081` exposes the UI — see [security.md](security.md)).
 Treat it like any network service:
 
-- keep port `3080` closed in the host firewall unless LAN access is actually needed;
+- keep port `3081` closed in the host firewall unless LAN access is actually needed;
 - for anything beyond the LAN, use an authenticated reverse proxy on the host (e.g. Caddy + basic
   auth) or an SSH tunnel:
 
 ```bash
-ssh -L 3080:127.0.0.1:3080 user@your-host
-# open http://127.0.0.1:3080 in your local browser
+ssh -L 3081:127.0.0.1:3081 user@your-host
+# open http://127.0.0.1:3081 in your local browser
 ```
 
 - when browsers access the UI from other machines, the `/api` browser-trust fence may require
-  declaring the access authority: compose `environment: DSH_TRUSTED_HOSTS: "host:3080"`; quadlet
-  `Environment=DSH_TRUSTED_HOSTS=host:3080` (space- or comma-separated list of `host[:port]`; the
+  declaring the access authority: compose `environment: DSH_TRUSTED_HOSTS: "host:3081"`; quadlet
+  `Environment=DSH_TRUSTED_HOSTS=host:3081` (space- or comma-separated list of `host[:port]`; the
   raw `--trusted-host` flag also passes through via the container `command` / `Exec=`).
 
 ## 6. Offline use
@@ -111,10 +112,11 @@ ssh -L 3080:127.0.0.1:3080 user@your-host
 The host workspace directory (bind-mounted to `/home/codespace/workspace`, default `$DSH_WORKSPACE`)
 must be owned by uid 1000: `sudo chown -R 1000:1000 workspace`.
 
-**Port 3080 already in use**
-`dsh web` supports `--port`; in compose add `command: ["--port", "8080"]` **and** change the ports
-mapping to `"8080:8080"`; in quadlet add `Exec=--port 8080` **and** `PublishPort=8080:8080`, then
-use the new port.
+**Port 3081 already in use**
+The exposed port is `3081` (socat forwarder → dsh's `127.0.0.1:3080` inside the container). Change
+the host-side mapping instead: compose `ports: ["4081:3081"]`, quadlet `PublishPort=4081:3081`,
+then use the new port. To move dsh's internal port, pass `command: ["--port", "8080"]` /
+`Exec=--port 8080` — the forwarder follows automatically, but keep it different from `3081`.
 
 **`npm registry unreachable` in the startup logs**
 The container couldn't reach the npm registry and kept the in-image dsh version; restart after
