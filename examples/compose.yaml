@@ -21,8 +21,8 @@ services:
       # dsh 数据目录(profiles / sessions / 插件), 挂载命名卷持久化。
       # 默认 $HOME/dsh(universal 6.x = /home/codespace/dsh), 由入口脚本解析。
       DSH_HOME: /home/codespace/dsh
-      # 容器启动时自动把 dsh 更新到 npm 最新版; 离线或失败时沿用镜像内版本。
-      # 设为 0 可关闭。
+      # 容器启动时自动把 dsh 更新到 npm 最新版(只升不降);
+      # 离线或失败时沿用镜像内版本。设为 0 可关闭。
       DSH_AUTO_UPDATE: "${DSH_AUTO_UPDATE:-1}"
     volumes:
       - dsh-home:/home/codespace/dsh

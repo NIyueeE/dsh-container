@@ -58,6 +58,9 @@ With bridge networking the service is LAN-reachable by default, so treat it like
 - keep port `3081` closed in the host firewall unless LAN access is actually needed;
 - for anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) on the
   host, or use an SSH tunnel — don't rely on the raw port;
+- if you front it with an external reverse proxy, forward the WebSocket upgrade headers
+  (`Upgrade`/`Connection`) and raise the idle timeouts — without them the UI's event streams
+  silently fail (see [deployment.md](deployment.md) for a working nginx example);
 - enable the proxy's own basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) for any
   non-loopback deployment; remote browsers then get full functionality, including settings and
   credentials.

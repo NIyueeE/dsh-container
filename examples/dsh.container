@@ -27,7 +27,7 @@ PublishPort=3081:3081
 # dsh 数据目录(profiles / sessions / 插件)持久化。默认 $HOME/dsh
 # (universal 6.x = /home/codespace/dsh), 由入口脚本解析。
 Environment=DSH_HOME=/home/codespace/dsh
-# 容器启动时自动把 dsh 更新到 npm 最新版; 设为 0 可关闭。
+# 容器启动时自动把 dsh 更新到 npm 最新版(只升不降); 设为 0 可关闭。
 Environment=DSH_AUTO_UPDATE=1
 # 可选: 代理 basic auth(强烈建议启用)。Caddy 代理会把 Host/Origin 改写为回环,
 # 使远程浏览器也能通过 dsh 的全部接口 —— 包括设置/凭据等原本仅回环放行的

@@ -102,6 +102,42 @@ The proxy's header rewrite makes every request look loopback, so there is no tru
 to set for remote access — basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) is the access
 control.
 
+### External reverse proxy with TLS (WAN)
+
+`3081` is plain HTTP, so for anything beyond the LAN, terminate TLS in front of the container with
+an authenticated reverse proxy (nginx, Caddy, Traefik, ...). The proxy config matters — two common
+mistakes silently break the Web UI's event streams while the page itself still loads:
+
+- **Missing WebSocket upgrade headers.** The UI streams agent events over WebSocket
+  (`/api/events.mux`, `/api/events.host`). dsh answers handshakes without `Upgrade`/`Connection`
+  with `426 Upgrade Required`, and proxies that strip these hop-by-hop headers (nginx's default)
+  kill the streams: agent output never updates, and the container journal fills with periodic
+  `aborting with incomplete response ... context canceled` errors.
+- **Buffering + short idle timeouts.** Streams that sit idle (agent thinking, no output) longer
+  than the proxy's read timeout get cut — with nginx's default `proxy_read_timeout 60s` that shows
+  up as an error roughly every minute. Disable response buffering and raise the timeouts.
+
+A minimal nginx example that works:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:3081;       # container's exposed port
+    proxy_http_version 1.1;                 # WebSocket requires HTTP/1.1
+    proxy_set_header Upgrade $http_upgrade; # required for the UI's WebSocket streams
+    proxy_set_header Connection "upgrade";  # required for the UI's WebSocket streams
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;                    # stream agent output without buffering
+    proxy_read_timeout 3600s;               # don't cut quiet (idle) streams
+    proxy_send_timeout 3600s;
+}
+```
+
+Caddy and Traefik forward WebSocket upgrades and stream responses by default; with those you only
+need the raised idle timeouts (Caddy's defaults are already unlimited).
+
 ## 6. Offline use
 
 - Pin the update behavior at build time: set `DSH_AUTO_UPDATE=0` at runtime

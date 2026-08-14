@@ -16,7 +16,7 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 | 自带工具链 | Node.js 22/24(nvm)、Python、Go、Java、Docker CLI/Engine、git、build-essential 等 |
 | 补装工具链 | Rust/cargo(rustup minimal profile,`RUST_TOOLCHAIN` 可固定)、uv(从官方镜像 COPY 固定版本,默认 0.12.3) |
 | dsh | npm 全局安装 `@deepseek-ai/dsh`,与官方 README 的 `npx @deepseek-ai/dsh web` 同源;`DSH_VERSION` 可固定 |
-| 自动更新 | 容器启动时自动把 dsh 更新到 npm 最新版(可关闭);镜像本身支持 `Pull=newer` / `AutoUpdate=registry` |
+| 自动更新 | 容器启动时自动把 dsh 更新到 npm 最新版(只升不降,不会把固定版本降级;可关闭);镜像本身支持 `Pull=newer` / `AutoUpdate=registry` |
 | 对外暴露 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),把 `Host`/`Origin` 改写为回环并对 UI 资源做 gzip 压缩(约 1.3MB → 约 360KB);可用 `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` 启用 basic auth |
 | 可观测性 | OCI labels(`org.opencontainers.image.*` 含 git revision)、`HEALTHCHECK`(curl 3080 + 3081) |
 | 运行时用户 | uid 1000(universal 6.x 为 `codespace`,旧版 2.x 为 `vscode`,自动兼容) |
@@ -37,7 +37,10 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 对外端口为 `3081`:容器内 **Caddy 反向代理**监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为
 回环后转发到 `dsh web` 的 `127.0.0.1:3080`。代理对 UI 资源做 gzip 压缩(约 1.3MB → 约
 360KB),远端访问时尤其明显;SSE/WebSocket 流式响应不缓冲、即时转发(已在 Caddy 2.6 上验证),
-agent 输出不会被代理延迟。dsh 的 `/api` 浏览器信任围栏只检查 HTTP 头,因此
+agent 输出不会被代理延迟。如需跨公网访问,建议在 3081 前用外置反向代理终止 TLS;该代理必须
+转发 WebSocket 升级头(nginx 为 `proxy_set_header Upgrade $http_upgrade` /
+`proxy_set_header Connection "upgrade"`),且不要缓冲或超时掐断空闲流 —— 完整示例见
+[deployment.md](docs/deployment.md)。dsh 的 `/api` 浏览器信任围栏只检查 HTTP 头,因此
 远程浏览器能通过全部接口 —— 包括设置/凭据等原本仅回环放行的方法。**代理因此成为安全边界**:
 能访问 3081 的人即拥有完全控制权,请启用 `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` 并用防火墙
 收口端口。`dsh web` 的附加参数可通过容器 `command` 透传,例如 `["--port", "8080"]`(只改
