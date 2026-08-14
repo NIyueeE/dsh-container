@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # DeepSeek Harness 容器入口:
 #   1. (可选) 把 dsh 自动更新到 npm 最新版, 默认开启(DSH_AUTO_UPDATE=1)
-#   2. 以 `dsh web` 启动 Web UI, 默认监听 127.0.0.1:3080
+#   2. 以 `dsh web` 启动 Web UI, 默认监听 0.0.0.0:3080(DSH_WEB_HOST,
+#      上游 dsh 默认仅 127.0.0.1; 设 DSH_WEB_HOST=127.0.0.1 恢复仅回环)
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
 set -euo pipefail
 
@@ -20,4 +21,4 @@ if [ "${DSH_AUTO_UPDATE:-1}" = "1" ]; then
   fi
 fi
 
-exec dsh web "$@"
+exec dsh web --host "${DSH_WEB_HOST:-0.0.0.0}" "$@"

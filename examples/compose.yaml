@@ -4,22 +4,26 @@
 # 镜像直接从 GitHub Container Registry 拉取, 不在本地构建。
 # 完整部署说明见 docs/deployment.md。
 #
-# 重要: dsh web 出于安全考虑只允许绑定 127.0.0.1(--host 0.0.0.0 会被拒绝,
-# 避免把远程代码执行能力暴露到网络上), 因此这里使用 host 网络:
-# 容器内服务直接出现在宿主机的 http://127.0.0.1:3080, 无需端口映射。
-# host 网络仅 Linux 支持(Docker Desktop for macOS/Windows 不可用)。
+# 网络: 普通桥接网络 + 端口映射。dsh web 默认监听 0.0.0.0(DSH_WEB_HOST;
+# 上游 dsh 默认仅 127.0.0.1, 本镜像默认 0.0.0.0 以支持端口映射与局域网访问)。
+# 只在本机使用时可把映射改为 "127.0.0.1:3080:3080"; 若设 DSH_WEB_HOST=127.0.0.1
+# 恢复仅回环, 端口映射将无效(需 host 网络或隧道)。
 services:
   dsh:
     image: ghcr.io/niyueee/dsh-container:latest
     container_name: dsh
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "3080:3080"
     environment:
       # dsh 数据目录(profiles / sessions / 插件), 挂载命名卷持久化。
       DSH_HOME: /dsh
       # 容器启动时自动把 dsh 更新到 npm 最新版; 离线或失败时沿用镜像内版本。
       # 设为 0 可关闭。
       DSH_AUTO_UPDATE: "${DSH_AUTO_UPDATE:-1}"
+      # dsh web 监听地址: 0.0.0.0 = 显式暴露(配合上面的端口映射);
+      # 127.0.0.1 = 仅回环(端口映射无效, 需 host 网络或隧道)。
+      DSH_WEB_HOST: "${DSH_WEB_HOST:-0.0.0.0}"
     volumes:
       - dsh-home:/dsh
       # 任务工作区。目录属主需为 uid 1000(容器内用户), 例如:

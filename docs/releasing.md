@@ -34,9 +34,9 @@ For a tag build, one version string flows through everything:
 
 GHCR packages default to **private**, and GitHub has removed the REST API endpoint for changing
 package visibility (both `POST` and `PATCH /user/packages/container/<name>/visibility` return 404).
-So after the first CI publish you must manually make the package **public** — the package is already
-linked to this repository via the `org.opencontainers.image.source` label, and access inherits from
-the repo; only the visibility needs to be set manually once:
+After the first CI publish, the repository owner must manually make the package **public** once —
+the package is already linked to this repository via the `org.opencontainers.image.source` label,
+and access inherits from the repo; only the visibility needs to be set manually:
 
 1. Open <https://github.com/users/NIyueeE/packages/container/package/dsh-container/settings>
 2. **Danger Zone → Change visibility → Public**

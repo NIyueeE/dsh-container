@@ -3,15 +3,24 @@
 dsh's agents can execute arbitrary commands inside the container — remote code execution is its
 day job — so follow this baseline when running it:
 
-## Why host networking?
+## Networking & exposure
 
-`dsh web` deliberately **refuses to bind `0.0.0.0`** (to avoid exposing remote code execution to the
-network) and only listens on `127.0.0.1`. Both orchestration examples therefore use host networking:
-the service appears directly on the host at `http://127.0.0.1:3080`, with no port mapping needed or
-supported. Host networking is Linux-only (not available on Docker Desktop for macOS/Windows).
+Upstream `dsh web` binds `127.0.0.1` by default; `--host 0.0.0.0` is supported only as an explicit,
+all-interface opt-in and any other address value is rejected (see the
+[upstream bind-address note](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-07-22-web-bind-address.md)).
+There is no TLS or authentication, so a non-loopback bind exposes the Web UI — which can execute
+arbitrary commands — to that network.
 
-For remote access, use an SSH tunnel or a host-side reverse proxy — never change the bind address.
-See the "Remote access" section of [deployment.md](deployment.md).
+This image **defaults to `DSH_WEB_HOST=0.0.0.0`**, and the orchestration examples publish port `3080`
+on plain bridge networking. This is an intentional design decision: the UI is reachable from the LAN
+out of the box, at the cost of network exposure — the host firewall is the first line of defense.
+Two ways to tighten it:
+
+- keep the published port host-only: `127.0.0.1:3080:3080` (compose) /
+  `PublishPort=127.0.0.1:3080:3080` (quadlet);
+- restore loopback-only inside the container: `DSH_WEB_HOST=127.0.0.1` — port mapping then no longer
+  works, so you need host networking or a tunnel/forwarder (see
+  [deployment.md](deployment.md)).
 
 ## Don't mount host credentials
 
@@ -28,8 +37,12 @@ permissions and backups; don't share it with untrusted containers.
 
 Even with the approval mechanism in place, don't let agents process untrusted code repositories.
 
-## Remote access only via SSH tunnel
+## Remote access
 
-The 127.0.0.1-only listener is a security design, not a limitation. If you must expose the service
-beyond localhost, put an authenticated reverse proxy (e.g. Caddy + basic auth) on the host and
-consider dsh's `--trusted-host` option.
+With bridge networking the service is LAN-reachable by default, so treat it like any network service:
+
+- keep port `3080` closed in the host firewall unless LAN access is actually needed;
+- for anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) on the
+  host, or use an SSH tunnel — don't rely on the raw port;
+- when browsers access the UI from other machines, the `/api` browser-trust fence may require
+  `--trusted-host <host>:3080` (pass it via the container `command` / `Exec=--trusted-host ...`).

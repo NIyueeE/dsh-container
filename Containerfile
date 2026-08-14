@@ -19,8 +19,9 @@
 #
 # 运行时行为由 container/entrypoint.sh 控制:
 #   - 启动时自动把 dsh 更新到 npm 最新版(DSH_AUTO_UPDATE=1, 默认开启)
-#   - 随后以 `dsh web` 启动 Web UI, 默认监听 127.0.0.1:3080
-#     (dsh 出于安全考虑拒绝 --host 0.0.0.0, 编排时需使用 host 网络, 见 examples/)
+#   - 随后以 `dsh web --host $DSH_WEB_HOST` 启动 Web UI, 默认监听 0.0.0.0:3080
+#     (上游 dsh 默认仅监听 127.0.0.1, 本镜像默认 0.0.0.0 以配合桥接+端口映射;
+#      设 DSH_WEB_HOST=127.0.0.1 可恢复仅回环, 见 examples/)
 
 # ---- 构建参数(全部有默认值, 无硬编码) ------------------------------------
 # BASE_IMAGE / UV_VERSION 声明在 FROM 之前(全局作用域), 供 FROM 行使用;
@@ -67,6 +68,7 @@ RUN mkdir -p /dsh /workspace && chown 1000:1000 /dsh /workspace
 
 ENV DSH_HOME=/dsh \
     DSH_AUTO_UPDATE=1 \
+    DSH_WEB_HOST=0.0.0.0 \
     RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo
 
@@ -123,7 +125,7 @@ RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
 WORKDIR /workspace
 EXPOSE 3080
 
-# dsh web 监听 127.0.0.1:3080(host 网络下即宿主机地址); universal 自带 curl。
+# dsh web 监听 0.0.0.0:3080(桥接 + 端口映射下即宿主 127.0.0.1:3080); universal 自带 curl。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS http://127.0.0.1:3080/ >/dev/null || exit 1
 

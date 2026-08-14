@@ -7,9 +7,9 @@ container := if command -v podman >/dev/null 2>&1 { "podman" } else { "docker" }
 build:
     {{container}} build --format docker -t ghcr.io/niyueee/dsh-container:local .
 
-# 前台调试运行(host 网络, 关闭自动更新, 数据放临时目录)
+# 前台调试运行(桥接 + 端口映射, 关闭自动更新, 数据放临时目录)
 debug:
-    {{container}} run --rm --network host \
+    {{container}} run --rm -p 3080:3080 \
         -e DSH_HOME=/tmp/dsh-debug-home \
         -e DSH_AUTO_UPDATE=0 \
         ghcr.io/niyueee/dsh-container:local

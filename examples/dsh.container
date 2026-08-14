@@ -8,7 +8,7 @@
 #   sudo systemctl enable --now dsh.service
 #
 # 镜像直接从 GitHub Container Registry 拉取, 不在本地构建。
-# 访问 http://127.0.0.1:3080(见下方 Network=host 说明)。
+# 访问 http://127.0.0.1:3080(PublishPort 映射, 默认桥接网络)。
 
 [Unit]
 Description=DeepSeek Harness (dsh) Web UI
@@ -18,12 +18,15 @@ Wants=network-online.target
 [Container]
 Image=ghcr.io/niyueee/dsh-container:latest
 ContainerName=dsh
-# dsh web 出于安全考虑只允许绑定 127.0.0.1(--host 0.0.0.0 会被拒绝),
-# 因此使用 host 网络, 服务直接出现在宿主机的 127.0.0.1:3080, 无需 PublishPort。
-Network=host
+# 端口映射: 宿主 3080 -> 容器 3080(dsh web 监听 0.0.0.0, 见 DSH_WEB_HOST);
+# 只在本机使用可改为 PublishPort=127.0.0.1:3080:3080。
+PublishPort=3080:3080
 Environment=DSH_HOME=/dsh
 # 容器启动时自动把 dsh 更新到 npm 最新版; 设为 0 可关闭。
 Environment=DSH_AUTO_UPDATE=1
+# dsh web 监听地址: 0.0.0.0 = 显式暴露(配合上面的 PublishPort);
+# 127.0.0.1 = 仅回环(端口映射无效, 需 host 网络或隧道)。
+Environment=DSH_WEB_HOST=0.0.0.0
 # dsh 数据目录(profiles / sessions / 插件)持久化。
 Volume=dsh-home:/dsh
 # 任务工作区: 路径按需修改, 属主需为 uid 1000; SELinux 主机保留 :Z。

@@ -126,7 +126,8 @@ jobs:
         run: |
           set -euo pipefail
           image="${{ steps.image.outputs.name }}:${{ github.sha }}"
-          cid="$(docker run -d --rm --name dsh-smoke --network host \
+          # 桥接 + 端口映射, 与默认部署方式一致。
+          cid="$(docker run -d --rm --name dsh-smoke -p 3080:3080 \
             -e DSH_HOME=/tmp/dsh-smoke-home \
             -e DSH_AUTO_UPDATE=0 \
             "$image")"

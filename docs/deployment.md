@@ -1,10 +1,11 @@
 # Deployment & Maintenance
 
-This guide targets running the dsh container on your own Linux host (Docker or Podman).
+This guide targets running the dsh container on your own host (Docker or Podman, Linux preferred;
+the Compose example also works on Docker Desktop for macOS/Windows).
 
 ## 1. Prerequisites
 
-- Linux host (Docker Engine ≥ 24 or Podman ≥ 4.4)
+- Linux host (Docker Engine ≥ 24 or Podman ≥ 4.4) — or Docker Desktop for the Compose example
 - Access to `ghcr.io` and `registry.npmjs.org` (the dsh auto-update on container start needs the npm
   registry; offline environments: see "Offline use" below)
 - Port `3080` free
@@ -23,8 +24,12 @@ docker compose -f examples/compose.yaml logs -f
 Open `http://127.0.0.1:3080`. On first use, follow the Web UI wizard to configure a model (API key)
 and pick a workspace.
 
-- `compose.yaml` uses `network_mode: host`, so **don't** add a `ports:` mapping
-  (dsh only listens on 127.0.0.1; port mapping is ineffective and ignored).
+- `compose.yaml` publishes port `3080` on the host (`ports: ["3080:3080"]`, plain bridge networking).
+  Inside the container, dsh listens on `0.0.0.0` (`DSH_WEB_HOST`, see
+  [security.md](security.md) for the exposure tradeoff):
+  - host-only publishing: change the mapping to `"127.0.0.1:3080:3080"`;
+  - loopback-only inside the container: set `DSH_WEB_HOST=127.0.0.1` — port mapping then no longer
+    works (use host networking or a tunnel/forwarder instead).
 - Data persistence: the `dsh-home` named volume holds `$DSH_HOME` (profiles / sessions / plugins);
   `./workspace` is bind-mounted to `/workspace` as the task workspace.
 - On SELinux hosts (Fedora etc.) keep the `:Z` label in the volume definitions.
@@ -42,7 +47,8 @@ systemctl status dsh.service
 journalctl -u dsh.service -f
 ```
 
-- `dsh.container` also uses `Network=host`; access `http://127.0.0.1:3080`.
+- `dsh.container` publishes port `3080` via `PublishPort=3080:3080` (default bridge network);
+  access `http://127.0.0.1:3080`. For host-only publishing use `PublishPort=127.0.0.1:3080:3080`.
 - After changing the workspace path, re-run `daemon-reload` + `restart`.
 - For user-level (rootless podman) deployment, put the file in `~/.config/containers/systemd/`
   and change `WantedBy` in `[Install]` to `default.target`.
@@ -67,20 +73,23 @@ Two layers that don't conflict:
      periodically pull new images and restart the container.
    - Compose: `docker compose pull && docker compose up -d` achieves the same manually.
 
-## 5. Remote access (beyond localhost only)
+## 5. Remote access
 
-dsh only listening on 127.0.0.1 is a security design (the Web UI has remote code execution power;
-binding to the network would expose RCE to the LAN). For remote use, prefer an **SSH tunnel** —
-don't change the bind address:
+With bridge networking the service is LAN-reachable by default (port `3080` published; dsh binds
+`0.0.0.0` inside the container — see [security.md](security.md)). Treat it like any network service:
+
+- keep port `3080` closed in the host firewall unless LAN access is actually needed;
+- for anything beyond the LAN, use an authenticated reverse proxy on the host (e.g. Caddy + basic
+  auth) or an SSH tunnel:
 
 ```bash
 ssh -L 3080:127.0.0.1:3080 user@your-host
 # open http://127.0.0.1:3080 in your local browser
 ```
 
-If you truly need to expose it on the host network, put an authenticated reverse proxy on the host
-(e.g. Caddy + basic auth) and consider dsh's `--trusted-host` option. See also
-[security.md](security.md) for the full security baseline.
+- when browsers access the UI from other machines, the `/api` browser-trust fence may require
+  `--trusted-host <host>:3080` (compose: `command: ["--trusted-host", "host:3080"]`;
+  quadlet: `Exec=--trusted-host host:3080`).
 
 ## 6. Offline use
 

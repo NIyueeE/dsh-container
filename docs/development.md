@@ -25,5 +25,5 @@ docs/
 
 ```sh
 just build   # build ghcr.io/niyueee/dsh-container:local locally
-just debug   # run in the foreground (host networking)
+just debug   # run in the foreground (bridge networking, port 3080 published)
 ```

@@ -32,6 +32,7 @@ All mutable components (base image / dsh / rust / uv) can be pinned with `--buil
 |---|---|---|
 | `DSH_HOME` | `/dsh` | dsh data directory (profiles / sessions / plugins); mount a persistent volume |
 | `DSH_AUTO_UPDATE` | `1` | Auto-update dsh to the latest npm release on boot; keeps the in-image version when offline or on failure |
+| `DSH_WEB_HOST` | `0.0.0.0` | `dsh web` bind host; `127.0.0.1` restores loopback-only (port mapping then won't work) |
 | `DSH_UPDATE_ONLY` | `0` | Set to `1` to only run the dsh update and exit (for timer/cron updates) |
 
 Extra `dsh web` arguments can be passed through the container `command`, e.g. `["--port", "8080"]`.
@@ -56,9 +57,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 ```
 
-> **Why host networking?** `dsh web` refuses to bind `0.0.0.0` for security reasons and only
-> listens on `127.0.0.1`, so both examples use host networking and the service appears directly at
-> `http://127.0.0.1:3080` on the host. See [security.md](docs/security.md) and the
+> **Networking** — Upstream `dsh web` binds `127.0.0.1` only; this image defaults to
+> `DSH_WEB_HOST=0.0.0.0` to work with plain bridge networking and port publishing, so both examples
+> publish port `3080`. See [security.md](docs/security.md) and the
 > [deployment guide](docs/deployment.md) for details.
 
 ## Documentation
@@ -66,7 +67,7 @@ sudo systemctl enable --now dsh.service
 | Document | Contents |
 |---|---|
 | [docs/deployment.md](docs/deployment.md) | Deployment & maintenance: prerequisites, Compose, Quadlet, auto-update, remote access, offline use, FAQ |
-| [docs/security.md](docs/security.md) | Security notes: host-network rationale, credentials, trusted workloads |
+| [docs/security.md](docs/security.md) | Security notes: network exposure tradeoff, credentials, trusted workloads |
 | [docs/build.md](docs/build.md) | Build configuration: build args, version pinning, reproducible builds |
 | [docs/releasing.md](docs/releasing.md) | Image tags, release workflow (GitHub Releases + version alignment), first-release manual steps |
 | [docs/design.md](docs/design.md) | Design references and related projects |
