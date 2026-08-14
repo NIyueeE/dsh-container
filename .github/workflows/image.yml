@@ -55,7 +55,7 @@ jobs:
         run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       # 版本号对齐(仅指镜像自身的版本): 打 v* tag 时, release 版本 ==
-      # 镜像 tag(v1.2.0) == OCI 版本 label(1.2.0); main 上 label 为 latest。
+      # 镜像 tag(v1.2.0) == OCI 版本 label(1.2.0); 非发布构建 label 为 latest。
       # 镜像版本与 dsh npm 版本完全解耦: dsh 版本由 DSH_VERSION 决定,
       # 默认构建时 npm latest + 运行时自动更新, 与 tag 无关。
       - name: Compute version metadata

@@ -24,6 +24,10 @@ docker compose -f examples/compose.yaml logs -f
 Open `http://127.0.0.1:3080`. On first use, follow the Web UI wizard to configure a model (API key)
 and pick a workspace.
 
+Images are published only by `v*` release tags; `:latest` points to the most recent release. Before
+the first release exists, replace the image tag with a published version or build locally
+(see [releasing.md](releasing.md) / [build.md](build.md)).
+
 - `compose.yaml` publishes port `3080` on the host (`ports: ["3080:3080"]`, plain bridge networking).
   Inside the container, a socat forwarder listens on `0.0.0.0` and forwards to dsh on `127.0.0.1`
   (`DSH_WEB_HOST`, see [security.md](security.md) for the exposure tradeoff):

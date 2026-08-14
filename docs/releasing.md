@@ -24,7 +24,7 @@ For a tag build, one version string flows through the image's own release:
 
 - git tag `v1.2.0` → Release page `v1.2.0` → image tag `ghcr.io/niyueee/dsh-container:v1.2.0`
 - OCI label `org.opencontainers.image.version` = `1.2.0` (leading `v` stripped), via the
-  `BUILD_VERSION` build arg (`latest` on main, matching the rolling tag)
+  `BUILD_VERSION` build arg (`latest` for non-release builds, which are never published)
 
 The image version is **decoupled from the dsh npm version**: `DSH_VERSION` is not derived from the
 tag. By default every build installs the npm `latest` at build time, and the runtime auto-update
