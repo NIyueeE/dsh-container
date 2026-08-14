@@ -3,6 +3,7 @@
 ## Directory structure
 
 ```
+AGENTS.md                # guidelines for agents working on this repo
 Containerfile            # image build (base image + rustup/uv + dsh + entrypoint)
 container/
   entrypoint.sh          # container entrypoint: auto-update + start dsh web
