@@ -19,14 +19,15 @@
 # 与镜像 tag 对齐; 未传时默认 latest。
 #
 # 运行时行为由 container/entrypoint.sh 控制:
-#   - 启动时自动把 dsh 更新到 npm 最新版(DSH_AUTO_UPDATE=1, 默认开启)
+#   - 启动时自动把 dsh 更新到 npm 最新版(DSH_AUTO_UPDATE=1, 默认开启; 只升不降)
 #   - DSH_HOME / DSH_WORKSPACE 默认取运行时用户 home 下的 dsh / workspace
 #     (universal 6.x = /home/codespace/dsh 与 /home/codespace/workspace,
 #     旧版 2.x = /home/vscode/...), 由 entrypoint 解析, 不烘焙进 ENV
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
 #     (npm 发布版与上游 main 均拒绝 --host 0.0.0.0: 上游有意为之的安全设计)
 #   - Caddy 反向代理监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后转发到 dsh 的
-#     127.0.0.1:3080。dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
+#     127.0.0.1:3080, 并对 UI 资源做 gzip 压缩(远端访问更快); 运行期崩溃自动重启。
+#     dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
 #     也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理
 #     (可配 basic auth), 见 docs/security.md
 
@@ -80,7 +81,8 @@ RUN set -eux; \
 
 # Caddy: 轻量反向代理(npm 发布版与上游 main 的 dsh 均拒绝 --host 0.0.0.0,
 # 由 entrypoint 用 Caddy 监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后
-# 转发到 127.0.0.1:3080, 并可选启用 basicauth)。
+# 转发到 127.0.0.1:3080, gzip 压缩 UI 资源并可选启用 basicauth; 运行期
+# 崩溃由 entrypoint 守护自动重启)。
 # 注意: 发行版 caddy 2.6 的 Caddyfile 认证指令是 basicauth(2.7 起才叫 basic_auth)。
 RUN apt-get update && apt-get install -y --no-install-recommends caddy \
     && rm -rf /var/lib/apt/lists/*
@@ -125,11 +127,12 @@ RUN --mount=type=cache,target=/opt/rustup-cache,id=rustup-${RUST_TOOLCHAIN} \
 RUN --mount=type=cache,target=/root/.npm,id=npm-${DSH_VERSION} \
     set -eux; \
     NPM_PREFIX="$(npm prefix -g)"; \
-    npm install --global --no-fund --no-audit "@deepseek-ai/dsh@${DSH_VERSION}"; \
-    # npm 11.16+ 的 allow-scripts 机制: 显式批准全部 install scripts,
-    # 固化允许列表(原生模块 node-pty/koffi 等依赖这些脚本), 也保证
-    # 容器内运行时 dsh 自动更新时脚本能正常执行。
-    npm approve-scripts --all >/dev/null 2>&1 || true; \
+    # --dangerously-allow-all-scripts: npm 11.16+ 的 allow-scripts 机制默认
+    # 放行未审批脚本, 但未来 npm 可能默认收紧(approve-scripts 明确不支持
+    # 全局安装, 报 EGLOBAL)。显式声明允许执行 install scripts(原生模块
+    # node-pty/koffi 等依赖), 使构建期与容器内运行时(uid 1000, 无 root)
+    # 的 dsh 自动更新行为一致, 不因审批策略静默产出原生模块缺失的坏安装。
+    npm install --global --no-fund --no-audit --dangerously-allow-all-scripts "@deepseek-ai/dsh@${DSH_VERSION}"; \
     case "$NPM_PREFIX" in \
       /usr/local|/usr) echo "WARN: npm prefix $NPM_PREFIX left root-owned" ;; \
       *) chown -R 1000:1000 "$NPM_PREFIX" ;; \
@@ -142,7 +145,9 @@ COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-update.sh /usr/local/bin/dsh-update
 RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
 
-WORKDIR /home/codespace/workspace
+# WORKDIR 仅作 docker exec 等场景的兜底(entrypoint 总会 cd 到 DSH_WORKSPACE);
+# 不用 /home/codespace/... 硬编码 —— legacy 2.x 基础镜像上没有该目录。
+WORKDIR /
 EXPOSE 3081
 
 # Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:3080(桥接 + 端口映射
