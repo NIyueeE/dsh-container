@@ -137,7 +137,9 @@ jobs:
             fi
             sleep 2
           done
-          if ! curl -fsS http://127.0.0.1:3081/ | grep -q '<title>DeepSeek Harness</title>'; then
+          # grep 不带 -q: -q 匹配即退出会让管道上游(docker exec/curl)写
+          # 入已关闭的管道触发 SIGPIPE(141), 在 set -euo pipefail 下误报失败。
+          if ! curl -fsS http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null; then
             echo "=== dsh-smoke container logs ===" >&2
             docker logs "$cid" >&2 2>&1 || true
             exit 1
@@ -162,10 +164,10 @@ jobs:
           # 全局 npm install(含 node-pty 等原生模块的 install scripts)全链路
           # 可用 —— 此前只验证了"已是最新"的空操作路径, 真正的安装从未被 CI 覆盖。
           docker exec "$cid" npm uninstall --global --no-fund --no-audit @deepseek-ai/dsh
-          docker exec "$cid" dsh-update | grep -Eq 'installing|installed|updating|already up to date'
+          docker exec "$cid" dsh-update | grep -E 'installing|installed|updating|already up to date'
           docker exec "$cid" dsh --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
           # 幂等: 再次运行不再安装
-          docker exec "$cid" dsh-update | grep -q 'already up to date'
+          docker exec "$cid" dsh-update | grep 'already up to date'
 
           # basic auth 模式: 未带凭据 401, 带凭据 200。
           auth_cid="$(docker run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
