@@ -71,26 +71,27 @@ esac
 # 退出, 不静默降级; 运行期崩溃由下方守护循环自动重启。
 mkdir -p /tmp/dsh-caddy
 CADDYFILE=/tmp/dsh-caddy/Caddyfile
+# 缩进用 tab(caddy fmt 规范), 避免启动时 "Caddyfile input is not formatted" 警告。
 cat > "$CADDYFILE" <<EOF
 {
-    admin off
-    auto_https off
+	admin off
+	auto_https off
 }
 :3081 {
-    encode gzip
-    reverse_proxy 127.0.0.1:$PORT {
-        header_up Host 127.0.0.1:$PORT
-        header_up Origin http://127.0.0.1:$PORT
-    }
+	encode gzip
+	reverse_proxy 127.0.0.1:$PORT {
+		header_up Host 127.0.0.1:$PORT
+		header_up Origin http://127.0.0.1:$PORT
+	}
 EOF
 if [ -n "${DSH_PROXY_USER:-}" ] && [ -n "${DSH_PROXY_PASSWORD:-}" ]; then
   PROXY_HASH="$(caddy hash-password --plaintext "$DSH_PROXY_PASSWORD" 2>/dev/null)"
   # 发行版 caddy 2.6 的 Caddyfile 指令是 basicauth(2.7 起才叫 basic_auth);
   # bcrypt 哈希以 $ 开头即 Modular Crypt Format, 直接写原样, 无需 base64/转义。
   cat >> "$CADDYFILE" <<EOF
-    basicauth {
-        $DSH_PROXY_USER $PROXY_HASH
-    }
+	basicauth {
+		$DSH_PROXY_USER $PROXY_HASH
+	}
 EOF
 fi
 cat >> "$CADDYFILE" <<'EOF'
