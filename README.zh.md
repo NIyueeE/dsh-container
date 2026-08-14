@@ -29,13 +29,17 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 |---|---|---|
 | `DSH_HOME` | `$HOME/dsh` | dsh 数据目录(profiles / sessions / 插件),由入口脚本按运行时用户 home 解析(universal 6.x 即 `/home/codespace/dsh`),建议挂载持久化卷 |
 | `DSH_WORKSPACE` | `$HOME/workspace` | 任务工作区,入口脚本自动创建并以此为工作目录(universal 6.x 即 `/home/codespace/workspace`) |
-| `DSH_TRUSTED_HOSTS` | *(空)* | 空格或逗号分隔的 `host[:port]` 信任列表,如 `192.168.1.50:3081 dsh.example.com`;每个条目转成 `--trusted-host`,供 `/api` 浏览器信任围栏放行非回环访问(见 [deployment.md](docs/deployment.md) 远程访问一节) |
+| `DSH_TRUSTED_HOSTS` | *(空)* | *(兼容保留)* 空格或逗号分隔的 `host[:port]` 列表,透传为 `--trusted-host`;代理已把请求改写为回环,一般不再需要,仅为裸透传场景保留 |
+| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(空)* | 启用对外代理的 basic_auth(建议启用):不启用时,能访问 3081 端口的任何人都可以驱动代理**并**读取/修改全部设置与凭据(见 [security.md](docs/security.md) 安全边界一节) |
 | `DSH_AUTO_UPDATE` | `1` | 容器启动时自动更新 dsh 到 npm 最新版;离线或失败时沿用镜像内版本 |
 | `DSH_UPDATE_ONLY` | `0` | 设为 `1` 时只执行 dsh 更新并退出(供 timer/cron 定时更新) |
 
-对外端口为 `3081`:容器内 socat 监听 `0.0.0.0:3081` 转发到 `dsh web` 的 `127.0.0.1:3080`
-(npm 发布版拒绝 `--host 0.0.0.0`;两端口错开,转发器可直接绑定通配地址)。`dsh web` 的附加
-参数可通过容器 `command` 透传,例如 `["--port", "8080"]`(只改 dsh 内部端口,对外端口仍是 3081)。
+对外端口为 `3081`:容器内 **Caddy 反向代理**监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为
+回环后转发到 `dsh web` 的 `127.0.0.1:3080`。dsh 的 `/api` 浏览器信任围栏只检查 HTTP 头,因此
+远程浏览器能通过全部接口 —— 包括设置/凭据等原本仅回环放行的方法。**代理因此成为安全边界**:
+能访问 3081 的人即拥有完全控制权,请启用 `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` 并用防火墙
+收口端口。`dsh web` 的附加参数可通过容器 `command` 透传,例如 `["--port", "8080"]`(只改
+dsh 内部端口,对外端口仍是 3081)。
 
 ## 快速开始
 
@@ -57,9 +61,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 ```
 
-> **网络** — `dsh web` 监听 `127.0.0.1`(npm 发布版拒绝 `--host 0.0.0.0`);入口脚本用 socat
-> 监听 `0.0.0.0:3081`(转发到 dsh 的 `127.0.0.1:3080`),因此两个编排示例都可以用普通桥接网络
-> 并发布端口 `3081`。详见 [security.md](docs/security.md) 与[部署指南](docs/deployment.md)。
+> **网络** — `dsh web` 监听 `127.0.0.1`(npm 发布版拒绝 `--host 0.0.0.0`);入口脚本用 Caddy
+> 反向代理监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为回环后转发到 dsh 的 `127.0.0.1:3080`,
+> 因此两个编排示例都可以用普通桥接网络并发布端口 `3081`。详见 [security.md](docs/security.md)
+> 与[部署指南](docs/deployment.md)。
 
 ## 文档
 

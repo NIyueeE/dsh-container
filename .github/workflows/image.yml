@@ -140,10 +140,41 @@ jobs:
           docker exec "$cid" node --version | grep -Eq '^v[0-9]+\.'
           docker exec "$cid" cargo --version | grep -Eq '^cargo [0-9]+\.'
           docker exec "$cid" uv --version | grep -Eq '^uv [0-9]+\.'
+          # Caddy 代理已在容器内运行(头改写链路)
+          docker exec "$cid" sh -c 'pgrep -x caddy >/dev/null'
+
+          # 头改写代理链路: settings.describe 属上游仅回环特权方法, 经代理
+          # 改写 Host/Origin 后应返回 200(远程访问全功能的核心保证)。
+          settings_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:3081/api/settings.describe -H 'content-type: application/json' \
+            --data '{"type":"client-request","rpcId":"1","method":"settings.describe","payload":{}}')"
+          [ "$settings_code" = "200" ]
 
           # 自动更新脚本幂等: 已是最新时输出 already up to date;
           # 若恰逢新版本发布也会正常升级并输出 updating/now。
           docker exec "$cid" dsh-update | grep -Eq 'already up to date|updating|^\[dsh-update\] now'
+
+          # basic_auth 模式: 未带凭据 401, 带凭据 200。
+          auth_cid="$(docker run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
+            -e DSH_HOME=/tmp/dsh-smoke-auth-home \
+            -e DSH_AUTO_UPDATE=0 \
+            -e DSH_PROXY_USER=smoke \
+            -e DSH_PROXY_PASSWORD=smoke-pass \
+            "$image")"
+          trap 'docker rm -f "$cid" "$auth_cid" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:3082/ 2>/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          unauth="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:3082/api/host.describe -H 'content-type: application/json' \
+            --data '{"type":"client-request","rpcId":"1","method":"host.describe","payload":{}}')"
+          auth="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass -X POST \
+            http://127.0.0.1:3082/api/host.describe -H 'content-type: application/json' \
+            --data '{"type":"client-request","rpcId":"1","method":"host.describe","payload":{}}')"
+          [ "$unauth" = "401" ] && [ "$auth" = "200" ]
 
       # 冒烟通过后才推送(正式发布): v* 版本 tag + sha + latest(指向最近一次发布,
       # 供示例直接拉取)。坏镜像不会进入 GHCR。

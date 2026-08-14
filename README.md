@@ -32,15 +32,19 @@ All mutable components (base image / dsh / rust / uv) can be pinned with `--buil
 |---|---|---|
 | `DSH_HOME` | `$HOME/dsh` | dsh data directory (profiles / sessions / plugins); resolved by the entrypoint from the runtime user's home (`/home/codespace/dsh` on universal 6.x); mount a persistent volume |
 | `DSH_WORKSPACE` | `$HOME/workspace` | Task workspace; the entrypoint creates it and runs dsh from it (`/home/codespace/workspace` on universal 6.x) |
-| `DSH_TRUSTED_HOSTS` | *(empty)* | Space- or comma-separated `host[:port]` authorities the `/api` browser-trust fence accepts, e.g. `192.168.1.50:3081 dsh.example.com`; each entry becomes `--trusted-host` (see [deployment.md](docs/deployment.md) "Remote access") |
+| `DSH_TRUSTED_HOSTS` | *(empty)* | *(compat)* Space- or comma-separated `host[:port]` authorities passed as `--trusted-host`; no longer needed because the proxy rewrites requests to loopback, retained for raw-passthrough setups |
+| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(empty)* | Enable basic auth on the exposed proxy (recommended): without it, anyone who can reach port `3081` can drive the agent **and** read/write all settings & credentials (see [security.md](docs/security.md) "Security boundary") |
 | `DSH_AUTO_UPDATE` | `1` | Auto-update dsh to the latest npm release on boot; keeps the in-image version when offline or on failure |
 | `DSH_UPDATE_ONLY` | `0` | Set to `1` to only run the dsh update and exit (for timer/cron updates) |
 
-The exposed port is `3081`: a socat forwarder inside the container listens on `0.0.0.0:3081` and
-forwards to `dsh web` on `127.0.0.1:3080` (npm releases reject `--host 0.0.0.0`; the ports differ so
-the forwarder can bind the wildcard address). Extra `dsh web` arguments can be passed through the
-container `command`, e.g. `["--port", "8080"]` (changes only dsh's internal port; the exposed port
-stays `3081`).
+The exposed port is `3081`: a **Caddy reverse proxy** inside the container listens on
+`0.0.0.0:3081` and forwards to `dsh web` on `127.0.0.1:3080`, rewriting `Host`/`Origin` to loopback.
+dsh's `/api` browser-trust fence checks HTTP headers only, so remote browsers pass every endpoint —
+including settings/credentials methods that are otherwise loopback-only. **The proxy is therefore
+the security boundary**: anyone who can reach `3081` gets full control, so enable
+`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` and keep the port firewalled. Extra `dsh web` arguments can
+be passed through the container `command`, e.g. `["--port", "8080"]` (changes only dsh's internal
+port; the exposed port stays `3081`).
 
 ## Quick start
 
@@ -63,9 +67,10 @@ sudo systemctl enable --now dsh.service
 ```
 
 > **Networking** — `dsh web` listens on `127.0.0.1` (npm releases reject `--host 0.0.0.0`); the
-> entrypoint runs a socat forwarder on `0.0.0.0:3081` (→ dsh's `127.0.0.1:3080`), so the examples
-> can use plain bridge networking with port `3081` published. See [security.md](docs/security.md)
-> and the [deployment guide](docs/deployment.md) for details.
+> entrypoint runs a Caddy reverse proxy on `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback
+> (→ dsh's `127.0.0.1:3080`), so the examples can use plain bridge networking with port `3081`
+> published. See [security.md](docs/security.md) and the
+> [deployment guide](docs/deployment.md) for details.
 
 ## Documentation
 

@@ -24,11 +24,13 @@
 #     (universal 6.x = /home/codespace/dsh 与 /home/codespace/workspace,
 #     旧版 2.x = /home/vscode/...), 由 entrypoint 解析, 不烘焙进 ENV
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
-#     (npm 发布版拒绝 --host 0.0.0.0, 上游 main 分支已支持但尚未发布)
-#   - socat 监听 0.0.0.0:3081 转发到 127.0.0.1:3080 对外暴露(端口错开,
-#     可直接绑定通配地址); 端口映射与示例统一用 3081
-#   - DSH_TRUSTED_HOSTS(空格/逗号分隔的 host[:port] 列表)逐个转成
-#     `dsh web --trusted-host`, 供 /api 浏览器信任围栏放行非回环访问
+#     (npm 发布版与上游 main 均拒绝 --host 0.0.0.0: 上游有意为之的安全设计)
+#   - Caddy 反向代理监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后转发到 dsh 的
+#     127.0.0.1:3080。dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
+#     也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理
+#     (可配 basic_auth), 见 docs/security.md
+#   - DSH_TRUSTED_HOSTS(空格/逗号分隔的 host[:port] 列表)仍可透传为
+#     `dsh web --trusted-host`(头改写后一般不再需要, 保留兼容)
 
 # ---- 构建参数(全部有默认值, 无硬编码) ------------------------------------
 # BASE_IMAGE / UV_VERSION 声明在 FROM 之前(全局作用域), 供 FROM 行使用;
@@ -78,9 +80,11 @@ RUN set -eux; \
     mkdir -p "$USER_HOME/dsh" "$USER_HOME/workspace"; \
     chown -R 1000:1000 "$USER_HOME/dsh" "$USER_HOME/workspace"
 
-# socat: 轻量端口转发(npm 发布版 dsh 拒绝 --host 0.0.0.0,
-# 由 entrypoint 用 socat 把 0.0.0.0:3081 转发到 127.0.0.1:3080)。
-RUN apt-get update && apt-get install -y --no-install-recommends socat \
+# Caddy: 轻量反向代理(npm 发布版与上游 main 的 dsh 均拒绝 --host 0.0.0.0,
+# 由 entrypoint 用 Caddy 监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后
+# 转发到 127.0.0.1:3080, 并可选启用 basicauth)。
+# 注意: 发行版 caddy 2.6 的 Caddyfile 认证指令是 basicauth(2.7 起才叫 basic_auth)。
+RUN apt-get update && apt-get install -y --no-install-recommends caddy \
     && rm -rf /var/lib/apt/lists/*
 
 # DSH_HOME / DSH_WORKSPACE 不烘焙: entrypoint 按运行时用户 home 解析默认值
@@ -143,10 +147,12 @@ RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
 WORKDIR /home/codespace/workspace
 EXPOSE 3081
 
-# socat 把 0.0.0.0:3081 转发到 dsh 的 127.0.0.1:3080(桥接 + 端口映射下即宿主
-# 127.0.0.1:3081); universal 自带 curl。健康检查走转发链路, 验证完整服务路径。
+# Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:3080(桥接 + 端口映射
+# 下即宿主 127.0.0.1:3081); universal 自带 curl。健康检查: dsh 直接可达
+# (127.0.0.1:3080)且代理有响应即可 —— 代理路径不要求 200, 因为启用 basic_auth
+# 时未带凭据的请求是 401, 但代理本身存活。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:3081/ >/dev/null || exit 1
+    CMD curl -fsS http://127.0.0.1:3080/ >/dev/null && curl -sS -o /dev/null http://127.0.0.1:3081/ >/dev/null || exit 1
 
 USER 1000
 ENTRYPOINT ["entrypoint"]

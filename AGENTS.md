@@ -34,20 +34,28 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    universal 6.x, `/home/vscode/...` on legacy 2.x), creates them, and `cd`s into the workspace
    (dsh's working directory is the agent's workspace).
 3. Runs `dsh-update` unless `DSH_AUTO_UPDATE=0` (offline-safe; keeps the in-image version on failure).
-4. Starts a socat forwarder: `0.0.0.0:3081` → `127.0.0.1:$PORT` (dsh's internal port, default 3080,
-   parsed from `--port` args). The ports deliberately differ so socat can bind the wildcard address.
+4. Starts a **Caddy reverse proxy**: listens on `0.0.0.0:3081` and forwards to dsh's
+   `127.0.0.1:$PORT` (default 3080, parsed from `--port` args), rewriting `Host`/`Origin` to
+   loopback. The Caddyfile is generated at runtime into `/tmp/dsh-caddy/Caddyfile`;
+   `DSH_PROXY_USER` + `DSH_PROXY_PASSWORD` add basic auth (Caddyfile `basicauth` directive on the
+   distro caddy 2.6 — renamed `basic_auth` upstream in 2.7; password bcrypt-hashed via
+   `caddy hash-password`).
 5. Starts `dsh web` with `--trusted-host` args derived from `DSH_TRUSTED_HOSTS` (space- or
-   comma-separated `host[:port]` list) plus any extra container `command` args.
+   comma-separated `host[:port]` list; retained for compatibility only) plus any extra container
+   `command` args.
 
 ### Hard constraints from upstream dsh (do not fight these)
 
-- **npm releases of `dsh` reject `--host 0.0.0.0`.** dsh always listens on `127.0.0.1` in this
-  image; the socat forwarder is the exposure mechanism and the only supported way to reach the UI
-  beyond loopback.
-- **`/api` browser-trust fence**: `dsh web` returns HTTP 403 for any request whose `Host` header is
-  neither loopback (`localhost`, `127.x`, `[::1]`) nor in `trustedHosts`. The container cannot
-  auto-derive LAN trust (that only happens when dsh itself binds `0.0.0.0`), so
-  `DSH_TRUSTED_HOSTS` / `--trusted-host` is the only way to allow non-loopback browsers.
+- **Both npm releases and upstream main of `dsh` reject `--host 0.0.0.0`** (intentional safety
+  design). dsh always listens on `127.0.0.1` in this image; the Caddy proxy is the exposure
+  mechanism.
+- **The `/api` browser-trust fence checks HTTP headers only** (`Host`/`Origin`/`sec-fetch-site`),
+  never the TCP source address. The proxy's loopback rewrite therefore passes every endpoint —
+  **including `PRIVILEGED_METHODS`** (`settings.*`, `credentials.*`, `agentPreset.*`,
+  `host.pickDirectory`/`host.openPath`, `llm.discoverModels`) that upstream hard-pins to loopback
+  via an empty trust list. This is intentional: the **proxy is the security boundary** — anyone
+  reaching `3081` can read/write all settings and credentials. Never present this as "secure by
+  default"; `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control.
 - dsh's agent workspace is the process cwd — the entrypoint must `cd "$DSH_WORKSPACE"`.
 
 ## Conventions
@@ -59,10 +67,10 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 - **Do not bake `DSH_HOME`/`DSH_WORKSPACE` into the image `ENV`** — entrypoint-side defaults are
   what keep legacy 2.x base images working.
 - **Ports**: exposed/external port is `3081`; `127.0.0.1:3080` is dsh's internal port only. Keep
-  them distinct everywhere. Do not reintroduce the old container-IP binding hack
-  (`hostname -I` + bind) — the port separation makes it unnecessary.
-- **`--trusted-host`/`DSH_TRUSTED_HOSTS` entries must use the exposed port** (`host:3081`) in all
-  examples and docs, because the fence matches the browser's `Host` header.
+  them distinct everywhere. The proxy binds `0.0.0.0:3081` because it differs from dsh's port —
+  do not reintroduce container-IP binding tricks.
+- **`DSH_TRUSTED_HOSTS`/`--trusted-host` is compatibility-only** now (the header rewrite makes the
+  fence see loopback); docs must not present it as the way to enable remote access.
 - **Keep examples and docs in sync with code.** Changing ports, env vars, defaults, or entrypoint
   behavior requires updating all of: `container/entrypoint.sh` header, `Containerfile` comments,
   `examples/compose.yaml`, `examples/dsh.container`, `README.md` + `README.zh.md`,
@@ -95,7 +103,8 @@ just update-only  # run dsh-update in a throwaway container
 3. No stale references to the old design: `DSH_WEB_HOST`, `/dsh` or `/workspace` mount targets,
    port-`3080` host mappings (grep the repo)
 4. README/README.zh parity: equal heading count, link count, and code-fence count
-5. If you changed networking/trust behavior, verify end to end: run the entrypoint with a
-   temporary `DSH_HOME`/`DSH_WORKSPACE` and `DSH_AUTO_UPDATE=0`, then curl the exposed port with
-   loopback, trusted, and untrusted `Host` headers (expect 200 / 200 / 403). Note the dev machine
-   may lack `socat` — stub it or test inside a container.
+5. If you changed networking/trust behavior, verify end to end in a container: a loopback-only
+   privileged method (`settings.describe`) must return **200 through the proxy** (header rewrite
+   works); with `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` set, the same request must return **401
+   without credentials and 200 with them**. Always test inside the built image (the dev machine
+   may lack `caddy`).

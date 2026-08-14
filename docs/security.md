@@ -5,20 +5,35 @@ day job — so follow this baseline when running it:
 
 ## Networking & exposure
 
-`dsh web` listens on `127.0.0.1` by default, and the npm releases reject `--host 0.0.0.0`
-(upstream main supports an explicit all-interface opt-in, but it is not published yet). This image
-exposes the UI anyway by running a small **socat forwarder** (`0.0.0.0:3081` → `127.0.0.1:3080`),
-and the orchestration examples publish port `3081` on plain bridge networking.
+`dsh web` listens on `127.0.0.1` by default, and both the npm releases and upstream main reject
+`--host 0.0.0.0` (an intentional upstream safety design: without an auth layer it would expose
+remote code execution to the network). This image exposes the UI through a **Caddy reverse proxy**
+(`0.0.0.0:3081` → `127.0.0.1:3080`), and the orchestration examples publish port `3081` on plain
+bridge networking.
 
-There is no TLS or authentication, so anyone who can reach port `3081` can drive the agent — remote
-code execution. This is an intentional design decision: the UI is reachable from the LAN out of the
-box, at the cost of network exposure — the host firewall is the first line of defense. Ways to
-tighten it:
+### The proxy is the security boundary
 
-- keep the published port host-only: `127.0.0.1:3081:3081` (compose) /
-  `PublishPort=127.0.0.1:3081:3081` (quadlet);
-- don't publish the port at all for loopback-only use (the `/api` trust fence already only allows
-  loopback hosts unless `DSH_TRUSTED_HOSTS` declares otherwise).
+The proxy rewrites the `Host` and `Origin` headers to loopback before forwarding. dsh's `/api`
+browser-trust fence checks **HTTP headers only** (it never looks at the connection's source
+address), so from dsh's point of view every proxied request comes from `127.0.0.1` and passes every
+endpoint — **including the settings/credentials methods that upstream deliberately pins to
+loopback** (`settings.*`, `credentials.*`, `agentPreset.*`, `host.pickDirectory`/`host.openPath`,
+`llm.discoverModels`). This is intentional: it makes remote access fully functional, but it means
+**the fence's loopback pin no longer protects anything** — whoever can reach port `3081` can read
+and modify all configuration and API credentials, not just drive the agent.
+
+Consequences:
+
+- **Enable basic auth** on the proxy by setting `DSH_PROXY_USER` and `DSH_PROXY_PASSWORD`
+  (recommended for any non-loopback deployment). Without it, anyone who can reach `3081` gets
+  full control — same exposure as before, plus settings/credentials.
+- Keep the host firewall closed for `3081` unless LAN access is actually needed.
+- For anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) or an
+  SSH tunnel in front — don't rely on the raw port; there is still no TLS on `3081` itself.
+- Loopback-only hardening still applies: publish host-only (`127.0.0.1:3081:3081`) or don't
+  publish the port at all.
+- `DSH_TRUSTED_HOSTS` is retained only for compatibility (raw `--trusted-host` passthrough);
+  it is **not** a substitute for the proxy's auth.
 
 ## Don't mount host credentials
 
@@ -43,6 +58,6 @@ With bridge networking the service is LAN-reachable by default, so treat it like
 - keep port `3081` closed in the host firewall unless LAN access is actually needed;
 - for anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) on the
   host, or use an SSH tunnel — don't rely on the raw port;
-- when browsers access the UI from other machines, the `/api` browser-trust fence may require
-  declaring the access authority via `DSH_TRUSTED_HOSTS` (e.g. `Environment=DSH_TRUSTED_HOSTS=host:3081`;
-  space- or comma-separated `host[:port]` list).
+- enable the proxy's own basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) for any
+  non-loopback deployment; remote browsers then get full functionality, including settings and
+  credentials.

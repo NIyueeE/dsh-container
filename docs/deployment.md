@@ -29,12 +29,12 @@ the first release exists, replace the image tag with a published version or buil
 (see [releasing.md](releasing.md) / [build.md](build.md)).
 
 - `compose.yaml` publishes port `3081` on the host (`ports: ["3081:3081"]`, plain bridge networking).
-  Inside the container, a socat forwarder listens on `0.0.0.0:3081` and forwards to dsh on
-  `127.0.0.1:3080` — the ports deliberately differ, so the forwarder can bind the wildcard address
-  (see [security.md](security.md) for the exposure tradeoff):
+  Inside the container, a **Caddy reverse proxy** listens on `0.0.0.0:3081`, rewrites `Host`/`Origin`
+  to loopback, and forwards to dsh on `127.0.0.1:3080` — so remote browsers pass every endpoint,
+  including settings/credentials (see [security.md](security.md) — the proxy is the security
+  boundary; enable `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`):
   - host-only publishing: change the mapping to `"127.0.0.1:3081:3081"`;
-  - loopback-only: just don't publish the port (the `/api` trust fence already only allows loopback
-    unless `DSH_TRUSTED_HOSTS` declares otherwise).
+  - loopback-only: just don't publish the port.
 - Data persistence: the `dsh-home` named volume holds `$DSH_HOME` (default `$HOME/dsh`, i.e.
   `/home/codespace/dsh` on universal 6.x — profiles / sessions / plugins); `./workspace` is
   bind-mounted to `/home/codespace/workspace` (default `$DSH_WORKSPACE`) as the task workspace.
@@ -81,11 +81,14 @@ Two layers that don't conflict:
 
 ## 5. Remote access
 
-With bridge networking the service is LAN-reachable by default (port `3081` published; a socat
-forwarder on `0.0.0.0:3081` exposes the UI — see [security.md](security.md)).
-Treat it like any network service:
+With bridge networking the service is LAN-reachable by default (port `3081` published; a Caddy
+reverse proxy on `0.0.0.0:3081` rewrites `Host`/`Origin` to loopback and exposes the UI — see
+[security.md](security.md)). Treat it like any network service:
 
 - keep port `3081` closed in the host firewall unless LAN access is actually needed;
+- **enable the proxy's basic auth** (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) for any non-loopback
+  deployment — the header rewrite means anyone reaching `3081` can read/write settings and
+  credentials;
 - for anything beyond the LAN, use an authenticated reverse proxy on the host (e.g. Caddy + basic
   auth) or an SSH tunnel:
 
@@ -94,10 +97,8 @@ ssh -L 3081:127.0.0.1:3081 user@your-host
 # open http://127.0.0.1:3081 in your local browser
 ```
 
-- when browsers access the UI from other machines, the `/api` browser-trust fence may require
-  declaring the access authority: compose `environment: DSH_TRUSTED_HOSTS: "host:3081"`; quadlet
-  `Environment=DSH_TRUSTED_HOSTS=host:3081` (space- or comma-separated list of `host[:port]`; the
-  raw `--trusted-host` flag also passes through via the container `command` / `Exec=`).
+- `DSH_TRUSTED_HOSTS` / `--trusted-host` is no longer required for remote access (the proxy makes
+  every request look loopback); it is retained only for raw passthrough compatibility.
 
 ## 6. Offline use
 
@@ -113,14 +114,21 @@ The host workspace directory (bind-mounted to `/home/codespace/workspace`, defau
 must be owned by uid 1000: `sudo chown -R 1000:1000 workspace`.
 
 **Port 3081 already in use**
-The exposed port is `3081` (socat forwarder → dsh's `127.0.0.1:3080` inside the container). Change
+The exposed port is `3081` (Caddy proxy → dsh's `127.0.0.1:3080` inside the container). Change
 the host-side mapping instead: compose `ports: ["4081:3081"]`, quadlet `PublishPort=4081:3081`,
 then use the new port. To move dsh's internal port, pass `command: ["--port", "8080"]` /
-`Exec=--port 8080` — the forwarder follows automatically, but keep it different from `3081`.
+`Exec=--port 8080` — the proxy follows automatically, but keep it different from `3081`.
 
 **`npm registry unreachable` in the startup logs**
 The container couldn't reach the npm registry and kept the in-image dsh version; restart after
 network is restored.
+
+**Remote access fails with `transport failure for /api/...: HTTP 403`**
+That was the `/api` browser-trust fence rejecting non-loopback `Host` headers (settings/credentials
+methods are additionally hard-pinned to loopback by upstream dsh). The in-container Caddy proxy
+(which rewrites `Host`/`Origin` to loopback) fixes this: remote browsers pass every endpoint. If
+you still see 403, verify you are running an image that contains the Caddy proxy and that the
+browser reaches the published port `3081`.
 
 **Podman rootless + bind mounts**
 Make sure the directory is owned by your uid and readable by the container; keep the `:Z` label
