@@ -1,19 +1,18 @@
 # dsh 容器镜像常用命令(需 podman 或 docker)
 
-container := if command -v podman >/dev/null 2>&1 { "podman" } else { "docker" }
+container := `command -v podman >/dev/null 2>&1 && echo podman || echo docker`
+build_format := if container == "podman" { "--format docker" } else { "" }
 
-# 本地构建镜像(不推送)。--format docker 保留 HEALTHCHECK
-# (podman 默认 OCI 格式会丢弃 HEALTHCHECK, 与 GHCR 发布镜像保持一致)。
+# 本地构建镜像(不推送)。podman 必须用 --format docker 保留 HEALTHCHECK
+# (podman 默认 OCI 格式会丢弃 HEALTHCHECK); docker 不支持该 flag, 因此条件传入。
 build:
-    {{container}} build --format docker -t ghcr.io/niyueee/dsh-container:local .
+    {{container}} build {{build_format}} -t ghcr.io/niyueee/dsh-container:local .
 
-# 前台调试运行(桥接 + 端口映射, 关闭自动更新, 数据放临时目录)
+# 前台调试运行(桥接 + 端口映射; --rm 退出后用户层改动随容器丢弃)
 debug:
     {{container}} run --rm -p 3081:3081 \
-        -e DSH_HOME=/tmp/dsh-debug-home \
-        -e DSH_AUTO_UPDATE=0 \
         ghcr.io/niyueee/dsh-container:local
 
-# 仅执行 dsh 自动更新后退出(可用 cron/timer 定时调用)
-update-only:
-    {{container}} run --rm -e DSH_UPDATE_ONLY=1 ghcr.io/niyueee/dsh-container:latest
+# 更新正在运行的 dsh 容器内的全局 npm 包(运行中的 dsh web 需重启后生效)
+update-dsh:
+    {{container}} exec dsh dsh-update

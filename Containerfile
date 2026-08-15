@@ -7,122 +7,158 @@
 # 在此之上补装 Rust/cargo 与 uv, 并按官方仓库
 # https://github.com/deepseek-ai/deepseek-harness 介绍的 npm 方式安装 dsh。
 #
-# 可复现性: 基础镜像 tag、uv、rust 工具链、dsh 版本全部支持构建参数固定
-# (CI 只传 BUILD_GIT_SHA/REF、BUILD_VERSION, 以及可选的仓库变量 DSH_VERSION,
-# 其余用默认值):
-#   podman build --build-arg BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:6.1.1-noble \
+# 可复现性: 基础镜像 tag、rust 工具链、dsh 顶层版本均可通过构建参数固定;
+# rustup/uv/pnpm 按官方脚本安装, 版本不固定(用户级工具, 随 /home/codespace
+# 数据卷持久化, 可由用户自行更新)。Caddy/podman 来自 apt 仓库, npm 全局安装
+# 没有 lockfile, 因此默认构建不是逐字节可复现, 生产发布建议固定 DSH_VERSION:
+#   podman build --format docker \
 #                --build-arg DSH_VERSION=0.1.0-rc.6 \
 #                --build-arg RUST_TOOLCHAIN=1.88.0 \
-#                --build-arg UV_VERSION=0.12.3 \
 #                -t dsh-container .
+# --format docker 不能省略: podman 默认 OCI 格式会丢弃 HEALTHCHECK。
 # BUILD_VERSION 写入 OCI 版本 label: CI 打 v* tag 时传 release 版本(如 1.2.0),
 # 与镜像 tag 对齐; 未传时默认 latest。
 #
 # 运行时行为由 container/entrypoint.sh 控制:
-#   - 启动时自动把 dsh 更新到 npm 最新版(DSH_AUTO_UPDATE=1, 默认开启; 只升不降)
-#   - DSH_HOME / DSH_WORKSPACE 默认取运行时用户 home 下的 dsh / workspace
-#     (universal 6.x = /home/codespace/dsh 与 /home/codespace/workspace,
-#     旧版 2.x = /home/vscode/...), 由 entrypoint 解析, 不烘焙进 ENV
+#   - dsh 数据目录使用上游默认 ~/.dsh(即 /home/codespace/.dsh), 不设 DSH_HOME;
+#     进程 cwd 直接使用 $HOME, 不预创建固定工作区子目录
+#   - 持久化策略: 把整个 /home/codespace 挂载为数据卷, 用户态工具/缓存/配置
+#     都保留; 系统层(/usr/local、apt 包)随镜像更新重置。Rust/cargo、uv、pnpm
+#     均安装为 codespace 用户级工具: ~/.rustup + ~/.cargo、~/.local、~/.local/share/pnpm
+#   - 启动时默认不自动更新 dsh(DSH_AUTO_UPDATE=0, 镜像 tag 决定版本);
+#     显式设置 DSH_AUTO_UPDATE=1 时启动时更新到 npm latest(只升不降)
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
 #     (npm 发布版与上游 main 均拒绝 --host 0.0.0.0: 上游有意为之的安全设计)
 #   - Caddy 反向代理监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后转发到 dsh 的
 #     127.0.0.1:3080, 并对 UI 资源做 gzip 压缩(远端访问更快); 运行期崩溃自动重启。
 #     dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
-#     也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理
-#     (可配 basic auth), 见 docs/security.md
+#     也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理。
+#     DSH_PROXY_USER + DSH_PROXY_PASSWORD 必须成对设置以启用 basic auth,
+#     只设置一个会直接拒绝启动, 见 docs/security.md
 
-# ---- 构建参数(全部有默认值, 无硬编码) ------------------------------------
-# BASE_IMAGE / UV_VERSION 声明在 FROM 之前(全局作用域), 供 FROM 行使用;
-# 其余 ARG 在 FROM 之后重新声明才对本阶段可见。
-# 默认 latest(当前与 6.1.1-noble 同 digest); 需要可复现构建时固定精确 tag, 例如:
-#   --build-arg BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:6.1.1-noble
-ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:latest
-ARG UV_VERSION=0.12.3
-
-# uv 固定版本: BuildKit 不支持 COPY --from 里的变量展开, 用独立 stage 规避
-# (FROM 行支持全局 ARG 展开)。
-FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-stage
+# ---- 构建参数(全部有默认值) ----------------------------------------------
+# BASE_IMAGE 声明在 FROM 之前(全局作用域), 供 FROM 行使用; 其余 ARG 在 FROM
+# 之后重新声明才对本阶段可见。基础镜像默认固定 6.1.1-noble, 与 examples 中
+# 的 /home/codespace 用户层约定一致; 可用 BASE_IMAGE 覆盖。
+ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/universal:6.1.1-noble
 
 FROM ${BASE_IMAGE}
 
 ARG DSH_VERSION=latest
 ARG BUILD_VERSION=latest
 ARG RUST_TOOLCHAIN=stable
-ARG UV_VERSION=0.12.3
 ARG BUILD_GIT_SHA=unknown
 ARG BUILD_GIT_REF=unknown
 
 LABEL org.opencontainers.image.title="DeepSeek Harness (dsh) container image" \
-      org.opencontainers.image.description="Universal dev-container based image for the DeepSeek Harness Web UI, with dsh auto-update on boot" \
+      org.opencontainers.image.description="Universal dev-container based image for the DeepSeek Harness Web UI, with optional dsh auto-update on boot" \
       org.opencontainers.image.source="https://github.com/niyueee/dsh-container" \
       org.opencontainers.image.version="${BUILD_VERSION}" \
-      org.opencontainers.image.revision="${BUILD_GIT_SHA}"
+      org.opencontainers.image.revision="${BUILD_GIT_SHA}" \
+      org.opencontainers.image.ref.name="${BUILD_GIT_REF}"
 
 # ---------------------------------------------------------------------------
-# 运行时用户
-# universal 6.x 的用户是 codespace、旧版 2.x 是 vscode, 均为 uid 1000;
-# 找不到 uid 1000 用户时兜底创建 dsh 用户。用户名写入 /etc/dsh-container-user。
+# 运行时用户: 基础镜像固定为 universal 6.1.1-noble, 用户是 codespace(uid 1000)。
 # ---------------------------------------------------------------------------
-RUN set -eux; \
-    if id 1000 >/dev/null 2>&1; then \
-        getent passwd 1000 | cut -d: -f1 > /etc/dsh-container-user; \
-    else \
-        useradd -m -u 1000 -s /bin/bash dsh; \
-        echo dsh > /etc/dsh-container-user; \
-    fi
 
-# dsh 数据目录(profiles / sessions / 插件)与默认工作区: 建在运行时用户 home
-# 下($HOME/dsh、$HOME/workspace; universal 6.x 即 /home/codespace/...),
-# 归运行时用户所有。entrypoint 按同一规则解析默认值(见上), 两处保持一致。
+# 用户层状态目录: 整个 home 会被数据卷持久化, 这里预创建默认目录并归运行时
+# 用户所有。dsh 数据用上游默认 ~/.dsh, cargo 缓存用默认 ~/.cargo; 不预创建
+# 固定工作区, dsh 运行时直接以 $HOME 为 cwd 并按需创建目录。
 RUN set -eux; \
-    USER_HOME="$(getent passwd "$(cat /etc/dsh-container-user)" | cut -d: -f6)"; \
-    mkdir -p "$USER_HOME/dsh" "$USER_HOME/workspace"; \
-    chown -R 1000:1000 "$USER_HOME/dsh" "$USER_HOME/workspace"
+    mkdir -p /home/codespace/.dsh /home/codespace/.cargo \
+             /home/codespace/.local/bin /home/codespace/.local/share/pnpm; \
+    chown -R 1000:1000 /home/codespace/.dsh /home/codespace/.cargo /home/codespace/.local
 
 # Caddy: 轻量反向代理(npm 发布版与上游 main 的 dsh 均拒绝 --host 0.0.0.0,
 # 由 entrypoint 用 Caddy 监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后
 # 转发到 127.0.0.1:3080, gzip 压缩 UI 资源并可选启用 basicauth; 运行期
 # 崩溃由 entrypoint 守护自动重启)。
 # 注意: 发行版 caddy 2.6 的 Caddyfile 认证指令是 basicauth(2.7 起才叫 basic_auth)。
-RUN apt-get update && apt-get install -y --no-install-recommends caddy \
-    && rm -rf /var/lib/apt/lists/*
+# podman 作为容器内 rootless 容器开发工具; 同时安装 rootless 网络/存储依赖,
+# 并为运行时用户写入 subuid/subgid 映射。宿主运行时是否允许嵌套用户命名空间
+# 取决于 Docker/Podman 的 seccomp/userns 配置, 见 docs/security.md。
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends caddy; \
+    apt-get install -y podman fuse-overlayfs; \
+    rm -rf /var/lib/apt/lists/*; \
+    touch /etc/subuid /etc/subgid; \
+    if ! grep -q '^codespace:' /etc/subuid; then \
+        usermod --add-subuids 100000-165535 --add-subgids 100000-165535 codespace; \
+    fi; \
+    podman --version
 
-# DSH_HOME / DSH_WORKSPACE 不烘焙: entrypoint 按运行时用户 home 解析默认值
-# (universal 6.x = /home/codespace/dsh 与 /home/codespace/workspace), 使
-# 旧版 2.x(vscode 用户)等其它基础镜像自动跟随其 home; 显式设置的环境变量优先。
-ENV DSH_AUTO_UPDATE=1 \
-    RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo
+# 用户级工具目录: Rust/cargo、pnpm 都放在 /home/codespace 的持久化用户层。
+# 这些 ENV 只是工具自身的默认值, 不属于对用户暴露的 dsh 配置面。
+# DSH_AUTO_UPDATE 默认 0: 镜像 tag 决定 dsh 版本; 需要启动时追 npm latest 才设 1。
+ENV DSH_AUTO_UPDATE=0 \
+    RUSTUP_HOME=/home/codespace/.rustup \
+    CARGO_HOME=/home/codespace/.cargo \
+    PNPM_HOME=/home/codespace/.local/share/pnpm
 
 # ---------------------------------------------------------------------------
-# 场景开发环境补装
-# universal 镜像未包含 Rust/cargo 与 uv; 按场景需求补齐。
-# uv 从上面的 uv-stage COPY 固定版本(比 curl|sh 更可复现、更快)。
-# rustup 安装固定工具链: 注意 --mount=type=cache 的内容不会进入镜像层,
-# 因此缓存挂载放在独立的 /opt 缓存目录, 装完后 cp -a 拷回 /usr/local
-# (真实镜像层), 再建 /usr/local/bin 符号链接供运行时用户(uid 1000)使用。
+# Node.js: 使用 universal 自带 nvm 安装最新 LTS(稳定版), 作为系统层运行时。
 # ---------------------------------------------------------------------------
-COPY --from=uv-stage /uv /uvx /bin/
+RUN set -eux; \
+    export NVM_DIR=/usr/local/share/nvm; \
+    . "$NVM_DIR/nvm.sh"; \
+    nvm install --lts --no-progress; \
+    nvm alias default 'lts/*'; \
+    node --version; \
+    npm --version
 
-RUN --mount=type=cache,target=/opt/rustup-cache,id=rustup-${RUST_TOOLCHAIN} \
-    --mount=type=cache,target=/opt/cargo-cache,id=cargo-${RUST_TOOLCHAIN} \
-    set -eux; \
-    mkdir -p /usr/local/rustup /usr/local/cargo; \
-    RUSTUP_HOME=/opt/rustup-cache CARGO_HOME=/opt/cargo-cache \
-        curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
-            --no-modify-path --default-toolchain "${RUST_TOOLCHAIN}"; \
-    cp -a /opt/rustup-cache/. /usr/local/rustup/; \
-    cp -a /opt/cargo-cache/. /usr/local/cargo/; \
-    for b in /usr/local/cargo/bin/*; do ln -s "$b" /usr/local/bin/; done; \
+# ---------------------------------------------------------------------------
+# pnpm: 通过 npm 安装到用户级 PNPM_HOME, 再把 bin 链到 ~/.local/bin 和
+# /usr/local/bin(后者让 docker exec 等不经过 entrypoint 的进程也能找到)。
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    USER_HOME=/home/codespace; \
+    PNPM_HOME="$USER_HOME/.local/share/pnpm"; \
+    USER_BIN="$USER_HOME/.local/bin"; \
+    mkdir -p "$PNPM_HOME" "$USER_BIN"; \
+    npm install --global --prefix "$PNPM_HOME" --no-fund --no-audit pnpm; \
+    ln -sfn "$PNPM_HOME/bin/pnpm" "$USER_BIN/pnpm"; \
+    ln -sfn "$USER_BIN/pnpm" /usr/local/bin/pnpm; \
+    chown -R 1000:1000 "$USER_HOME/.local"; \
+    HOME="$USER_HOME" PNPM_HOME="$PNPM_HOME" pnpm --version
+
+# ---------------------------------------------------------------------------
+# Rust/cargo: 官方 rustup 脚本, 工具链与 cargo home 都在用户目录。
+# 通过 /usr/local/bin 建立系统层符号链接, 保证 docker exec 也可直接用。
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    USER_HOME=/home/codespace; \
+    export HOME="$USER_HOME"; \
+    export RUSTUP_HOME="$USER_HOME/.rustup"; \
+    export CARGO_HOME="$USER_HOME/.cargo"; \
+    mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"; \
+    bash -o pipefail -c \
+        'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path --default-toolchain "${RUST_TOOLCHAIN}"'; \
+    for b in "$CARGO_HOME/bin/"*; do ln -sfn "$b" /usr/local/bin/; done; \
+    chown -R 1000:1000 "$RUSTUP_HOME" "$CARGO_HOME"; \
     rustc --version; \
-    cargo --version; \
-    uv --version
+    cargo --version
+
+# ---------------------------------------------------------------------------
+# uv: 官方安装脚本, 二进制放 ~/.local/bin; Python/tool 数据使用 uv 默认的
+# ~/.local/share/uv 与 ~/.cache/uv(当前 uv 0.x 没有统一的 UV_HOME 变量)。
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    USER_HOME=/home/codespace; \
+    USER_BIN="$USER_HOME/.local/bin"; \
+    mkdir -p "$USER_BIN"; \
+    HOME="$USER_HOME" UV_INSTALL_DIR="$USER_BIN" \
+        bash -o pipefail -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; \
+    ln -sfn "$USER_BIN/uv" /usr/local/bin/uv; \
+    ln -sfn "$USER_BIN/uvx" /usr/local/bin/uvx; \
+    chown -R 1000:1000 "$USER_HOME/.local"; \
+    HOME="$USER_HOME" uv --version
 
 # ---------------------------------------------------------------------------
 # 安装 dsh(官方 README 的 npm 方式: 安装 Node.js 后 npm/npx 安装 @deepseek-ai/dsh)
-# 不指定 DSH_VERSION 时安装 npm 最新版; 运行时仍可自动更新(container/dsh-update.sh),
-# 离线/可复现部署可用 DSH_VERSION 固定 + 运行时 DSH_AUTO_UPDATE=0。
-# npm 全局目录 chown 给 uid 1000, 使容器内的 dsh 自动更新无需 root。
+# 不指定 DSH_VERSION 时安装 npm 最新版。运行时默认不自动更新(DSH_AUTO_UPDATE=0);
+# 显式设置 DSH_AUTO_UPDATE=1 时由 container/dsh-update.sh 在启动时更新。
+# npm 全局目录 chown 给 uid 1000, 使自动更新无需 root。
 # ---------------------------------------------------------------------------
 RUN --mount=type=cache,target=/root/.npm,id=npm-${DSH_VERSION} \
     set -eux; \
@@ -145,8 +181,7 @@ COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-update.sh /usr/local/bin/dsh-update
 RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
 
-# WORKDIR 仅作 docker exec 等场景的兜底(entrypoint 总会 cd 到 DSH_WORKSPACE);
-# 不用 /home/codespace/... 硬编码 —— legacy 2.x 基础镜像上没有该目录。
+# WORKDIR 仅作 docker exec 等场景的兜底(entrypoint 总会 cd 到 $HOME)。
 WORKDIR /
 EXPOSE 3081
 

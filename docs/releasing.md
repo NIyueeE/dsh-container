@@ -27,23 +27,11 @@ For a tag build, one version string flows through the image's own release:
   `BUILD_VERSION` build arg (`latest` for non-release builds, which are never published)
 
 The image version is **decoupled from the dsh npm version**: `DSH_VERSION` is not derived from the
-tag. By default every build installs the npm `latest` at build time, and the runtime auto-update
-(`DSH_AUTO_UPDATE=1`) keeps dsh current on each boot. To pin dsh inside a published image, set the
-repository variable **`DSH_VERSION`** (Settings → Variables → Actions); CI passes it as a build arg
-when set. Local/manual builds can pin directly with `--build-arg DSH_VERSION=x.y.z`
-(see [build.md](build.md)).
-
-## First release (one-time manual step)
-
-GHCR packages default to **private**, and GitHub has removed the REST API endpoint for changing
-package visibility (both `POST` and `PATCH /user/packages/container/<name>/visibility` return 404).
-After the first CI publish, the repository owner must manually make the package **public** once —
-the package is already linked to this repository via the `org.opencontainers.image.source` label,
-and access inherits from the repo; only the visibility needs to be set manually:
-
-1. Open <https://github.com/users/NIyueeE/packages/container/package/dsh-container/settings>
-2. **Danger Zone → Change visibility → Public**
-3. Afterwards `docker pull ghcr.io/niyueee/dsh-container:latest` should work anonymously.
+tag. By default every build installs the npm `latest` at build time, and runtime auto-update is off
+(`DSH_AUTO_UPDATE=0`), so the installed version stays put until the next image release. To pin dsh
+inside a published image, set the repository variable **`DSH_VERSION`** (Settings → Variables →
+Actions); CI passes it as a build arg when set. Local/manual builds can pin directly with
+`--build-arg DSH_VERSION=x.y.z` (see [build.md](build.md)).
 
 ## Cleaning up published images
 
@@ -55,15 +43,14 @@ Deleting package versions requires the `read:packages` / `delete:packages` scope
 gh api /user/packages/container/dsh-container/versions \
   --jq '.[] | "\(.id)  \(.name)  tags=\([.metadata.container.tags[]] | join(","))"'
 
-# 2. delete every version (keeps the package record and its public visibility)
+# 2. delete every version
 gh api /user/packages/container/dsh-container/versions --jq '.[].id' | while read -r id; do
   gh api --method DELETE "/user/packages/container/dsh-container/versions/$id" >/dev/null \
     && echo "deleted version $id"
 done
 ```
 
-- Deleting **versions** keeps the package (and its public visibility); the next release tag
-  recreates `v*` + `<sha>` + `latest`.
-- Deleting the **whole package** (`gh api --method DELETE /user/packages/container/dsh-container`)
-  also drops the visibility setting — a freshly published package defaults back to **private** and
-  the "First release" manual step must be repeated.
+- Deleting **versions** keeps the package; the next release tag recreates `v*` + `<sha>` +
+  `latest`.
+- Deleting the **whole package** removes its settings too; after recreating the package, set its
+  visibility in the GitHub package settings if public pulls are needed.

@@ -3,7 +3,7 @@
 The image follows patterns proven by similar agent-container projects and official documentation:
 
 - [OpenHands agent-server image](https://github.com/OpenHands/software-agent-sdk) — parameterized builds,
-  pinned tool versions, `COPY --from` for uv, cache mounts, OCI labels, fail-fast builds;
+  official installers, OCI labels, fail-fast builds;
 - [mattolson/agent-sandbox](https://github.com/mattolson/agent-sandbox) — pinned tool versions, a separate
   persistent state volume, and a sandbox that grants only minimal filesystem/network access;
 - [Claude Code dev container documentation](https://code.claude.com/docs/en/devcontainer) — auth/state volume

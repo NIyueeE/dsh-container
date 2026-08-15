@@ -6,27 +6,22 @@ the Compose example also works on Docker Desktop for macOS/Windows).
 ## 1. Prerequisites
 
 - Linux host (Docker Engine ≥ 24 or Podman ≥ 4.4) — or Docker Desktop for the Compose example
-- Access to `ghcr.io` and `registry.npmjs.org` (the dsh auto-update on container start needs the npm
-  registry; offline environments: see "Offline use" below)
+- Access to `ghcr.io`; `registry.npmjs.org` is only needed if you set `DSH_AUTO_UPDATE=1`
 - Port `3081` free (the exposed port; dsh itself listens on `127.0.0.1:3080` inside the container)
+- In-container rootless podman needs a host runtime that allows nested user namespaces (Docker's
+  default seccomp profile may block it); see [security.md](security.md)
 
 ## 2. Docker Compose deployment
 
 ```bash
-# Workspace directory: the in-container user is uid 1000, so align host ownership
-mkdir -p workspace
-sudo chown -R 1000:1000 workspace
-
 docker compose -f examples/compose.yaml up -d
 docker compose -f examples/compose.yaml logs -f
 ```
 
 Open `http://127.0.0.1:3081`. On first use, follow the Web UI wizard to configure a model (API key)
-and pick a workspace.
+and pick a working directory under `/home/codespace` (dsh creates folders there as needed).
 
-Images are published only by `v*` release tags; `:latest` points to the most recent release. Before
-the first release exists, replace the image tag with a published version or build locally
-(see [releasing.md](releasing.md) / [build.md](build.md)).
+Images are published by `v*` release tags; `:latest` points to the most recent release.
 
 - `compose.yaml` publishes port `3081` on the host (`ports: ["3081:3081"]`, plain bridge networking).
   Inside the container, a **Caddy reverse proxy** listens on `0.0.0.0:3081`, rewrites `Host`/`Origin`
@@ -34,18 +29,22 @@ the first release exists, replace the image tag with a published version or buil
   including settings/credentials (see [security.md](security.md) — the proxy is the security
   boundary; enable `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`):
   - host-only publishing: change the mapping to `"127.0.0.1:3081:3081"`;
-  - loopback-only: just don't publish the port.
-- Data persistence: the `dsh-home` named volume holds `$DSH_HOME` (default `$HOME/dsh`, i.e.
-  `/home/codespace/dsh` on universal 6.x — profiles / sessions / plugins); `./workspace` is
-  bind-mounted to `/home/codespace/workspace` (default `$DSH_WORKSPACE`) as the task workspace.
-- On SELinux hosts (Fedora etc.) keep the `:Z` label in the volume definitions.
+  - container-only (not reachable from the host): just don't publish the port.
+- Data persistence: the `dsh-home` volume is mounted on the **whole `/home/codespace` directory**.
+  This is the immutable-image user layer: `~/.dsh` (profiles / sessions / plugins / credentials),
+  `~/.cargo`, npm cache, dotfiles, and any folders dsh creates under `$HOME` survive image
+  upgrades, while the system layer (`/usr/local`, apt packages) comes from the new image. To
+  access those files directly from the host, switch the volume to a bind mount at `/home/codespace`
+  and keep it owned by uid 1000; on SELinux hosts keep `:Z` in that bind-mount definition. An
+  empty bind mount hides the image-baked user-level tools (`~/.rustup`, `~/.cargo`, `~/.local`,
+  pnpm), so prefer the named volume on first start, or copy `/home/codespace` out of the image
+  into the host directory first.
 
 ## 3. Podman Quadlet deployment (recommended)
 
 ```bash
 sudo mkdir -p /etc/containers/systemd
 sudo cp examples/dsh.container /etc/containers/systemd/
-# adjust /home/you/workspace in examples/dsh.container to your workspace path
 sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 
@@ -55,7 +54,9 @@ journalctl -u dsh.service -f
 
 - `dsh.container` publishes port `3081` via `PublishPort=3081:3081` (default bridge network);
   access `http://127.0.0.1:3081`. For host-only publishing use `PublishPort=127.0.0.1:3081:3081`.
-- After changing the workspace path, re-run `daemon-reload` + `restart`.
+- The `dsh-home` volume is mounted on the whole `/home/codespace` directory (same persistence
+  model as Compose). If you prefer host-visible storage, replace it with a bind mount at
+  `/home/codespace` owned by uid 1000.
 - For user-level (rootless podman) deployment, put the file in `~/.config/containers/systemd/`
   and change `WantedBy` in `[Install]` to `default.target`.
 
@@ -63,16 +64,18 @@ journalctl -u dsh.service -f
 
 Two layers that don't conflict:
 
-1. **dsh itself (inside the container)** — on container start `entrypoint.sh` calls `dsh-update`:
+1. **dsh itself (inside the container)** — opt-in, off by default (`DSH_AUTO_UPDATE=0`).
+   When you set `DSH_AUTO_UPDATE=1`, `entrypoint.sh` calls `dsh-update` on start:
    - compares `dsh --version` with `npm view @deepseek-ai/dsh version` (semver: only upgrades —
      never downgrades a version pinned at build time);
    - when the npm latest is newer, runs `npm install -g` (the in-image npm global directory is
      owned by uid 1000, so no root needed);
    - when offline or on failure it prints a warning and keeps the in-image version — availability
      is not affected.
-   - Manual update: `docker exec dsh dsh-update` / `systemctl restart dsh`.
-   - Scheduled updates (optional): hand a `DSH_UPDATE_ONLY=1` container to a systemd timer or cron,
-     e.g. run `docker run --rm -e DSH_UPDATE_ONLY=1 ... dsh-container` every hour.
+   - Manual update: `docker exec dsh dsh-update` (or `podman exec dsh dsh-update`) updates the
+     npm package on disk; restart the container afterwards so the running `dsh web` process loads
+     it. `systemctl restart dsh` restarts a Quadlet deployment (and also runs boot auto-update if
+     it is enabled).
 
 2. **The image itself (orchestration layer)** —
    - Quadlet already sets `Pull=newer` (pulls on restart when a newer remote image exists) and
@@ -140,26 +143,31 @@ need the raised idle timeouts (Caddy's defaults are already unlimited).
 
 ## 6. Offline use
 
-- Pin the update behavior at build time: set `DSH_AUTO_UPDATE=0` at runtime
-  (`DSH_AUTO_UPDATE: "0"` in compose, `Environment=DSH_AUTO_UPDATE=0` in quadlet).
-- The dsh version is fixed by `--build-arg DSH_VERSION=x.y.z` at image build time; updates then go
+- Auto-update is already off by default (`DSH_AUTO_UPDATE=0`), so no runtime setting is needed.
+- Pin the dsh version at image build time with `--build-arg DSH_VERSION=x.y.z`; updates then go
   through the image release process (see [releasing.md](releasing.md)).
 
 ## 7. FAQ
 
-**Permission errors when writing to the workspace in the container**
-The host workspace directory (bind-mounted to `/home/codespace/workspace`, default `$DSH_WORKSPACE`)
-must be owned by uid 1000: `sudo chown -R 1000:1000 workspace`.
+**Permission errors when writing to `/home/codespace`**
+If you replace the named `dsh-home` volume with a host bind mount at `/home/codespace`, that host
+directory must be owned by uid 1000: `sudo chown -R 1000:1000 <host-home-dir>`. The default named
+volume handles ownership automatically.
 
 **Port 3081 already in use**
 The exposed port is `3081` (Caddy proxy → dsh's `127.0.0.1:3080` inside the container). Change
 the host-side mapping instead: compose `ports: ["4081:3081"]`, quadlet `PublishPort=4081:3081`,
 then use the new port. To move dsh's internal port, pass `command: ["--port", "8080"]` /
-`Exec=--port 8080` — the proxy follows automatically, but keep it different from `3081`.
+`Exec=--port 8080` — the proxy follows automatically. The entrypoint rejects `--port 3081`
+(proxy conflict) and `--port 0` (the proxy needs a fixed internal port).
+
+**Container exits with "DSH_PROXY_USER and DSH_PROXY_PASSWORD must be set together"**
+Basic auth is enabled only when both variables are set. The entrypoint refuses to start when just
+one is present, instead of silently leaving the proxy unauthenticated. Set both or remove both.
 
 **`npm registry unreachable` in the startup logs**
-The container couldn't reach the npm registry and kept the in-image dsh version; restart after
-network is restored.
+This only happens when `DSH_AUTO_UPDATE=1`. The container couldn't reach the npm registry and
+kept the in-image dsh version; restart after network is restored, or leave auto-update off.
 
 **Remote access fails with `transport failure for /api/...: HTTP 403`**
 That was the `/api` browser-trust fence rejecting non-loopback `Host` headers (settings/credentials
@@ -169,8 +177,8 @@ you still see 403, verify you are running an image that contains the Caddy proxy
 browser reaches the published port `3081`.
 
 **Podman rootless + bind mounts**
-Make sure the directory is owned by your uid and readable by the container; keep the `:Z` label
-with SELinux.
+If you bind-mount a host directory at `/home/codespace`, make sure it is owned by your uid and
+readable by the container; keep the `:Z` label with SELinux.
 
 **Remote access feels slow**
 The proxy itself does not buffer: SSE responses are flushed immediately and WebSocket streams pass

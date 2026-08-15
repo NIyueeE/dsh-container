@@ -1,28 +1,41 @@
 # Build Configuration & Version Pinning
 
-Every mutable component in the image (base image / dsh / rust / uv) can be pinned with
-`--build-arg`; CI passes git info plus the release version and uses defaults for everything else.
+The base image is pinned by default, and the dsh top-level version / Rust toolchain can be pinned
+with `--build-arg`. uv and pnpm are installed with their official scripts at build time (latest
+release), then live in the persisted user layer; Caddy/podman come from apt; the npm dependency
+tree of `@deepseek-ai/dsh` has no lockfile. Default builds are therefore not byte-for-byte
+reproducible.
 
 ## Build arguments
 
 | Build arg | Default | Description |
 |---|---|---|
-| `BASE_IMAGE` | `universal:latest` | Base image (currently same digest as `6.1.1-noble`; pin an exact tag for reproducibility) |
-| `DSH_VERSION` | `latest` | dsh version; when pinned, consider `DSH_AUTO_UPDATE=0` at runtime |
+| `BASE_IMAGE` | `mcr.microsoft.com/devcontainers/universal:6.1.1-noble` | Base image (pinned for reproducible builds; override only if you also adjust the `/home/codespace` user-layer assumptions) |
+| `DSH_VERSION` | `latest` | dsh version; auto-update is off by default, so a pinned image stays pinned unless you set `DSH_AUTO_UPDATE=1` at runtime |
 | `BUILD_VERSION` | `latest` | Written to the OCI label `org.opencontainers.image.version`; CI passes the release version on `v*` tag builds (see [releasing.md](releasing.md)) |
 | `RUST_TOOLCHAIN` | `stable` | Rust toolchain (e.g. `1.88.0`) |
-| `UV_VERSION` | `0.12.3` | uv version (COPYed from the official image, no install script) |
-| `BUILD_GIT_SHA` / `BUILD_GIT_REF` | `unknown` | Written to OCI labels (`org.opencontainers.image.*`) |
+| `BUILD_GIT_SHA` / `BUILD_GIT_REF` | `unknown` | Written to the OCI labels `org.opencontainers.image.revision` / `org.opencontainers.image.ref.name` |
+
+User-level tool defaults live under the persisted `/home/codespace` volume:
+
+- Rust/cargo: `~/.rustup` and `~/.cargo`
+- uv: `~/.local/bin`, with uv's default `~/.local/share/uv` and `~/.cache/uv`
+- pnpm: `~/.local/share/pnpm`, binary linked from `~/.local/bin/pnpm`
+
+These tools are copied into the volume when it is first created; after that the volume owns them,
+so a newer image does not overwrite an existing user's tools. Update them inside the container
+(`rustup update`, `uv self update`, `pnpm add -g pnpm`) or recreate the volume.
 
 ## Example
 
-The idea mirrors Claude Code's `DISABLE_AUTOUPDATER=1`: pin the version and turn off the runtime
-auto-update.
+The idea mirrors Claude Code's `DISABLE_AUTOUPDATER=1`: pin the version and leave runtime
+auto-update off. With podman, keep `--format docker` so the `HEALTHCHECK` survives (podman's
+default OCI format drops it):
 
 ```bash
-podman build --build-arg DSH_VERSION=0.1.0-rc.6 \
+podman build --format docker \
+             --build-arg DSH_VERSION=0.1.0-rc.6 \
              --build-arg RUST_TOOLCHAIN=1.88.0 \
-             --build-arg UV_VERSION=0.12.3 \
              -t dsh-container .
-# at runtime: DSH_AUTO_UPDATE=0
+# DSH_AUTO_UPDATE is already 0 by default, so this image stays on 0.1.0-rc.6
 ```

@@ -1,16 +1,14 @@
-# systemd Quadlet 示例(Podman >= 4.4)。
-# 完整部署说明见 docs/deployment.md。
+# systemd Quadlet example for Podman >= 4.4.
+# See docs/deployment.md for the full guide.
 #
-# 部署步骤:
+# Install:
 #   sudo mkdir -p /etc/containers/systemd
 #   sudo cp examples/dsh.container /etc/containers/systemd/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now dsh.service
 #
-# 镜像直接从 GitHub Container Registry 拉取, 不在本地构建。
-# 镜像只在 v* tag 发布时推送; :latest 指向最近一次发布,
-# 首次部署前请确认仓库至少发布过一个版本(或用具体版本替换 Image)。
-# 访问 http://127.0.0.1:3081(PublishPort 映射, 默认桥接网络)。
+# Pulls the published GHCR image; no local build is required.
+# Open http://127.0.0.1:3081 (PublishPort on the default bridge network).
 
 [Unit]
 Description=DeepSeek Harness (dsh) Web UI
@@ -20,28 +18,25 @@ Wants=network-online.target
 [Container]
 Image=ghcr.io/niyueee/dsh-container:latest
 ContainerName=dsh
-# 端口映射: 宿主 3081 -> 容器 3081(容器内 Caddy 代理监听 0.0.0.0:3081,
-# 把 Host/Origin 改写为回环后转发到 dsh 的 127.0.0.1:3080); 只在本机使用可改为
-# PublishPort=127.0.0.1:3081:3081。
+# Host 3081 -> container 3081. Caddy listens on 0.0.0.0:3081 inside the
+# container and rewrites Host/Origin to loopback before forwarding to dsh on
+# 127.0.0.1:3080. For host-loopback-only access use:
+# PublishPort=127.0.0.1:3081:3081
 PublishPort=3081:3081
-# dsh 数据目录(profiles / sessions / 插件)持久化。默认 $HOME/dsh
-# (universal 6.x = /home/codespace/dsh), 由入口脚本解析。
-Environment=DSH_HOME=/home/codespace/dsh
-# 容器启动时自动把 dsh 更新到 npm 最新版(只升不降); 设为 0 可关闭。
-Environment=DSH_AUTO_UPDATE=1
-# 可选: 代理 basic auth(强烈建议启用)。Caddy 代理会把 Host/Origin 改写为回环,
-# 使远程浏览器也能通过 dsh 的全部接口 —— 包括设置/凭据等原本仅回环放行的
-# 方法, 因此**代理就是安全边界**: 能访问 3081 的人即可读取/修改全部配置与
-# 凭据。设置下面两个变量即启用基本认证(用户名+密码):
+# Runtime configuration surface: auth pair + optional auto-update.
+# Auto-update is off by default; set to 1 to follow npm latest on boot.
+Environment=DSH_AUTO_UPDATE=0
+# Set both auth variables or neither. Setting only one fails startup.
 # Environment=DSH_PROXY_USER=admin
-# Environment=DSH_PROXY_PASSWORD=换一个强密码
-# 详细说明见 docs/security.md 安全边界一节。
-# 任务工作区(默认 $HOME/workspace, 即容器内 /home/codespace/workspace):
-# 路径按需修改, 属主需为 uid 1000; SELinux 主机保留 :Z。
-Volume=dsh-home:/home/codespace/dsh
-Volume=/home/you/workspace:/home/codespace/workspace:Z
-# 镜像更新: 重启时若远端有更新则拉取新镜像; AutoUpdate=registry 供
-# podman-auto-update 服务定时检查(见 docs/deployment.md 自动更新一节)。
+# Environment=DSH_PROXY_PASSWORD=replace-with-a-strong-password
+# Optional: change dsh's internal port (the exposed port stays 3081).
+# Exec=--port 8080
+# Persist the whole user home. User state and user-installed tools survive
+# image upgrades; the system layer is replaced. For host-visible storage use a
+# bind mount owned by uid 1000 (keep :Z on SELinux):
+# Volume=/home/you/dsh-home:/home/codespace:Z
+Volume=dsh-home:/home/codespace
+# Pull a newer image on restart and check the registry periodically:
 Pull=newer
 AutoUpdate=registry
 

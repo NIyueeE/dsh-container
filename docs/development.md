@@ -4,9 +4,9 @@
 
 ```
 AGENTS.md                # guidelines for agents working on this repo
-Containerfile            # image build (base image + rustup/uv + dsh + entrypoint)
+Containerfile            # image build (base + node/pnpm + rust/uv + podman + dsh + entrypoint)
 container/
-  entrypoint.sh          # container entrypoint: auto-update + Caddy proxy + start dsh web
+  entrypoint.sh          # container entrypoint: optional auto-update + Caddy proxy + start dsh web
   dsh-update.sh          # dsh update script (idempotent, runnable standalone)
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
@@ -25,6 +25,7 @@ docs/
 ## Local development
 
 ```sh
-just build   # build ghcr.io/niyueee/dsh-container:local locally
-just debug   # run in the foreground (bridge networking, port 3081 published)
+just build      # build ghcr.io/niyueee/dsh-container:local locally (podman or docker)
+just debug      # run in the foreground (bridge networking, port 3081 published)
+just update-dsh # update the npm package in the running "dsh" container
 ```

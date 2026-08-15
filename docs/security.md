@@ -26,30 +26,57 @@ and modify all configuration and API credentials, not just drive the agent.
 
 Consequences:
 
-- **Enable basic auth** on the proxy by setting `DSH_PROXY_USER` and `DSH_PROXY_PASSWORD`
-  (recommended for any non-loopback deployment). Without it, anyone who can reach `3081` gets
-  full control — same exposure as before, plus settings/credentials.
+- **Enable basic auth** on the proxy by setting both `DSH_PROXY_USER` and `DSH_PROXY_PASSWORD`
+  (recommended for any non-loopback deployment). The entrypoint refuses to start when only one is
+  set — a half-configured auth block must never silently start open. Without auth, anyone who can
+  reach `3081` gets full control — same exposure as before, plus settings/credentials.
 - Keep the host firewall closed for `3081` unless LAN access is actually needed.
 - For anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) or an
   SSH tunnel in front — don't rely on the raw port; there is still no TLS on `3081` itself.
-- Loopback-only hardening still applies: publish host-only (`127.0.0.1:3081:3081`) or don't
-  publish the port at all.
+- Keep the host-side exposure minimal: bind to host loopback (`127.0.0.1:3081:3081`) or don't
+  publish the port at all (container-only).
 
 ## Don't mount host credentials
 
 Avoid bind-mounting `~/.ssh`, `~/.aws`, `~/.config/gh`, cloud vendor credentials, etc.
 (see the [official Claude Code container security warning](https://code.claude.com/docs/en/devcontainer)).
 Agents can read everything reachable inside the container, including mounted credentials.
+For the same reason, don't bind-mount the host Docker socket (`/var/run/docker.sock`) or run the
+container with `--privileged`: either gives the agent a straightforward path to the host's root
+account.
 
-## DSH_HOME holds API keys
+## Container-internal privileges
 
-The `dsh-home` volume (default `$DSH_HOME` = `/home/codespace/dsh`) contains model API credentials
-and session data. Mind the volume's access permissions and backups; don't share it with untrusted
-containers.
+The universal base image gives uid 1000 passwordless `sudo` (`codespace ALL=(root) NOPASSWD:ALL`),
+so `USER 1000` is not a privilege boundary inside the container. Treat the container root as
+reachable by the agent; for stricter sandboxes, remove that sudoers entry or use an additional
+isolation layer (user namespace, VM, etc.).
+
+## In-container rootless podman
+
+The image installs podman and configures subuid/subgid for uid 1000, so the agent can use podman
+for nested containers. Whether `podman run` actually works depends on the host runtime: it needs
+nested user namespaces and appropriate seccomp/AppArmor settings. Docker's default seccomp profile
+or a locked-down Kubernetes runtime may reject the `unshare`/`clone` calls. Treat podman as an
+experimental in-container dev tool, not a guaranteed isolation primitive.
+
+## `~/.dsh` holds API keys
+
+The persisted `/home/codespace` volume contains `~/.dsh` — model API credentials, profiles and
+session data — plus `~/.cargo`, npm cache, dotfiles, and folders created by dsh under `$HOME`.
+Mind the volume's access permissions and backups; don't share it with untrusted containers.
 
 ## Only run trusted repositories
 
 Even with the approval mechanism in place, don't let agents process untrusted code repositories.
+
+## Auto-update trust
+
+`DSH_AUTO_UPDATE=1` is opt-in (default `0`). It runs an npm global install with install scripts on
+every boot, and uid 1000 can escalate to root inside the container via passwordless sudo. For
+untrusted networks or long-running production deployments, keep auto-update off and pin
+`DSH_VERSION` at build time, or at least treat npm registry access as a supply-chain trust
+boundary.
 
 ## Remote access
 

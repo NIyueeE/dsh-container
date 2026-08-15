@@ -3,7 +3,7 @@
 Containerized [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`), built on
 top of Microsoft's universal dev container image
 [`mcr.microsoft.com/devcontainers/universal`](https://mcr.microsoft.com/en-us/artifact/mcr/devcontainers/universal/about),
-ready to use out of the box with **automatic dsh updates** baked in. The image is published to
+ready to use out of the box with **optional dsh auto-update** baked in. The image is published to
 GitHub Container Registry; both the `compose.yaml` and the Quadlet `.container` examples pull the
 image directly — no local build needed.
 
@@ -15,27 +15,38 @@ way the official README describes: install Node.js, then npm-install `@deepseek-
 
 | Component | Description |
 |---|---|
-| Base image | `mcr.microsoft.com/devcontainers/universal:latest` (Ubuntu 24.04; large but with a complete toolchain; currently same digest as `6.1.1-noble`; pin an exact tag with the `BASE_IMAGE` build arg) |
-| Built-in toolchain | Node.js 22/24 (nvm), Python, Go, Java, Docker CLI/Engine, git, build-essential, etc. |
-| Added toolchain | Rust/cargo (rustup minimal profile, pinnable via `RUST_TOOLCHAIN`), uv (COPYed from the official image at a pinned version, default 0.12.3) |
+| Base image | `mcr.microsoft.com/devcontainers/universal:6.1.1-noble` (Ubuntu 24.04; large but with a complete toolchain; overridable via the `BASE_IMAGE` build arg) |
+| Built-in toolchain | Node.js latest LTS (nvm), Python, Go, Java, Docker CLI/Engine, git, build-essential, etc. |
+| Added user-level tools | Rust/cargo (`~/.rustup` + `~/.cargo`), uv (`~/.local/bin`), pnpm (`~/.local/share/pnpm`) — persisted with `/home/codespace` |
+| Container dev tool | podman (apt), with rootless subuid/subgid mapping configured; nested rootless operation depends on the host runtime |
 | dsh | Global npm install of `@deepseek-ai/dsh`, same source as the official README's `npx @deepseek-ai/dsh web`; pinnable via `DSH_VERSION` |
-| Auto-update | Updates dsh to the latest npm release on container start (only upgrades, never downgrades a pinned version; can be disabled); the image itself supports `Pull=newer` / `AutoUpdate=registry` |
+| Auto-update | Off by default (`DSH_AUTO_UPDATE=0`); opt in with `DSH_AUTO_UPDATE=1` to update dsh to the latest npm release on container start (only upgrades, never downgrades a pinned version). The image itself supports `Pull=newer` / `AutoUpdate=registry` |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) rewriting `Host`/`Origin` to loopback, gzip-compressing UI assets (≈1.3 MB → ≈360 KB), with optional basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) |
 | Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080 + 3081) |
-| Runtime user | uid 1000 (`codespace` on universal 6.x, `vscode` on legacy 2.x — handled automatically) |
+| Runtime user | uid 1000 (`codespace` on universal 6.x); `/home/codespace` is the persisted user layer |
 
-All mutable components (base image / dsh / rust / uv) can be pinned with `--build-arg`; see
-[build.md](docs/build.md).
+The base image is pinned by default; the dsh top-level version and Rust toolchain can be pinned
+with `--build-arg`. uv/pnpm are installed from their official scripts as user-level tools, and
+Caddy/podman come from apt — see [build.md](docs/build.md).
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `DSH_HOME` | `$HOME/dsh` | dsh data directory (profiles / sessions / plugins); resolved by the entrypoint from the runtime user's home (`/home/codespace/dsh` on universal 6.x); mount a persistent volume |
-| `DSH_WORKSPACE` | `$HOME/workspace` | Task workspace; the entrypoint creates it and runs dsh from it (`/home/codespace/workspace` on universal 6.x) |
-| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(empty)* | Enable basic auth on the exposed proxy (recommended): without it, anyone who can reach port `3081` can drive the agent **and** read/write all settings & credentials (see [security.md](docs/security.md) "Security boundary") |
-| `DSH_AUTO_UPDATE` | `1` | Auto-update dsh to the latest npm release on boot; keeps the in-image version when offline or on failure |
-| `DSH_UPDATE_ONLY` | `0` | Set to `1` to only run the dsh update and exit (for timer/cron updates) |
+| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(empty)* | Enable basic auth on the exposed proxy (recommended): without it, anyone who can reach port `3081` can drive the agent **and** read/write all settings & credentials (see [security.md](docs/security.md) "Security boundary"). Set both or neither — the entrypoint refuses to start if only one is set |
+| `DSH_AUTO_UPDATE` | `0` | Set to `1` to update dsh to the latest npm release on container start; keeps the in-image version when offline or on failure |
+
+Everything else uses built-in defaults:
+
+- dsh data: `~/.dsh` (`/home/codespace/.dsh`) — upstream default, no `DSH_HOME` override
+- working directory: `$HOME` (`/home/codespace`); dsh creates folders under it as needed
+- Rust/cargo: `~/.rustup` + `~/.cargo`
+- uv: `~/.local/bin` (managed Python/tool data in `~/.local/share/uv`)
+- pnpm: `~/.local/share/pnpm`
+
+The whole `/home/codespace` directory is the persistence boundary: mount it as one volume so
+user-level state survives while `/usr/local` and the rest of the system layer are reset on image
+upgrades.
 
 The exposed port is `3081`: a **Caddy reverse proxy** inside the container listens on
 `0.0.0.0:3081` and forwards to `dsh web` on `127.0.0.1:3080`, rewriting `Host`/`Origin` to loopback.
@@ -57,7 +68,6 @@ port; the exposed port stays `3081`).
 ### Docker Compose (Linux)
 
 ```bash
-mkdir -p workspace && sudo chown -R 1000:1000 workspace   # align ownership with the container user
 docker compose -f examples/compose.yaml up -d
 # open http://127.0.0.1:3081
 ```
@@ -67,10 +77,13 @@ docker compose -f examples/compose.yaml up -d
 ```bash
 sudo mkdir -p /etc/containers/systemd
 sudo cp examples/dsh.container /etc/containers/systemd/
-# adjust the workspace path in examples/dsh.container as needed
 sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 ```
+
+> **Persistence** — both examples mount one volume at `/home/codespace`. This is the user layer:
+> `~/.dsh`, `~/.cargo`, npm/cache/config files, dsh-created working folders, and user-installed
+> tools survive image upgrades; the system layer (`/usr/local`, apt packages) comes from the new image.
 
 > **Networking** — `dsh web` listens on `127.0.0.1` (npm releases reject `--host 0.0.0.0`); the
 > entrypoint runs a Caddy reverse proxy on `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback
@@ -85,7 +98,7 @@ sudo systemctl enable --now dsh.service
 | [docs/deployment.md](docs/deployment.md) | Deployment & maintenance: prerequisites, Compose, Quadlet, auto-update, remote access, offline use, FAQ |
 | [docs/security.md](docs/security.md) | Security notes: network exposure tradeoff, credentials, trusted workloads |
 | [docs/build.md](docs/build.md) | Build configuration: build args, version pinning, reproducible builds |
-| [docs/releasing.md](docs/releasing.md) | Image tags, release workflow (GitHub Releases + version alignment), first-release manual steps |
+| [docs/releasing.md](docs/releasing.md) | Image tags, release workflow (GitHub Releases + version alignment), image cleanup |
 | [docs/design.md](docs/design.md) | Design references and related projects |
 | [docs/development.md](docs/development.md) | Directory structure and local development |
 

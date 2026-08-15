@@ -2,7 +2,7 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(`dsh`)的容器化镜像,基于微软通用开发容器镜像
 [`mcr.microsoft.com/devcontainers/universal`](https://mcr.microsoft.com/en-us/artifact/mcr/devcontainers/universal/about),
-开箱即用,支持 **dsh 自动更新**。镜像发布在 GitHub Container Registry,
+开箱即用,支持 **可选的 dsh 自动更新**。镜像发布在 GitHub Container Registry,
 `compose.yaml` 与 Quadlet `.container` 示例均直接拉取镜像,不本地构建。
 
 DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness),
@@ -12,27 +12,36 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 
 | 组件 | 说明 |
 |---|---|
-| 基础镜像 | `mcr.microsoft.com/devcontainers/universal:latest`(Ubuntu 24.04,体积大但工具链齐全;当前与 `6.1.1-noble` 同 digest;可用 `BASE_IMAGE` 构建参数固定精确 tag) |
-| 自带工具链 | Node.js 22/24(nvm)、Python、Go、Java、Docker CLI/Engine、git、build-essential 等 |
-| 补装工具链 | Rust/cargo(rustup minimal profile,`RUST_TOOLCHAIN` 可固定)、uv(从官方镜像 COPY 固定版本,默认 0.12.3) |
+| 基础镜像 | `mcr.microsoft.com/devcontainers/universal:6.1.1-noble`(Ubuntu 24.04,体积大但工具链齐全;可用 `BASE_IMAGE` 构建参数覆盖) |
+| 自带工具链 | Node.js 最新 LTS(nvm)、Python、Go、Java、Docker CLI/Engine、git、build-essential 等 |
+| 补装用户级工具 | Rust/cargo(`~/.rustup` + `~/.cargo`)、uv(`~/.local/bin`)、pnpm(`~/.local/share/pnpm`)——随 `/home/codespace` 持久化 |
+| 容器开发工具 | podman(apt),已配置 rootless subuid/subgid 映射;嵌套 rootless 是否可用取决于宿主运行时 |
 | dsh | npm 全局安装 `@deepseek-ai/dsh`,与官方 README 的 `npx @deepseek-ai/dsh web` 同源;`DSH_VERSION` 可固定 |
-| 自动更新 | 容器启动时自动把 dsh 更新到 npm 最新版(只升不降,不会把固定版本降级;可关闭);镜像本身支持 `Pull=newer` / `AutoUpdate=registry` |
+| 自动更新 | 默认关闭(`DSH_AUTO_UPDATE=0`);设 `1` 后容器启动时把 dsh 更新到 npm 最新版(只升不降,不会把固定版本降级);镜像本身支持 `Pull=newer` / `AutoUpdate=registry` |
 | 对外暴露 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),把 `Host`/`Origin` 改写为回环并对 UI 资源做 gzip 压缩(约 1.3MB → 约 360KB);可用 `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` 启用 basic auth |
 | 可观测性 | OCI labels(`org.opencontainers.image.*` 含 git revision)、`HEALTHCHECK`(curl 3080 + 3081) |
-| 运行时用户 | uid 1000(universal 6.x 为 `codespace`,旧版 2.x 为 `vscode`,自动兼容) |
+| 运行时用户 | uid 1000(universal 6.x 为 `codespace`);`/home/codespace` 是持久化用户层 |
 
-全部可变组件(基础镜像/dsh/rust/uv)均可用 `--build-arg` 固定版本,
-构建参数见 [build.md](docs/build.md)。
+基础镜像默认固定;dsh 顶层版本与 Rust 工具链可用 `--build-arg` 固定。uv/pnpm 通过官方脚本
+安装为用户级工具,Caddy/podman 来自 apt —— 详见 [build.md](docs/build.md)。
 
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DSH_HOME` | `$HOME/dsh` | dsh 数据目录(profiles / sessions / 插件),由入口脚本按运行时用户 home 解析(universal 6.x 即 `/home/codespace/dsh`),建议挂载持久化卷 |
-| `DSH_WORKSPACE` | `$HOME/workspace` | 任务工作区,入口脚本自动创建并以此为工作目录(universal 6.x 即 `/home/codespace/workspace`) |
-| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(空)* | 启用对外代理的 basic auth(建议启用):不启用时,能访问 3081 端口的任何人都可以驱动代理**并**读取/修改全部设置与凭据(见 [security.md](docs/security.md) 安全边界一节) |
-| `DSH_AUTO_UPDATE` | `1` | 容器启动时自动更新 dsh 到 npm 最新版;离线或失败时沿用镜像内版本 |
-| `DSH_UPDATE_ONLY` | `0` | 设为 `1` 时只执行 dsh 更新并退出(供 timer/cron 定时更新) |
+| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(空)* | 启用对外代理的 basic auth(建议启用):不启用时,能访问 3081 端口的任何人都可以驱动代理**并**读取/修改全部设置与凭据(见 [security.md](docs/security.md) 安全边界一节)。两个变量必须同时设置或同时为空,只设置一个时入口脚本会拒绝启动 |
+| `DSH_AUTO_UPDATE` | `0` | 设为 `1` 时容器启动时自动更新 dsh 到 npm 最新版;离线或失败时沿用镜像内版本 |
+
+其余全部使用内置默认值:
+
+- dsh 数据:`~/.dsh`(`/home/codespace/.dsh`)——上游默认,不设置 `DSH_HOME`
+- 工作目录:`$HOME`(`/home/codespace`);dsh 按需在其中创建目录
+- Rust/cargo:`~/.rustup` + `~/.cargo`
+- uv:`~/.local/bin`(托管的 Python/tool 数据在 `~/.local/share/uv`)
+- pnpm:`~/.local/share/pnpm`
+
+持久化边界是**整个 `/home/codespace`**:把它挂载为一个卷,用户层状态在镜像升级后保留,
+`/usr/local` 等系统层随新镜像重置。
 
 对外端口为 `3081`:容器内 **Caddy 反向代理**监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为
 回环后转发到 `dsh web` 的 `127.0.0.1:3080`。代理对 UI 资源做 gzip 压缩(约 1.3MB → 约
@@ -51,7 +60,6 @@ dsh 内部端口,对外端口仍是 3081)。
 ### Docker Compose(Linux)
 
 ```bash
-mkdir -p workspace && sudo chown -R 1000:1000 workspace   # 工作区属主对齐容器用户
 docker compose -f examples/compose.yaml up -d
 # 打开 http://127.0.0.1:3081
 ```
@@ -61,10 +69,13 @@ docker compose -f examples/compose.yaml up -d
 ```bash
 sudo mkdir -p /etc/containers/systemd
 sudo cp examples/dsh.container /etc/containers/systemd/
-# 按需修改 examples/dsh.container 中的工作区路径
 sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 ```
+
+> **持久化** — 两个示例都把同一个卷挂载到 `/home/codespace`。这是用户层:
+> `~/.dsh`、`~/.cargo`、npm/缓存/配置文件、dsh 按需创建的工作目录以及用户安装的工具在镜像升级后保留;
+> 系统层(`/usr/local`、apt 包)来自新镜像。
 
 > **网络** — `dsh web` 监听 `127.0.0.1`(npm 发布版拒绝 `--host 0.0.0.0`);入口脚本用 Caddy
 > 反向代理监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为回环后转发到 dsh 的 `127.0.0.1:3080`,
@@ -78,7 +89,7 @@ sudo systemctl enable --now dsh.service
 | [docs/deployment.md](docs/deployment.md) | 部署与维护:前置条件、Compose、Quadlet、自动更新、远程访问、离线使用、常见问题 |
 | [docs/security.md](docs/security.md) | 安全注意事项:网络暴露权衡、凭据安全、可信工作负载 |
 | [docs/build.md](docs/build.md) | 构建配置:构建参数、版本固定、可复现构建 |
-| [docs/releasing.md](docs/releasing.md) | 镜像标签、发布流程(GitHub Release + 版本号对齐)、首次发布手动步骤 |
+| [docs/releasing.md](docs/releasing.md) | 镜像标签、发布流程(GitHub Release + 版本号对齐)、镜像清理 |
 | [docs/design.md](docs/design.md) | 设计参考与相关项目 |
 | [docs/development.md](docs/development.md) | 目录结构与本地开发 |
 

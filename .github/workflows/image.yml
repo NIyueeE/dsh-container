@@ -7,9 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
-# 同一 ref 的并发构建串行化(避免两个 tag 连续推送时竞争 latest)
+# 所有 v* tag 构建共用同一个并发组, 串行推送, 避免两个 tag 并发时竞争
+# latest; 非 tag 构建仍按 ref 隔离。
 concurrency:
-  group: image-${{ github.ref }}
+  group: image-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || github.ref }}
   cancel-in-progress: false
 
 # 默认只读; 需要写权限的 job 单独声明
@@ -25,6 +26,27 @@ jobs:
 
       - name: Shell syntax check
         run: bash -n container/*.sh
+
+      - name: dsh-update must never downgrade a newer installed version
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          cat > "$tmp/dsh" <<'EOF'
+          #!/bin/sh
+          echo 99.0.0
+          EOF
+          cat > "$tmp/npm" <<'EOF'
+          #!/bin/sh
+          if [ "$1" = "view" ]; then
+            echo 1.0.0
+            exit 0
+          fi
+          echo "unexpected npm invocation: $*" >&2
+          exit 9
+          EOF
+          chmod +x "$tmp/dsh" "$tmp/npm"
+          PATH="$tmp:$PATH" bash container/dsh-update.sh | grep 'not newer than installed'
 
       - name: Validate compose example
         run: docker compose -f examples/compose.yaml config --quiet
@@ -64,8 +86,8 @@ jobs:
 
       # 版本号对齐(仅指镜像自身的版本): 打 v* tag 时, release 版本 ==
       # 镜像 tag(v1.2.0) == OCI 版本 label(1.2.0); 非发布构建 label 为 latest。
-      # 镜像版本与 dsh npm 版本完全解耦: dsh 版本由 DSH_VERSION 决定,
-      # 默认构建时 npm latest + 运行时自动更新, 与 tag 无关。
+      # 镜像版本与 dsh npm 版本解耦: 未传 DSH_VERSION 时构建安装 npm latest,
+      # 运行时默认不自动更新, 版本由镜像 tag 决定。
       - name: Compute version metadata
         id: version
         run: |
@@ -113,12 +135,6 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: ${{ steps.args.outputs.args }}
 
-      # 注: GHCR 新建包默认 private。GitHub 已移除改可见性的 REST API
-      # (POST/PATCH /user/packages/container/<name>/visibility 均 404),
-      # 首次发布后需在包设置页手动改为 public, 见 docs/releasing.md。
-      # 包通过 org.opencontainers.image.source 标签自动链接到本仓库,
-      # 访问权限随仓库继承, 只有可见性需手动设置一次。
-
       - name: Smoke test
         run: |
           set -euo pipefail
@@ -150,6 +166,20 @@ jobs:
           docker exec "$cid" node --version | grep -Eq '^v[0-9]+\.'
           docker exec "$cid" cargo --version | grep -Eq '^cargo [0-9]+\.'
           docker exec "$cid" uv --version | grep -Eq '^uv [0-9]+\.'
+          docker exec "$cid" pnpm --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
+          docker exec "$cid" podman --version | grep -Eq '^podman version [0-9]+\.'
+          # 用户级工具目录必须可写/可执行, 并位于持久化的 /home/codespace 下。
+          docker exec "$cid" sh -c '
+            home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
+            rustup_home="${RUSTUP_HOME:-$home/.rustup}"
+            cargo_home="${CARGO_HOME:-$home/.cargo}"
+            pnpm_home="${PNPM_HOME:-$home/.local/share/pnpm}"
+            test -w "$rustup_home"
+            test -w "$cargo_home"
+            test -x "$home/.local/bin/uv"
+            test -x "$home/.local/bin/pnpm"
+            mkdir -p "$cargo_home/registry/cache" "$cargo_home/registry/index" "$pnpm_home"
+          '
           # Caddy 代理已在容器内运行(头改写链路)
           docker exec "$cid" sh -c 'pgrep -x caddy >/dev/null'
 
@@ -160,9 +190,8 @@ jobs:
             --data '{"type":"client-request","rpcId":"1","method":"settings.describe","payload":{}}')"
           [ "$settings_code" = "200" ]
 
-          # 真实更新链路: 卸载后由 dsh-update 重新安装。验证 uid 1000 的
-          # 全局 npm install(含 node-pty 等原生模块的 install scripts)全链路
-          # 可用 —— 此前只验证了"已是最新"的空操作路径, 真正的安装从未被 CI 覆盖。
+          # 真实更新链路: 卸载后由 dsh-update 重新安装, 验证 uid 1000 的
+          # 全局 npm install(含 node-pty 等原生模块 install scripts)全链路可用。
           docker exec "$cid" npm uninstall --global --no-fund --no-audit @deepseek-ai/dsh
           docker exec "$cid" dsh-update | grep -E 'installing|installed|updating|already up to date'
           docker exec "$cid" dsh --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
@@ -190,6 +219,18 @@ jobs:
             http://127.0.0.1:3082/api/host.describe -H 'content-type: application/json' \
             --data '{"type":"client-request","rpcId":"1","method":"host.describe","payload":{}}')"
           [ "$unauth" = "401" ] && [ "$auth" = "200" ]
+
+          # 只设置 basic auth 一半变量时必须 fail closed, 不能静默裸奔。
+          if timeout 30 docker run --rm --name dsh-smoke-partial-auth \
+              -e DSH_HOME=/tmp/dsh-smoke-partial-home \
+              -e DSH_AUTO_UPDATE=0 \
+              -e DSH_PROXY_USER=smoke \
+              "$image" >/tmp/dsh-partial-auth.log 2>&1; then
+            echo "container with only DSH_PROXY_USER set unexpectedly started" >&2
+            cat /tmp/dsh-partial-auth.log >&2 || true
+            exit 1
+          fi
+          grep -F 'must be set together' /tmp/dsh-partial-auth.log >/dev/null
 
       # 冒烟通过后才推送(正式发布): v* 版本 tag + sha + latest(指向最近一次发布,
       # 供示例直接拉取)。坏镜像不会进入 GHCR。

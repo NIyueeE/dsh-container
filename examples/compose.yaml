@@ -1,15 +1,18 @@
-# docker compose -f examples/compose.yaml up -d
-# podman-compose -f examples/compose.yaml up -d
+# Start:   docker compose -f examples/compose.yaml up -d
+# Podman:  podman-compose -f examples/compose.yaml up -d
 #
-# 镜像直接从 GitHub Container Registry 拉取, 不在本地构建。
-# 镜像只在 v* tag 发布时推送; :latest 指向最近一次发布,
-# 首次部署前请确认仓库至少发布过一个版本(或用具体版本替换 image)。
-# 完整部署说明见 docs/deployment.md。
+# Pulls the published GHCR image; no local build is required.
+# See docs/deployment.md for the full guide.
 #
-# 网络: 普通桥接网络 + 端口映射。dsh web 本身监听 127.0.0.1(npm 发布版拒绝
-# --host 0.0.0.0), 容器内由 Caddy 代理监听 0.0.0.0:3081, 把 Host/Origin 改写
-# 为回环后转发到 127.0.0.1:3080(远程浏览器因此可通过全部接口)。
-# 只在本机使用时不发布端口即可(或把映射改为 "127.0.0.1:3081:3081")。
+# Networking: plain bridge networking with host port 3081. dsh web listens on
+# 127.0.0.1 inside the container (npm releases reject --host 0.0.0.0); Caddy
+# listens on 0.0.0.0:3081 and rewrites Host/Origin to loopback before forwarding
+# to dsh on 127.0.0.1:3080.
+#
+# Persistence: the whole /home/codespace directory is one named volume (the user
+# layer). System packages and /usr/local are replaced on image upgrades while
+# user state and user-installed tools survive.
+
 services:
   dsh:
     image: ghcr.io/niyueee/dsh-container:latest
@@ -18,31 +21,25 @@ services:
     ports:
       - "3081:3081"
     environment:
-      # dsh 数据目录(profiles / sessions / 插件), 挂载命名卷持久化。
-      # 默认 $HOME/dsh(universal 6.x = /home/codespace/dsh), 由入口脚本解析。
-      DSH_HOME: /home/codespace/dsh
-      # 容器启动时自动把 dsh 更新到 npm 最新版(只升不降);
-      # 离线或失败时沿用镜像内版本。设为 0 可关闭。
-      DSH_AUTO_UPDATE: "${DSH_AUTO_UPDATE:-1}"
+      # Runtime configuration surface: auth pair + optional auto-update.
+      # Auto-update is off by default; set to "1" to follow npm latest on boot.
+      DSH_AUTO_UPDATE: "${DSH_AUTO_UPDATE:-0}"
+      # Set both auth variables or neither. Setting only one fails startup.
+      # The proxy is the security boundary; see docs/security.md.
+      # DSH_PROXY_USER: "admin"
+      # DSH_PROXY_PASSWORD: "replace-with-a-strong-password"
     volumes:
-      - dsh-home:/home/codespace/dsh
-      # 任务工作区(默认 $HOME/workspace, 即容器内 /home/codespace/workspace)。
-      # 目录属主需为 uid 1000(容器内用户), 例如:
-      #   mkdir -p workspace && sudo chown -R 1000:1000 workspace
-      # SELinux 主机(Fedora 等)请保留 :Z。
-      - ./workspace:/home/codespace/workspace:Z
-    # 可选: universal 镜像自带 Docker CLI/Engine, 如需容器内 docker-in-docker:
+      - dsh-home:/home/codespace
+      # Host-visible alternative (owner must be uid 1000; keep :Z on SELinux):
+      #   mkdir -p home && sudo chown -R 1000:1000 home
+      #   - ./home:/home/codespace:Z
+    # Optional docker-in-docker: privileged alone is not enough; dockerd must be
+    # started inside the container. Mounting /var/run/docker.sock is equally
+    # high-risk. Only enable either for trusted workloads.
     # privileged: true
-    # 可选: 换 dsh 内部监听端口(默认 3080, 对外端口固定 3081, 一般无需改动;
-    # 不要改成 3081, 会与代理转发端口冲突):
+    # Optional: change dsh's internal port (the exposed port stays 3081).
+    # The entrypoint rejects --port 3081 (proxy conflict) and --port 0.
     # command: ["--port", "8080"]
-    # 可选: 代理 basic auth(强烈建议启用)。镜像内的 Caddy 代理会把 Host/Origin
-    # 改写为回环, 使远程浏览器也能通过 dsh 的全部接口 —— 包括设置/凭据等原本
-    # 仅回环放行的方法, 因此**代理就是安全边界**: 能访问 3081 的人即可读取/修改
-    # 全部配置与凭据。设置下面两个变量即启用基本认证(用户名+密码):
-    # DSH_PROXY_USER: "admin"
-    # DSH_PROXY_PASSWORD: "换一个强密码"
-    # 详细说明见 docs/security.md 安全边界一节。
 
 volumes:
   dsh-home:
