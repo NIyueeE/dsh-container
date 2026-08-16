@@ -7,15 +7,14 @@ that keep docs and examples aligned with code.
 ## What this repository is
 
 A container image for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`),
-built on `mcr.microsoft.com/devcontainers/universal` and published to GHCR as
-`ghcr.io/niyueee/dsh-container`. Users pull the image and run it with Docker/Podman; this repo is
-not an application you run directly.
+built on `debian:13-slim` and published to GHCR as `ghcr.io/niyueee/dsh-container`. Users pull the
+image and run it with Docker/Podman; this repo is not an application you run directly.
 
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `Containerfile` | Image build: base image, latest-LTS Node, user-level rustup/uv/pnpm, apt podman/Caddy, npm dsh, entrypoint |
+| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, user-level rustup/uv, apt podman/Caddy/gh, npm dsh, entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-update.sh` | Idempotent dsh auto-updater, installed as `/usr/local/bin/dsh-update` |
 | `container/dsh-web.sh` | dsh web supervisor (auto-restart), installed as `/usr/local/bin/dsh-web` |
@@ -35,7 +34,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 2. Uses fixed user-layer defaults under `$HOME`: dsh data stays at upstream's `~/.dsh` (no
    `DSH_HOME` override), the process cwd is `$HOME` itself (dsh creates directories under it as
    needed), Rust/cargo live in `~/.rustup` + `~/.cargo`, uv in `~/.local/bin`, and pnpm in
-   `~/.local/share/pnpm`. The whole `/home/codespace` directory is mounted as the persistent user
+   `~/.local/share/pnpm`. The whole `/home/dsh` directory is mounted as the persistent user
    layer; the system layer (`/usr/local`, apt packages) is reset by image upgrades.
 3. Runs `dsh-update` only when `DSH_AUTO_UPDATE=1` (default `0`; offline-safe — keeps the
    in-image version on failure).
@@ -68,14 +67,17 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 
 ## Conventions
 
-- **Runtime user is fixed** to `codespace` (uid 1000) on the pinned universal 6.1.1-noble base.
-  Build steps may use `/home/codespace` directly; the entrypoint still restores `HOME` from
-  passwd at runtime for dsh and tooling.
+- **Runtime user is fixed** to `dsh` (uid 1000) on the Debian slim base. Build steps may use
+  `/home/dsh` directly; the entrypoint still restores `HOME` from passwd at runtime for dsh and
+  tooling.
 - **User-layer defaults are fixed, not configurable surface**: `~/.dsh` (upstream default),
   cwd `$HOME`, `~/.rustup` + `~/.cargo`, `~/.local/bin`, `~/.local/share/pnpm`. Do not turn
-  these paths into entrypoint configuration variables. The whole `/home/codespace` directory is
-  the persistence boundary; user-level tools are initialized by the image but then belong to the
+  these paths into entrypoint configuration variables. The whole `/home/dsh` directory is the
+  persistence boundary; user-level tools are initialized by the image but then belong to the
   persisted volume.
+- **`dsh` has passwordless sudo** via the `sudo` group (`%sudo ALL=(ALL) NOPASSWD:ALL`). This is
+  intentional for a development container, but it means uid 1000 can reach root; treat the
+  container root as reachable by the agent.
 - **podman is installed for in-container rootless work, with subuid/subgid configured.** Nested
   rootless containers additionally depend on the host Docker/Podman seccomp and user-namespace
   settings — docs must not promise that `podman run` always works inside this image.
@@ -102,6 +104,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 just build      # build ghcr.io/niyueee/dsh-container:local (podman or docker)
 just debug      # run in the foreground with port 3081 published
 just update-dsh # update the npm package in the running "dsh" container
+just restart-dsh # restart dsh web inside the running "dsh" container
 ```
 
 - The justfile passes `--format docker` only for podman (Docker has no such flag). podman needs it

@@ -4,7 +4,7 @@
 
 ```
 AGENTS.md                # guidelines for agents working on this repo
-Containerfile            # image build (base + node/pnpm + rust/uv + podman + dsh + entrypoint)
+Containerfile            # image build (Debian slim + node/pnpm + rust/uv + podman/caddy/gh + dsh + entrypoint)
 container/
   entrypoint.sh          # container entrypoint: optional auto-update + Caddy proxy + start dsh-web
   dsh-update.sh          # dsh update script (idempotent, runnable standalone)

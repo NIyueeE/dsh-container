@@ -34,7 +34,7 @@ if [ -z "$HOME" ]; then
 fi
 export HOME
 
-# 用户层状态都在 /home/codespace 下并整体持久化:
+# 用户层状态都在 /home/dsh 下并整体持久化:
 # - dsh 数据不设置 DSH_HOME, 使用上游默认 ~/.dsh
 # - dsh 的 cwd 固定为 $HOME; 不预创建固定工作区目录, dsh 会按需创建
 # - Rust/cargo: ~/.rustup + ~/.cargo

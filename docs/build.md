@@ -1,30 +1,32 @@
 # Build Configuration & Version Pinning
 
 The base image is pinned by default, and the dsh top-level version / Rust toolchain can be pinned
-with `--build-arg`. uv and pnpm are installed with their official scripts at build time (latest
-release), then live in the persisted user layer; Caddy/podman come from apt; the npm dependency
-tree of `@deepseek-ai/dsh` has no lockfile. Default builds are therefore not byte-for-byte
-reproducible.
+with `--build-arg`. uv is copied from a pinned `ghcr.io/astral-sh/uv` image; pnpm is installed with
+npm at build time (latest release), then both live in the persisted user layer. Caddy/podman/gh come
+from apt; the npm dependency tree of `@deepseek-ai/dsh` has no lockfile. Default builds are
+therefore not byte-for-byte reproducible.
 
 ## Build arguments
 
 | Build arg | Default | Description |
 |---|---|---|
-| `BASE_IMAGE` | `mcr.microsoft.com/devcontainers/universal:6.1.1-noble` | Base image (pinned for reproducible builds; override only if you also adjust the `/home/codespace` user-layer assumptions) |
+| `BASE_IMAGE` | `debian:13-slim` | Base image (pinned for reproducible builds; override only if you also adjust the `/home/dsh` user-layer assumptions) |
 | `DSH_VERSION` | `latest` | dsh version; auto-update is off by default, so a pinned image stays pinned unless you set `DSH_AUTO_UPDATE=1` at runtime |
 | `BUILD_VERSION` | `latest` | Written to the OCI label `org.opencontainers.image.version`; CI passes the release version on `v*` tag builds (see [releasing.md](releasing.md)) |
 | `RUST_TOOLCHAIN` | `stable` | Rust toolchain (e.g. `1.88.0`) |
 | `BUILD_GIT_SHA` / `BUILD_GIT_REF` | `unknown` | Written to the OCI labels `org.opencontainers.image.revision` / `org.opencontainers.image.ref.name` |
 
-User-level tool defaults live under the persisted `/home/codespace` volume:
+User-level tool defaults live under the persisted `/home/dsh` volume:
 
 - Rust/cargo: `~/.rustup` and `~/.cargo`
 - uv: `~/.local/bin`, with uv's default `~/.local/share/uv` and `~/.cache/uv`
 - pnpm: `~/.local/share/pnpm`, binary linked from `~/.local/bin/pnpm`
+- dsh: npm global prefix `~/.local` (`NPM_CONFIG_PREFIX=/home/dsh/.local`), binary linked from
+  `~/.local/bin/dsh`
 
 These tools are copied into the volume when it is first created; after that the volume owns them,
 so a newer image does not overwrite an existing user's tools. Update them inside the container
-(`rustup update`, `uv self update`, `pnpm add -g pnpm`) or recreate the volume.
+(`rustup update`, `uv self update`, `pnpm add -g pnpm`, `dsh-update`) or recreate the volume.
 
 ## Example
 

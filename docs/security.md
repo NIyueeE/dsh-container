@@ -47,10 +47,10 @@ account.
 
 ## Container-internal privileges
 
-The universal base image gives uid 1000 passwordless `sudo` (`codespace ALL=(root) NOPASSWD:ALL`),
-so `USER 1000` is not a privilege boundary inside the container. Treat the container root as
-reachable by the agent; for stricter sandboxes, remove that sudoers entry or use an additional
-isolation layer (user namespace, VM, etc.).
+The Debian slim image gives uid 1000 passwordless `sudo` via the `sudo` group
+(`%sudo ALL=(ALL) NOPASSWD:ALL`), so `USER 1000` is not a privilege boundary inside the container.
+Treat the container root as reachable by the agent; for stricter sandboxes, remove that sudoers
+entry or use an additional isolation layer (user namespace, VM, etc.).
 
 ## In-container rootless podman
 
@@ -62,7 +62,7 @@ experimental in-container dev tool, not a guaranteed isolation primitive.
 
 ## `~/.dsh` holds API keys
 
-The persisted `/home/codespace` volume contains `~/.dsh` — model API credentials, profiles and
+The persisted `/home/dsh` volume contains `~/.dsh` — model API credentials, profiles and
 session data — plus `~/.cargo`, npm cache, dotfiles, and folders created by dsh under `$HOME`.
 Mind the volume's access permissions and backups; don't share it with untrusted containers.
 

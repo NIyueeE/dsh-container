@@ -119,7 +119,7 @@ jobs:
 
       # 只有 v* tag(正式发布)才推送镜像; 其余事件(main / PR / dispatch)
       # 只构建 + 冒烟验证临时镜像, 不产生任何 GHCR 产物。
-      # 单平台(universal 基础镜像仅 amd64), load 后本地可直接冒烟。
+      # 单平台(当前基础镜像按 amd64 验证), load 后本地可直接冒烟。
       - name: Build image (validation)
         uses: docker/build-push-action@v7
         with:
@@ -168,7 +168,8 @@ jobs:
           docker exec "$cid" uv --version | grep -Eq '^uv [0-9]+\.'
           docker exec "$cid" pnpm --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
           docker exec "$cid" podman --version | grep -Eq '^podman version [0-9]+\.'
-          # 用户级工具目录必须可写/可执行, 并位于持久化的 /home/codespace 下。
+          docker exec "$cid" gh --version | grep -Eq '^gh version [0-9]+\.'
+          # 用户级工具目录必须可写/可执行, 并位于持久化的 /home/dsh 下。
           docker exec "$cid" sh -c '
             home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
             rustup_home="${RUSTUP_HOME:-$home/.rustup}"

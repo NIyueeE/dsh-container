@@ -19,7 +19,7 @@ docker compose -f examples/compose.yaml logs -f
 ```
 
 Open `http://127.0.0.1:3081`. On first use, follow the Web UI wizard to configure a model (API key)
-and pick a working directory under `/home/codespace` (dsh creates folders there as needed).
+and pick a working directory under `/home/dsh` (dsh creates folders there as needed).
 
 Images are published by `v*` release tags; `:latest` points to the most recent release.
 
@@ -30,14 +30,14 @@ Images are published by `v*` release tags; `:latest` points to the most recent r
   boundary; enable `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`):
   - host-only publishing: change the mapping to `"127.0.0.1:3081:3081"`;
   - container-only (not reachable from the host): just don't publish the port.
-- Data persistence: the `dsh-home` volume is mounted on the **whole `/home/codespace` directory**.
+- Data persistence: the `dsh-home` volume is mounted on the **whole `/home/dsh` directory**.
   This is the immutable-image user layer: `~/.dsh` (profiles / sessions / plugins / credentials),
   `~/.cargo`, npm cache, dotfiles, and any folders dsh creates under `$HOME` survive image
   upgrades, while the system layer (`/usr/local`, apt packages) comes from the new image. To
-  access those files directly from the host, switch the volume to a bind mount at `/home/codespace`
+  access those files directly from the host, switch the volume to a bind mount at `/home/dsh`
   and keep it owned by uid 1000; on SELinux hosts keep `:Z` in that bind-mount definition. An
   empty bind mount hides the image-baked user-level tools (`~/.rustup`, `~/.cargo`, `~/.local`,
-  pnpm), so prefer the named volume on first start, or copy `/home/codespace` out of the image
+  pnpm), so prefer the named volume on first start, or copy `/home/dsh` out of the image
   into the host directory first.
 
 ## 3. Podman Quadlet deployment (recommended)
@@ -54,9 +54,9 @@ journalctl -u dsh.service -f
 
 - `dsh.container` publishes port `3081` via `PublishPort=3081:3081` (default bridge network);
   access `http://127.0.0.1:3081`. For host-only publishing use `PublishPort=127.0.0.1:3081:3081`.
-- The `dsh-home` volume is mounted on the whole `/home/codespace` directory (same persistence
+- The `dsh-home` volume is mounted on the whole `/home/dsh` directory (same persistence
   model as Compose). If you prefer host-visible storage, replace it with a bind mount at
-  `/home/codespace` owned by uid 1000.
+  `/home/dsh` owned by uid 1000.
 - For user-level (rootless podman) deployment, put the file in `~/.config/containers/systemd/`
   and change `WantedBy` in `[Install]` to `default.target`.
 
@@ -164,8 +164,8 @@ need the raised idle timeouts (Caddy's defaults are already unlimited).
 
 ## 7. FAQ
 
-**Permission errors when writing to `/home/codespace`**
-If you replace the named `dsh-home` volume with a host bind mount at `/home/codespace`, that host
+**Permission errors when writing to `/home/dsh`**
+If you replace the named `dsh-home` volume with a host bind mount at `/home/dsh`, that host
 directory must be owned by uid 1000: `sudo chown -R 1000:1000 <host-home-dir>`. The default named
 volume handles ownership automatically.
 
@@ -192,7 +192,7 @@ you still see 403, verify you are running an image that contains the Caddy proxy
 browser reaches the published port `3081`.
 
 **Podman rootless + bind mounts**
-If you bind-mount a host directory at `/home/codespace`, make sure it is owned by your uid and
+If you bind-mount a host directory at `/home/dsh`, make sure it is owned by your uid and
 readable by the container; keep the `:Z` label with SELinux.
 
 **Remote access feels slow**

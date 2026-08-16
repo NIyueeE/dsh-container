@@ -9,7 +9,7 @@
 # listens on 0.0.0.0:3081 and rewrites Host/Origin to loopback before forwarding
 # to dsh on 127.0.0.1:3080.
 #
-# Persistence: the whole /home/codespace directory is one named volume (the user
+# Persistence: the whole /home/dsh directory is one named volume (the user
 # layer). System packages and /usr/local are replaced on image upgrades while
 # user state and user-installed tools survive.
 
@@ -29,10 +29,10 @@ services:
       # DSH_PROXY_USER: "admin"
       # DSH_PROXY_PASSWORD: "replace-with-a-strong-password"
     volumes:
-      - dsh-home:/home/codespace
+      - dsh-home:/home/dsh
       # Host-visible alternative (owner must be uid 1000; keep :Z on SELinux):
       #   mkdir -p home && sudo chown -R 1000:1000 home
-      #   - ./home:/home/codespace:Z
+      #   - ./home:/home/dsh:Z
     # Optional docker-in-docker: privileged alone is not enough; dockerd must be
     # started inside the container. Mounting /var/run/docker.sock is equally
     # high-risk. Only enable either for trusted workloads.

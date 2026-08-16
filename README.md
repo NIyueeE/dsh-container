@@ -1,11 +1,10 @@
 # dsh Container Image
 
 Containerized [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`), built on
-top of Microsoft's universal dev container image
-[`mcr.microsoft.com/devcontainers/universal`](https://mcr.microsoft.com/en-us/artifact/mcr/devcontainers/universal/about),
-ready to use out of the box with **optional dsh auto-update** baked in. The image is published to
-GitHub Container Registry; both the `compose.yaml` and the Quadlet `.container` examples pull the
-image directly — no local build needed.
+a small `debian:13-slim` base with only the toolchains this project needs: Node.js LTS, pnpm, uv,
+Rust/cargo, Caddy, podman, and GitHub CLI. It is ready to use out of the box with **optional dsh
+auto-update** baked in. The image is published to GitHub Container Registry; both the `compose.yaml`
+and the Quadlet `.container` examples pull the image directly — no local build needed.
 
 dsh itself comes from the official repository
 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) and is installed the
@@ -15,20 +14,20 @@ way the official README describes: install Node.js, then npm-install `@deepseek-
 
 | Component | Description |
 |---|---|
-| Base image | `mcr.microsoft.com/devcontainers/universal:6.1.1-noble` (Ubuntu 24.04; large but with a complete toolchain; overridable via the `BASE_IMAGE` build arg) |
-| Built-in toolchain | Node.js latest LTS (nvm), Python, Go, Java, Docker CLI/Engine, git, build-essential, etc. |
-| Added user-level tools | Rust/cargo (`~/.rustup` + `~/.cargo`), uv (`~/.local/bin`), pnpm (`~/.local/share/pnpm`) — persisted with `/home/codespace` |
+| Base image | `debian:13-slim` (small, overridable via the `BASE_IMAGE` build arg) |
+| Built-in toolchain | Node.js 22 LTS, pnpm, uv, Rust/cargo, git, build-essential, Caddy, podman, gh |
+| Added user-level tools | Rust/cargo (`~/.rustup` + `~/.cargo`), uv (`~/.local/bin`), pnpm (`~/.local/share/pnpm`) — persisted with `/home/dsh` |
 | Container dev tool | podman (apt), with rootless subuid/subgid mapping configured; nested rootless operation depends on the host runtime |
 | dsh | Global npm install of `@deepseek-ai/dsh`, same source as the official README's `npx @deepseek-ai/dsh web`; pinnable via `DSH_VERSION` |
 | Auto-update | Off by default (`DSH_AUTO_UPDATE=0`); opt in with `DSH_AUTO_UPDATE=1` to update dsh to the latest npm release on container start (only upgrades, never downgrades a pinned version). The image itself supports `Pull=newer` / `AutoUpdate=registry` |
 | dsh web supervisor | `dsh web` runs under a small supervisor (`dsh-web`) that restarts it automatically if it exits; run `dsh-restart` inside the container to restart dsh web without restarting the container |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) rewriting `Host`/`Origin` to loopback, gzip-compressing UI assets (≈1.3 MB → ≈360 KB), with optional basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) |
 | Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080 + 3081) |
-| Runtime user | uid 1000 (`codespace` on universal 6.x); `/home/codespace` is the persisted user layer |
+| Runtime user | uid 1000 (`dsh`); `/home/dsh` is the persisted user layer and `dsh` has passwordless sudo |
 
 The base image is pinned by default; the dsh top-level version and Rust toolchain can be pinned
-with `--build-arg`. uv/pnpm are installed from their official scripts as user-level tools, and
-Caddy/podman come from apt — see [build.md](docs/build.md).
+with `--build-arg`. uv/pnpm are installed as user-level tools, and Caddy/podman/gh come from apt —
+see [build.md](docs/build.md).
 
 ## Environment variables
 
@@ -39,15 +38,17 @@ Caddy/podman come from apt — see [build.md](docs/build.md).
 
 Everything else uses built-in defaults:
 
-- dsh data: `~/.dsh` (`/home/codespace/.dsh`) — upstream default, no `DSH_HOME` override
-- working directory: `$HOME` (`/home/codespace`); dsh creates folders under it as needed
+- dsh data: `~/.dsh` (`/home/dsh/.dsh`) — upstream default, no `DSH_HOME` override
+- working directory: `$HOME` (`/home/dsh`); dsh creates folders under it as needed
 - Rust/cargo: `~/.rustup` + `~/.cargo`
 - uv: `~/.local/bin` (managed Python/tool data in `~/.local/share/uv`)
 - pnpm: `~/.local/share/pnpm`
 
-The whole `/home/codespace` directory is the persistence boundary: mount it as one volume so
-user-level state survives while `/usr/local` and the rest of the system layer are reset on image
-upgrades.
+The whole `/home/dsh` directory is the persistence boundary: mount it as one volume so user-level
+state survives while `/usr/local` and the rest of the system layer are reset on image upgrades.
+User-level tools (Rust/uv/pnpm/dsh) are baked into the image and copied into a fresh named volume on
+first start; system packages installed later with `sudo apt` live in the container/system layer and
+are not part of the persistent home volume.
 
 The exposed port is `3081`: a **Caddy reverse proxy** inside the container listens on
 `0.0.0.0:3081` and forwards to `dsh web` on `127.0.0.1:3080`, rewriting `Host`/`Origin` to loopback.
@@ -89,7 +90,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 ```
 
-> **Persistence** — both examples mount one volume at `/home/codespace`. This is the user layer:
+> **Persistence** — both examples mount one volume at `/home/dsh`. This is the user layer:
 > `~/.dsh`, `~/.cargo`, npm/cache/config files, dsh-created working folders, and user-installed
 > tools survive image upgrades; the system layer (`/usr/local`, apt packages) comes from the new image.
 

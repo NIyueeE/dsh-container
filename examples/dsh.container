@@ -36,8 +36,8 @@ Environment=DSH_AUTO_UPDATE=0
 # Persist the whole user home. User state and user-installed tools survive
 # image upgrades; the system layer is replaced. For host-visible storage use a
 # bind mount owned by uid 1000 (keep :Z on SELinux):
-# Volume=/home/you/dsh-home:/home/codespace:Z
-Volume=dsh-home:/home/codespace
+# Volume=/home/you/dsh-home:/home/dsh:Z
+Volume=dsh-home:/home/dsh
 # Pull a newer image on restart and check the registry periodically:
 Pull=newer
 AutoUpdate=registry

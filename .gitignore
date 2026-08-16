@@ -1,2 +1,2 @@
-# 如果把 compose 的 /home/codespace 改成宿主目录绑定挂载, 该目录不入库
+# 如果把 compose 的 /home/dsh 改成宿主目录绑定挂载, 该目录不入库
 home/
