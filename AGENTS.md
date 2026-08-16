@@ -18,6 +18,8 @@ not an application you run directly.
 | `Containerfile` | Image build: base image, latest-LTS Node, user-level rustup/uv/pnpm, apt podman/Caddy, npm dsh, entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-update.sh` | Idempotent dsh auto-updater, installed as `/usr/local/bin/dsh-update` |
+| `container/dsh-web.sh` | dsh web supervisor (auto-restart), installed as `/usr/local/bin/dsh-web` |
+| `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, design, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -45,7 +47,9 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    add basic auth (Caddyfile `basicauth` directive on the distro caddy 2.6 — renamed `basic_auth`
    upstream in 2.7; password bcrypt-hashed via `caddy hash-password`, fed over stdin). Setting only
    one auth variable is a startup error, not a silent no-auth fallback.
-6. Starts `dsh web` with any extra container `command` args (e.g. `--port`).
+6. Starts `dsh-web` (the dsh web supervisor) with any extra container `command` args
+   (e.g. `--port`). `dsh-web` runs `dsh web` and automatically restarts it if it exits; inside the
+   container, `dsh-restart` can be used to restart dsh web without restarting the whole container.
 
 ### Hard constraints from upstream dsh (do not fight these)
 
@@ -107,7 +111,7 @@ just update-dsh # update the npm package in the running "dsh" container
 
 ## Validation checklist before committing
 
-1. `bash -n container/entrypoint.sh` (and `shellcheck` if available)
+1. `bash -n container/*.sh` (and `shellcheck` if available)
 2. Examples parse: `docker compose -f examples/compose.yaml config --quiet` (or podman-compose)
 3. README/README.zh parity: equal heading count, link count, and code-fence count
 4. `just --list` parses with both the podman and docker branches in mind; Docker-only hosts must

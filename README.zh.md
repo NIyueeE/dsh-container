@@ -18,6 +18,7 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 | 容器开发工具 | podman(apt),已配置 rootless subuid/subgid 映射;嵌套 rootless 是否可用取决于宿主运行时 |
 | dsh | npm 全局安装 `@deepseek-ai/dsh`,与官方 README 的 `npx @deepseek-ai/dsh web` 同源;`DSH_VERSION` 可固定 |
 | 自动更新 | 默认关闭(`DSH_AUTO_UPDATE=0`);设 `1` 后容器启动时把 dsh 更新到 npm 最新版(只升不降,不会把固定版本降级);镜像本身支持 `Pull=newer` / `AutoUpdate=registry` |
+| dsh web 守护 | `dsh web` 由 `dsh-web` 守护脚本托管,退出/崩溃后自动重启;容器内执行 `dsh-restart` 可在不重启容器的情况下手动重启 dsh web |
 | 对外暴露 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),把 `Host`/`Origin` 改写为回环并对 UI 资源做 gzip 压缩(约 1.3MB → 约 360KB);可用 `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` 启用 basic auth |
 | 可观测性 | OCI labels(`org.opencontainers.image.*` 含 git revision)、`HEALTHCHECK`(curl 3080 + 3081) |
 | 运行时用户 | uid 1000(universal 6.x 为 `codespace`);`/home/codespace` 是持久化用户层 |
@@ -54,6 +55,13 @@ agent 输出不会被代理延迟。如需跨公网访问,建议在 3081 前用�
 能访问 3081 的人即拥有完全控制权,请启用 `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` 并用防火墙
 收口端口。`dsh web` 的附加参数可通过容器 `command` 透传,例如 `["--port", "8080"]`(只改
 dsh 内部端口,对外端口仍是 3081)。
+
+容器内 `dsh web` 由 `dsh-web` 守护:如果退出或崩溃会自动重新拉起。需要在不重启容器的情况下
+手动重启 dsh web,可执行:
+
+```sh
+docker exec dsh dsh-restart
+```
 
 ## 快速开始
 

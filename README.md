@@ -21,6 +21,7 @@ way the official README describes: install Node.js, then npm-install `@deepseek-
 | Container dev tool | podman (apt), with rootless subuid/subgid mapping configured; nested rootless operation depends on the host runtime |
 | dsh | Global npm install of `@deepseek-ai/dsh`, same source as the official README's `npx @deepseek-ai/dsh web`; pinnable via `DSH_VERSION` |
 | Auto-update | Off by default (`DSH_AUTO_UPDATE=0`); opt in with `DSH_AUTO_UPDATE=1` to update dsh to the latest npm release on container start (only upgrades, never downgrades a pinned version). The image itself supports `Pull=newer` / `AutoUpdate=registry` |
+| dsh web supervisor | `dsh web` runs under a small supervisor (`dsh-web`) that restarts it automatically if it exits; run `dsh-restart` inside the container to restart dsh web without restarting the container |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) rewriting `Host`/`Origin` to loopback, gzip-compressing UI assets (≈1.3 MB → ≈360 KB), with optional basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) |
 | Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`codespace` on universal 6.x); `/home/codespace` is the persisted user layer |
@@ -62,6 +63,13 @@ the security boundary**: anyone who can reach `3081` gets full control, so enabl
 `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` and keep the port firewalled. Extra `dsh web` arguments can
 be passed through the container `command`, e.g. `["--port", "8080"]` (changes only dsh's internal
 port; the exposed port stays `3081`).
+
+Inside the container, `dsh web` is supervised by `dsh-web`: if it exits or crashes it is restarted
+automatically. To restart it manually without restarting the container, run:
+
+```sh
+docker exec dsh dsh-restart
+```
 
 ## Quick start
 

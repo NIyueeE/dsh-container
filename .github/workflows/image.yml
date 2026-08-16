@@ -198,6 +198,16 @@ jobs:
           # 幂等: 再次运行不再安装
           docker exec "$cid" dsh-update | grep 'already up to date'
 
+          # dsh web 守护/重启: dsh-restart 后 dsh web 仍可用
+          docker exec "$cid" dsh-restart
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3081/ 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null
+
           # basic auth 模式: 未带凭据 401, 带凭据 200。
           auth_cid="$(docker run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
             -e DSH_HOME=/tmp/dsh-smoke-auth-home \

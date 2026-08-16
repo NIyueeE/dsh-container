@@ -40,6 +40,8 @@ services:
     # Optional: change dsh's internal port (the exposed port stays 3081).
     # The entrypoint rejects --port 3081 (proxy conflict) and --port 0.
     # command: ["--port", "8080"]
+    # Restart dsh web without restarting the container:
+    #   docker exec dsh dsh-restart
 
 volumes:
   dsh-home:

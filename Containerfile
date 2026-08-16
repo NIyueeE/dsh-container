@@ -22,6 +22,8 @@
 # 运行时行为由 container/entrypoint.sh 控制:
 #   - dsh 数据目录使用上游默认 ~/.dsh(即 /home/codespace/.dsh), 不设 DSH_HOME;
 #     进程 cwd 直接使用 $HOME, 不预创建固定工作区子目录
+#   - dsh web 由 dsh-web 守护脚本托管, 崩溃/退出后自动重启;
+#     容器内可用 dsh-restart 手动重启 dsh web(无需重启整个容器)
 #   - 持久化策略: 把整个 /home/codespace 挂载为数据卷, 用户态工具/缓存/配置
 #     都保留; 系统层(/usr/local、apt 包)随镜像更新重置。Rust/cargo、uv、pnpm
 #     均安装为 codespace 用户级工具: ~/.rustup + ~/.cargo、~/.local、~/.local/share/pnpm
@@ -175,11 +177,14 @@ RUN --mount=type=cache,target=/root/.npm,id=npm-${DSH_VERSION} \
     esac; \
     dsh --version
 
-# 入口与更新脚本: 安装时去掉 .sh 扩展名(容器内命令名为 entrypoint / dsh-update)
+# 入口、更新与 dsh web 守护/重启脚本: 安装时去掉 .sh 扩展名
+# (容器内命令名为 entrypoint / dsh-update / dsh-web / dsh-restart)
 # 显式 755: 源文件权限可能不完整, 运行时用户必须可读可执行。
 COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-update.sh /usr/local/bin/dsh-update
-RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update
+COPY container/dsh-web.sh /usr/local/bin/dsh-web
+COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
+RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update /usr/local/bin/dsh-web /usr/local/bin/dsh-restart
 
 # WORKDIR 仅作 docker exec 等场景的兜底(entrypoint 总会 cd 到 $HOME)。
 WORKDIR /

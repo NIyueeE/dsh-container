@@ -73,15 +73,30 @@ Two layers that don't conflict:
    - when offline or on failure it prints a warning and keeps the in-image version — availability
      is not affected.
    - Manual update: `docker exec dsh dsh-update` (or `podman exec dsh dsh-update`) updates the
-     npm package on disk; restart the container afterwards so the running `dsh web` process loads
-     it. `systemctl restart dsh` restarts a Quadlet deployment (and also runs boot auto-update if
-     it is enabled).
+     npm package on disk; then run `docker exec dsh dsh-restart` (or `podman exec dsh
+     dsh-restart`) so the running `dsh web` process loads it without restarting the container.
+     `systemctl restart dsh` also works for a Quadlet deployment (and runs boot auto-update if it
+     is enabled).
 
 2. **The image itself (orchestration layer)** —
    - Quadlet already sets `Pull=newer` (pulls on restart when a newer remote image exists) and
      `AutoUpdate=registry`; combine with `systemctl enable --now podman-auto-update.timer` to
      periodically pull new images and restart the container.
    - Compose: `docker compose pull && docker compose up -d` achieves the same manually.
+
+### 4.1 Restart dsh web without restarting the container
+
+`dsh web` runs under a small supervisor (`dsh-web`) that restarts it automatically if it exits. To
+force a restart from inside the running container:
+
+```sh
+docker exec dsh dsh-restart
+# or: podman exec dsh dsh-restart
+```
+
+This sends `SIGTERM` to the current `dsh web` process; the supervisor starts it again with the same
+container command arguments. Use it after manually changing dsh config/files that need a reload,
+without bouncing Caddy or the whole container.
 
 ## 5. Remote access
 

@@ -6,8 +6,10 @@
 AGENTS.md                # guidelines for agents working on this repo
 Containerfile            # image build (base + node/pnpm + rust/uv + podman + dsh + entrypoint)
 container/
-  entrypoint.sh          # container entrypoint: optional auto-update + Caddy proxy + start dsh web
+  entrypoint.sh          # container entrypoint: optional auto-update + Caddy proxy + start dsh-web
   dsh-update.sh          # dsh update script (idempotent, runnable standalone)
+  dsh-web.sh             # dsh web supervisor: auto-restart dsh web, installed as /usr/local/bin/dsh-web
+  dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)
@@ -25,7 +27,8 @@ docs/
 ## Local development
 
 ```sh
-just build      # build ghcr.io/niyueee/dsh-container:local locally (podman or docker)
-just debug      # run in the foreground (bridge networking, port 3081 published)
-just update-dsh # update the npm package in the running "dsh" container
+just build       # build ghcr.io/niyueee/dsh-container:local locally (podman or docker)
+just debug       # run in the foreground (bridge networking, port 3081 published)
+just update-dsh  # update the npm package in the running "dsh" container
+just restart-dsh # restart dsh web inside the running "dsh" container without restarting it
 ```

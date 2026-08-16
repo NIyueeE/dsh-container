@@ -14,8 +14,9 @@
 #      接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理 ——
 #      DSH_PROXY_USER + DSH_PROXY_PASSWORD 必须成对设置以启用 basic auth,
 #      只设置一个会直接退出(fail closed), 详见 docs/security.md。
-#   6. 以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080(npm 发布版与上游 main
-#      均拒绝 --host 0.0.0.0)
+#   6. 通过 `dsh-web` 守护脚本启动 Web UI, 监听 127.0.0.1:3080
+#      (npm 发布版与上游 main 均拒绝 --host 0.0.0.0); dsh web 崩溃/退出后
+#      会自动重新拉起, 容器内部可用 `dsh-restart` 手动重启 dsh web。
 #   7. Caddy 运行期崩溃由守护循环自动重启; 配置错误在启动时 fail-fast,
 #      持续不可用由 HEALTHCHECK 标 unhealthy, 交给编排层重启容器。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
@@ -180,4 +181,4 @@ fi
   done
 ) &
 
-exec dsh web "$@"
+exec dsh-web "$@"

@@ -31,6 +31,8 @@ Environment=DSH_AUTO_UPDATE=0
 # Environment=DSH_PROXY_PASSWORD=replace-with-a-strong-password
 # Optional: change dsh's internal port (the exposed port stays 3081).
 # Exec=--port 8080
+# Restart dsh web without restarting the container:
+#   podman exec dsh dsh-restart
 # Persist the whole user home. User state and user-installed tools survive
 # image upgrades; the system layer is replaced. For host-visible storage use a
 # bind mount owned by uid 1000 (keep :Z on SELinux):
