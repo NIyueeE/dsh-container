@@ -7,7 +7,8 @@
 # Networking: plain bridge networking with host port 3081. dsh web listens on
 # 127.0.0.1 inside the container (npm releases reject --host 0.0.0.0); Caddy
 # listens on 0.0.0.0:3081 and rewrites Host/Origin to loopback before forwarding
-# to dsh on 127.0.0.1:3080.
+# to dsh on 127.0.0.1:3080. The image also applies an idempotent client-side patch
+# before each dsh web start so remote browsers can use settings/credentials.
 #
 # Persistence: the whole /home/dsh directory is one named volume (the user
 # layer). System packages and /usr/local are replaced on image upgrades while

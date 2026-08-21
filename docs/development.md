@@ -10,6 +10,7 @@ container/
   dsh-update.sh          # dsh update script (idempotent, runnable standalone)
   dsh-web.sh             # dsh web supervisor: auto-restart dsh web, installed as /usr/local/bin/dsh-web
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
+  dsh-client-patch.sh    # idempotent frontend compatibility patch, installed as /usr/local/bin/dsh-client-patch
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)

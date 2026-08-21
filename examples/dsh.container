@@ -20,7 +20,9 @@ Image=ghcr.io/niyueee/dsh-container:latest
 ContainerName=dsh
 # Host 3081 -> container 3081. Caddy listens on 0.0.0.0:3081 inside the
 # container and rewrites Host/Origin to loopback before forwarding to dsh on
-# 127.0.0.1:3080. For host-loopback-only access use:
+# 127.0.0.1:3080. The image also applies an idempotent client-side patch before
+# each dsh web start so remote browsers can use settings/credentials.
+# For host-loopback-only access use:
 # PublishPort=127.0.0.1:3081:3081
 PublishPort=3081:3081
 # Runtime configuration surface: auth pair + optional auto-update.

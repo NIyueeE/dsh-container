@@ -27,6 +27,48 @@ jobs:
       - name: Shell syntax check
         run: bash -n container/*.sh
 
+      - name: dsh-client-patch is idempotent and warns on drift
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p \
+            "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib" \
+            "$tmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist"
+          cat > "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js" <<'EOF'
+          const handle = {
+            api,
+            isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
+          };
+          EOF
+          cat > "$tmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html" <<'EOF'
+          <!doctype html>
+          <html>
+          <head>
+          <script type="module" crossorigin src="/assets/index.js"></script>
+          </head>
+          <body></body>
+          </html>
+          EOF
+          HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null
+          HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null
+          grep -q 'isLoopback: true, // dsh-container remote-proxy patch' \
+            "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js"
+          if grep -q 'isLoopback: pageLocation === void 0' \
+            "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js"; then
+            echo "old isLoopback gate still present after patch" >&2
+            exit 1
+          fi
+          test "$(grep -c 'dsh-container randomUUID polyfill' "$tmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html")" -eq 1
+          # Version drift must not fail the supervisor: warn and skip with exit 0.
+          cat > "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js" <<'EOF'
+          const handle = { api, isLoopback: somethingElse };
+          EOF
+          cat > "$tmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html" <<'EOF'
+          <html><head><script defer src="/x.js"></script></head></html>
+          EOF
+          HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null 2>&1
+
       - name: dsh-update must never downgrade a newer installed version
         run: |
           set -euo pipefail
@@ -191,6 +233,22 @@ jobs:
             --data '{"type":"client-request","rpcId":"1","method":"settings.describe","payload":{}}')"
           [ "$settings_code" = "200" ]
 
+          # 前端兼容补丁: 代理返回的 HTML 必须带 crypto.randomUUID polyfill,
+          # 返回的 connection client bundle 必须把 isLoopback 全局放开, 且旧的
+          # 非回环判断必须消失。再用非回环 Host 头模拟远程浏览器请求代理。
+          curl -fsS http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
+          curl -fsS http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+            grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
+          if curl -fsS http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+            grep -q 'isLoopback: pageLocation === void 0'; then
+            echo "old isLoopback gate is still present in the served client bundle" >&2
+            exit 1
+          fi
+          curl -fsS -H 'Host: dsh.test' http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
+          curl -fsS -H 'Host: dsh.test' http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+            grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
+          docker exec "$cid" sh -c 'command -v dsh-client-patch >/dev/null'
+
           # 真实更新链路: 卸载后由 dsh-update 重新安装, 验证 uid 1000 的
           # 全局 npm install(含 node-pty 等原生模块 install scripts)全链路可用。
           docker exec "$cid" npm uninstall --global --no-fund --no-audit @deepseek-ai/dsh
@@ -208,6 +266,16 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null
+          # 更新 + 重启后补丁必须仍然生效(dsh-web 会在每次启动前重打补丁),
+          # 旧的非回环判断也必须仍然不存在。
+          curl -fsS http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
+          curl -fsS http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+            grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
+          if curl -fsS http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+            grep -q 'isLoopback: pageLocation === void 0'; then
+            echo "old isLoopback gate reappeared after update/restart" >&2
+            exit 1
+          fi
 
           # basic auth 模式: 未带凭据 401, 带凭据 200。
           auth_cid="$(docker run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \

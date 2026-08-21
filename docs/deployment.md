@@ -27,7 +27,8 @@ Images are published by `v*` release tags; `:latest` points to the most recent r
   Inside the container, a **Caddy reverse proxy** listens on `0.0.0.0:3081`, rewrites `Host`/`Origin`
   to loopback, and forwards to dsh on `127.0.0.1:3080` — so remote browsers pass every endpoint,
   including settings/credentials (see [security.md](security.md) — the proxy is the security
-  boundary; enable `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`):
+  boundary; enable `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`; the image also applies an idempotent
+  client-side patch so the settings pages work in remote browsers):
   - host-only publishing: change the mapping to `"127.0.0.1:3081:3081"`;
   - container-only (not reachable from the host): just don't publish the port.
 - Data persistence: the `dsh-home` volume is mounted on the **whole `/home/dsh` directory**.
@@ -120,6 +121,13 @@ The proxy's header rewrite makes every request look loopback, so there is no tru
 to set for remote access — basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) is the access
 control.
 
+Upstream dsh's browser code still gates the settings/credentials pages on
+`window.location.hostname`, so the Caddy rewrite alone would not make those pages usable in a
+remote browser. This image runs `dsh-client-patch` before every `dsh web` start: it treats proxied
+remote browsers as loopback and injects a `crypto.randomUUID` polyfill for plain-HTTP LAN use. The
+patch is idempotent and best-effort — if an upstream dsh version changes the bundle strings, it
+warns and skips instead of blocking startup.
+
 ### External reverse proxy with TLS (WAN)
 
 `3081` is plain HTTP, so for anything beyond the LAN, terminate TLS in front of the container with
@@ -189,7 +197,9 @@ That was the `/api` browser-trust fence rejecting non-loopback `Host` headers (s
 methods are additionally hard-pinned to loopback by upstream dsh). The in-container Caddy proxy
 (which rewrites `Host`/`Origin` to loopback) fixes this: remote browsers pass every endpoint. If
 you still see 403, verify you are running an image that contains the Caddy proxy and that the
-browser reaches the published port `3081`.
+browser reaches the published port `3081`. If the settings page instead shows `settings are
+unavailable in this browser`, verify the image also contains the `dsh-client-patch` client-side
+compatibility patch (and that `dsh web` was restarted after an update).
 
 **Podman rootless + bind mounts**
 If you bind-mount a host directory at `/home/dsh`, make sure it is owned by your uid and

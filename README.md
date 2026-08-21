@@ -22,6 +22,7 @@ way the official README describes: install Node.js, then npm-install `@deepseek-
 | Auto-update | Off by default (`DSH_AUTO_UPDATE=0`); opt in with `DSH_AUTO_UPDATE=1` to update dsh to the latest npm release on container start (only upgrades, never downgrades a pinned version). The image itself supports `Pull=newer` / `AutoUpdate=registry` |
 | dsh web supervisor | `dsh web` runs under a small supervisor (`dsh-web`) that restarts it automatically if it exits; run `dsh-restart` inside the container to restart dsh web without restarting the container |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) rewriting `Host`/`Origin` to loopback, gzip-compressing UI assets (≈1.3 MB → ≈360 KB), with optional basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) |
+| Remote settings compatibility | Idempotent client-side patch applied before every `dsh web` start: remote browsers through the proxy can use settings/credentials, and a `crypto.randomUUID` polyfill keeps the UI working over plain-HTTP LAN access |
 | Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`); `/home/dsh` is the persisted user layer and `dsh` has passwordless sudo |
 
@@ -61,9 +62,13 @@ out quiet streams — see [deployment.md](docs/deployment.md) for a working exam
 browser-trust fence checks HTTP headers only, so remote browsers pass every endpoint —
 including settings/credentials methods that are otherwise loopback-only. **The proxy is therefore
 the security boundary**: anyone who can reach `3081` gets full control, so enable
-`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` and keep the port firewalled. Extra `dsh web` arguments can
-be passed through the container `command`, e.g. `["--port", "8080"]` (changes only dsh's internal
-port; the exposed port stays `3081`).
+`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` and keep the port firewalled. Upstream dsh's browser code
+still gates the settings/credentials pages on `window.location.hostname`, so this image also
+applies a small idempotent client-side patch before every `dsh web` start: it treats proxied
+remote browsers as loopback and injects a `crypto.randomUUID` polyfill for plain-HTTP LAN use. If
+an upstream dsh version changes the bundle strings the patch warns and skips instead of blocking
+startup. Extra `dsh web` arguments can be passed through the container `command`, e.g.
+`["--port", "8080"]` (changes only dsh's internal port; the exposed port stays `3081`).
 
 Inside the container, `dsh web` is supervised by `dsh-web`: if it exits or crashes it is restarted
 automatically. To restart it manually without restarting the container, run:

@@ -24,6 +24,12 @@ loopback** (`settings.*`, `credentials.*`, `agentPreset.*`, `host.pickDirectory`
 **the fence's loopback pin no longer protects anything** — whoever can reach port `3081` can read
 and modify all configuration and API credentials, not just drive the agent.
 
+Upstream dsh's browser code still gates the settings/credentials pages on `window.location.hostname`,
+so the header rewrite alone would not make those pages usable in a remote browser. This image
+therefore runs `dsh-client-patch` before every `dsh web` start: it treats proxied remote browsers
+as loopback and injects a `crypto.randomUUID` polyfill for plain-HTTP LAN use. The patch is
+best-effort and skips with a warning if upstream changes the bundle strings.
+
 Consequences:
 
 - **Enable basic auth** on the proxy by setting both `DSH_PROXY_USER` and `DSH_PROXY_PASSWORD`
@@ -89,5 +95,5 @@ With bridge networking the service is LAN-reachable by default, so treat it like
   (`Upgrade`/`Connection`) and raise the idle timeouts — without them the UI's event streams
   silently fail (see [deployment.md](deployment.md) for a working nginx example);
 - enable the proxy's own basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) for any
-  non-loopback deployment; remote browsers then get full functionality, including settings and
-  credentials.
+  non-loopback deployment; with the image's client-side compatibility patch, remote browsers then
+  get full functionality, including settings and credentials.

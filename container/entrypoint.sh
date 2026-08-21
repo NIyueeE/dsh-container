@@ -17,6 +17,8 @@
 #   6. 通过 `dsh-web` 守护脚本启动 Web UI, 监听 127.0.0.1:3080
 #      (npm 发布版与上游 main 均拒绝 --host 0.0.0.0); dsh web 崩溃/退出后
 #      会自动重新拉起, 容器内部可用 `dsh-restart` 手动重启 dsh web。
+#      dsh-web 每次启动前会运行 dsh-client-patch, 把经代理的远程浏览器视为
+#      回环并注入 crypto.randomUUID polyfill(见 container/dsh-client-patch.sh)。
 #   7. Caddy 运行期崩溃由守护循环自动重启; 配置错误在启动时 fail-fast,
 #      持续不可用由 HEALTHCHECK 标 unhealthy, 交给编排层重启容器。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。

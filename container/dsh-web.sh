@@ -35,6 +35,11 @@ cleanup() {
 trap cleanup TERM INT EXIT
 
 while [ "$STOPPING" = "0" ]; do
+  # 每次启动前重打前端兼容补丁: dsh 自动更新或手动 dsh-update 会覆盖已打补丁
+  # 的文件, 而 dsh-restart 只重启 dsh web 子进程, 不会重跑 entrypoint。
+  if command -v dsh-client-patch >/dev/null 2>&1; then
+    dsh-client-patch || echo "[dsh-web] dsh-client-patch failed; continuing" >&2
+  fi
   dsh web "$@" &
   CHILD_PID=$!
   echo "$CHILD_PID" > "$PIDFILE"

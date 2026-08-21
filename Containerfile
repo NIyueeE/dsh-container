@@ -23,6 +23,10 @@
 #     进程 cwd 直接使用 $HOME, 不预创建固定工作区子目录
 #   - dsh web 由 dsh-web 守护脚本托管, 崩溃/退出后自动重启;
 #     容器内可用 dsh-restart 手动重启 dsh web(无需重启整个容器)
+#   - dsh-web 每次启动 dsh web 前会运行 dsh-client-patch: 上游浏览器端仍按
+#     location.hostname 限制设置/凭据, 该补丁把经代理的远程浏览器视为回环并
+#     注入 crypto.randomUUID polyfill(纯 HTTP 内网兼容); 幂等且版本漂移时
+#     警告跳过
 #   - 持久化策略: 把整个 /home/dsh 挂载为数据卷, 用户态工具/缓存/配置
 #     都保留; 系统层(/usr/local、apt 包)随镜像更新重置。Rust/cargo、uv、pnpm
 #     均安装为 dsh 用户级工具: ~/.rustup + ~/.cargo、~/.local、~/.local/share/pnpm
@@ -193,7 +197,8 @@ COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-update.sh /usr/local/bin/dsh-update
 COPY container/dsh-web.sh /usr/local/bin/dsh-web
 COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
-RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update /usr/local/bin/dsh-web /usr/local/bin/dsh-restart
+COPY container/dsh-client-patch.sh /usr/local/bin/dsh-client-patch
+RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/dsh-client-patch
 
 # ---------------------------------------------------------------------------
 # 10. 运行配置

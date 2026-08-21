@@ -28,6 +28,11 @@ These tools are copied into the volume when it is first created; after that the 
 so a newer image does not overwrite an existing user's tools. Update them inside the container
 (`rustup update`, `uv self update`, `pnpm add -g pnpm`, `dsh-update`) or recreate the volume.
 
+The image's `dsh-client-patch` compatibility layer is intentionally applied at runtime before every
+`dsh web` start rather than baked into the user layer: existing persistent volumes and dsh
+auto-updates therefore receive the patch too, and it can skip gracefully if upstream changes the
+bundle strings.
+
 ## Example
 
 The idea mirrors Claude Code's `DISABLE_AUTOUPDATER=1`: pin the version and leave runtime

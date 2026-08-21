@@ -19,6 +19,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `container/dsh-update.sh` | Idempotent dsh auto-updater, installed as `/usr/local/bin/dsh-update` |
 | `container/dsh-web.sh` | dsh web supervisor (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
+| `container/dsh-client-patch.sh` | Idempotent client-side compatibility patch, installed as `/usr/local/bin/dsh-client-patch` |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, design, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -47,8 +48,11 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    upstream in 2.7; password bcrypt-hashed via `caddy hash-password`, fed over stdin). Setting only
    one auth variable is a startup error, not a silent no-auth fallback.
 6. Starts `dsh-web` (the dsh web supervisor) with any extra container `command` args
-   (e.g. `--port`). `dsh-web` runs `dsh web` and automatically restarts it if it exits; inside the
-   container, `dsh-restart` can be used to restart dsh web without restarting the whole container.
+   (e.g. `--port`). Before every `dsh web` launch, `dsh-web` runs `dsh-client-patch`, an idempotent
+   compatibility patch for upstream's browser-side loopback gate (settings/credentials) and a
+   `crypto.randomUUID` polyfill for plain-HTTP LAN use. `dsh-web` also restarts `dsh web`
+   automatically if it exits; inside the container, `dsh-restart` can be used to restart dsh web
+   without restarting the whole container.
 
 ### Hard constraints from upstream dsh (do not fight these)
 
@@ -62,6 +66,10 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   via an empty trust list. This is intentional: the **proxy is the security boundary** — anyone
   reaching `3081` can read/write all settings and credentials. Never present this as "secure by
   default"; `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control.
+- **Upstream's browser code still gates settings/credentials on `location.hostname`**, so the Caddy
+  header rewrite alone is not enough for the settings UI. `dsh-client-patch` makes the browser treat
+  a proxied remote session as loopback and injects a `crypto.randomUUID` polyfill; it is best-effort
+  and skips with a warning if upstream changes the bundle strings.
 - dsh's agent workspace is the process cwd — the entrypoint must `cd "$HOME"` (or, for tests,
   whichever directory it is configured to use).
 
@@ -124,3 +132,6 @@ just restart-dsh # restart dsh web inside the running "dsh" container
    works); with `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` set, the same request must return **401
    without credentials and 200 with them**, and setting only one auth variable must exit nonzero.
    Always test inside the built image (the dev machine may lack `caddy`).
+6. If you touched the client patch, run the `dsh-client-patch` validate step and verify the served
+   `/plugins/@deepseek-ai/dsh-client-connection/client.js` contains the `isLoopback` patch and the
+   served index.html contains the `crypto.randomUUID` polyfill.
