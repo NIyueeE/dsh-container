@@ -2,7 +2,8 @@
 # dsh web 守护脚本:
 #   以前台方式运行 `dsh web`, 崩溃/退出后自动重新拉起;
 #   配合 `dsh-restart` 可在容器内部重启 dsh web(向当前子进程发 SIGTERM)。
-# 附加参数会原样透传给 dsh web, 例如 --port 8080。
+# 附加参数会原样透传给 dsh web, 例如 --port 8080; 容器内默认追加
+# --no-open(无浏览器环境), 用户显式传入时不重复。
 set -euo pipefail
 
 # 独立执行时也尽量还原 HOME(与 entrypoint 行为一致)。
@@ -19,6 +20,14 @@ export HOME
 # 确保用户级工具在 PATH 中, 并把工作目录切到 $HOME(dsh 的工作区)。
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 cd "$HOME"
+
+# 容器内没有浏览器: 默认补上 --no-open, 避免每次启动 dsh web 都尝试打开
+# 默认浏览器(无浏览器环境下上游只会打印打开失败的错误)。用户已显式传入
+# --no-open 时不重复添加。
+case " $* " in
+  *" --no-open "*) : ;;
+  *) set -- "$@" --no-open ;;
+esac
 
 PIDFILE=/tmp/dsh-web.pid
 CHILD_PID=""

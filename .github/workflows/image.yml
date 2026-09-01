@@ -297,8 +297,12 @@ jobs:
           [[ "$connection_bundle" != *'isLoopback: transport?.ownsHost === true'* ]] \
             || die "old isLoopback gate still present in the served bundle"
 
-          # 非回环 Host 头模拟远程浏览器: 改写后同样可用。
-          index_alt="$(curl -fsS -b "$cookie_jar" -H 'Host: dsh.test' http://127.0.0.1:3081/)" \
+          # 非回环 Host 头模拟远程浏览器: Caddy 改写后同样可用。注意 curl 在
+          # 覆盖 Host 头时不会按 jar 匹配发送 cookie, 因此这里显式携带会话
+          # cookie(真实远程浏览器按自己访问的 host 存取 cookie, 不受影响)。
+          session_cookie="$(awk -F'\t' 'NF>=7 {print $6 "=" $7}' "$cookie_jar" | tail -n1)"
+          [ -n "$session_cookie" ] || die "session cookie missing from the cookie jar"
+          index_alt="$(curl -fsS -H "Cookie: $session_cookie" -H 'Host: dsh.test' http://127.0.0.1:3081/)" \
             || die "GET / with Host: dsh.test failed"
           [[ "$index_alt" == *'dsh-container randomUUID polyfill'* ]] \
             || die "Host: dsh.test index lacks the polyfill"

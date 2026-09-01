@@ -46,7 +46,8 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    upstream in 2.7; password bcrypt-hashed via `caddy hash-password`, fed over stdin). Setting only
    one auth variable is a startup error, not a silent no-auth fallback.
 5. Starts `dsh-web` (the dsh web supervisor) with any extra container `command` args
-   (e.g. `--port`). Before every `dsh web` launch, `dsh-web` runs `dsh-client-patch`, an idempotent
+   (e.g. `--port`); the container has no browser, so `dsh-web` appends `--no-open` unless the
+   caller already passed it. Before every `dsh web` launch, `dsh-web` runs `dsh-client-patch`, an idempotent
    compatibility patch for upstream's browser-side loopback gate (settings/credentials) and a
    `crypto.randomUUID` polyfill for plain-HTTP LAN use. `dsh-web` also restarts `dsh web`
    automatically if it exits; inside the container, `dsh-restart` can be used to restart dsh web
