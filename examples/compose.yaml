@@ -5,10 +5,12 @@
 # See docs/deployment.md for the full guide.
 #
 # Networking: plain bridge networking with host port 3081. dsh web listens on
-# 127.0.0.1 inside the container (npm releases reject --host 0.0.0.0); Caddy
+# 127.0.0.1 inside the container (upstream dsh rejects --host 0.0.0.0); Caddy
 # listens on 0.0.0.0:3081 and rewrites Host/Origin to loopback before forwarding
-# to dsh on 127.0.0.1:3080. The image also applies an idempotent client-side patch
-# before each dsh web start so remote browsers can use settings/credentials.
+# to dsh on 127.0.0.1:3080. dsh web prints a login URL with a one-time token to the
+# container logs; open it through this published port once to get the browser session
+# cookie. The image also applies an idempotent client-side patch before each dsh web
+# start so remote browsers can use settings/credentials.
 #
 # Persistence: the whole /home/dsh directory is one named volume (the user
 # layer). System packages and /usr/local are replaced on image upgrades while
@@ -22,10 +24,8 @@ services:
     ports:
       - "3081:3081"
     environment:
-      # Runtime configuration surface: auth pair + optional auto-update.
-      # Auto-update is off by default; set to "1" to follow npm latest on boot.
-      DSH_AUTO_UPDATE: "${DSH_AUTO_UPDATE:-0}"
-      # Set both auth variables or neither. Setting only one fails startup.
+      # Runtime configuration surface: auth pair. Set both auth variables or
+      # neither. Setting only one fails startup.
       # The proxy is the security boundary; see docs/security.md.
       # DSH_PROXY_USER: "admin"
       # DSH_PROXY_PASSWORD: "replace-with-a-strong-password"

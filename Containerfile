@@ -4,18 +4,19 @@
 #
 # 基础镜像: debian:13-slim —— 比通用开发容器镜像小很多, 只保留本项目
 # 需要的工具链: Node.js LTS、pnpm、uv、Rust/cargo、Caddy、podman、gh。
-# 在此之上按官方仓库 https://github.com/deepseek-ai/deepseek-harness 的 npm
-# 方式安装 dsh。
+# 在此之上按官方仓库 https://github.com/deepseek-ai/deepseek-harness 的源码
+# 方式构建 dsh: git clone 后切换到指定 tag, 再用 pnpm install/build:official。
 #
-# 可复现性: 基础镜像 tag、rust 工具链、dsh 顶层版本均可通过构建参数固定;
-# uv/pnpm 版本未固定(用户级工具, 随 /home/dsh 数据卷持久化, 可由用户自行更新)。
-# Caddy/podman 来自 apt 仓库, npm 全局安装没有 lockfile, 因此默认构建不是
-# 逐字节可复现, 生产发布建议固定 DSH_VERSION:
+# 可复现性: 基础镜像 tag、rust 工具链、dsh 源码 tag 均可通过构建参数固定;
+# pnpm 版本从所构建 tag 的 packageManager 读取并安装为用户级工具
+# (随 /home/dsh 数据卷持久化, 可由用户自行更新)。Caddy/podman 来自 apt 仓库,
+# dsh 依赖树由官方 pnpm-lock.yaml 锁定, 默认构建安装官方最新 tag。
+# 生产发布建议固定 DSH_TAG:
 #   podman build --format docker \
-#                --build-arg DSH_VERSION=0.1.0-rc.6 \
+#                --build-arg DSH_TAG=dsh-v0.1.2-alpha.3 \
 #                --build-arg RUST_TOOLCHAIN=1.88.0 \
 #                -t dsh-container .
-# BUILD_VERSION 写入 OCI 版本 label: CI 打 v* tag 时传 release 版本(如 0.2.1),
+# BUILD_VERSION 写入 OCI 版本 label: CI 打 dsh-v* tag 时传官方仓库 tag,
 # 与镜像 tag 对齐; 未传时默认 latest。
 #
 # 运行时行为由 container/entrypoint.sh 控制:
@@ -28,12 +29,11 @@
 #     注入 crypto.randomUUID polyfill(纯 HTTP 内网兼容); 幂等且版本漂移时
 #     警告跳过
 #   - 持久化策略: 把整个 /home/dsh 挂载为数据卷, 用户态工具/缓存/配置
-#     都保留; 系统层(/usr/local、apt 包)随镜像更新重置。Rust/cargo、uv、pnpm
-#     均安装为 dsh 用户级工具: ~/.rustup + ~/.cargo、~/.local、~/.local/share/pnpm
-#   - 启动时默认不自动更新 dsh(DSH_AUTO_UPDATE=0, 镜像 tag 决定版本);
-#     显式设置 DSH_AUTO_UPDATE=1 时启动时更新到 npm latest(只升不降)
+#     都保留; 系统层(/usr/local、/opt、apt 包)随镜像更新重置。Rust/cargo、uv、
+#     pnpm 安装为 dsh 用户级工具: ~/.rustup + ~/.cargo、~/.local、~/.local/share/pnpm;
+#     dsh 源码与构建产物在系统层 /opt/deepseek-harness, 不依赖用户数据卷
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
-#     (npm 发布版与上游 main 均拒绝 --host 0.0.0.0: 上游有意为之的安全设计)
+#     (上游 tag 与 main 均拒绝 --host 0.0.0.0: 上游有意为之的安全设计)
 #   - Caddy 反向代理监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后转发到 dsh 的
 #     127.0.0.1:3080, 并对 UI 资源做 gzip 压缩(远端访问更快); 运行期崩溃自动重启。
 #     dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
@@ -48,7 +48,7 @@ ARG BASE_IMAGE=debian:13-slim
 
 FROM ${BASE_IMAGE}
 
-ARG DSH_VERSION=latest
+ARG DSH_TAG=latest
 ARG BUILD_VERSION=latest
 ARG RUST_TOOLCHAIN=stable
 ARG BUILD_GIT_SHA=unknown
@@ -58,7 +58,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 
 LABEL org.opencontainers.image.title="DeepSeek Harness (dsh) container image" \
-      org.opencontainers.image.description="Debian slim based image for the DeepSeek Harness Web UI, with optional dsh auto-update on boot" \
+      org.opencontainers.image.description="Debian slim based image for the DeepSeek Harness Web UI, built from source at a pinned upstream tag" \
       org.opencontainers.image.source="https://github.com/niyueee/dsh-container" \
       org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.revision="${BUILD_GIT_SHA}" \
@@ -135,7 +135,7 @@ RUN mkdir -p /etc/containers \
     && echo '{"default": [{"type": "insecureAcceptAnything"}]}' > /etc/containers/policy.json
 
 # ---------------------------------------------------------------------------
-# 4. 安装 Node.js 22.x LTS(系统层)+ pnpm(用户级)
+# 4. 安装 Node.js 22.x LTS(系统层)
 # ---------------------------------------------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/node-setup.sh \
     && bash /tmp/node-setup.sh \
@@ -151,21 +151,7 @@ RUN ln -sfn /home/dsh/.local/bin/uv /usr/local/bin/uv \
     && chown -R dsh:dsh /home/dsh/.local
 
 # ---------------------------------------------------------------------------
-# 6. 安装 pnpm(用户级)
-# ---------------------------------------------------------------------------
-RUN set -eux; \
-    USER_HOME=/home/dsh; \
-    PNPM_HOME="$USER_HOME/.local/share/pnpm"; \
-    USER_BIN="$USER_HOME/.local/bin"; \
-    mkdir -p "$PNPM_HOME" "$USER_BIN"; \
-    npm install --global --prefix "$PNPM_HOME" --no-fund --no-audit pnpm; \
-    ln -sfn "$PNPM_HOME/bin/pnpm" "$USER_BIN/pnpm"; \
-    ln -sfn "$USER_BIN/pnpm" /usr/local/bin/pnpm; \
-    chown -R dsh:dsh "$USER_HOME/.local"; \
-    HOME="$USER_HOME" PNPM_HOME="$PNPM_HOME" "$PNPM_HOME/bin/pnpm" --version
-
-# ---------------------------------------------------------------------------
-# 7. 安装 Rust/cargo(用户级)
+# 6. 安装 Rust/cargo(用户级)
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     USER_HOME=/home/dsh; \
@@ -182,34 +168,68 @@ RUN set -eux; \
     cargo --version
 
 # ---------------------------------------------------------------------------
-# 8. 安装 dsh(用户级, 非 root 自动更新无需 sudo)
-# ---------------------------------------------------------------------------
-RUN --mount=type=cache,target=/root/.npm,id=npm-${DSH_VERSION} \
-    set -eux; \
-    npm install --global --no-fund --no-audit --dangerously-allow-all-scripts "@deepseek-ai/dsh@${DSH_VERSION}"; \
-    chown -R dsh:dsh /home/dsh/.local; \
-    dsh --version
-
-# ---------------------------------------------------------------------------
-# 9. 入口、更新与 dsh web 守护/重启脚本
+# 7. 入口、dsh web 守护/重启与前端兼容补丁脚本
 # ---------------------------------------------------------------------------
 COPY container/entrypoint.sh /usr/local/bin/entrypoint
-COPY container/dsh-update.sh /usr/local/bin/dsh-update
 COPY container/dsh-web.sh /usr/local/bin/dsh-web
 COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
 COPY container/dsh-client-patch.sh /usr/local/bin/dsh-client-patch
-RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-update /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/dsh-client-patch
+RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/dsh-client-patch
 
 # ---------------------------------------------------------------------------
-# 10. 运行配置
+# 8. 拉取 dsh 官方源码并切换到指定 tag(默认 latest = 官方最新 tag)
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    git clone --filter=blob:none --no-checkout https://github.com/deepseek-ai/deepseek-harness.git /opt/deepseek-harness; \
+    cd /opt/deepseek-harness; \
+    if [ "${DSH_TAG}" = "latest" ]; then \
+      DSH_TAG="$(git tag --sort=-v:refname --list 'dsh-v*' | head -n1)"; \
+      echo "resolved latest upstream dsh tag: $DSH_TAG"; \
+    fi; \
+    test -n "$DSH_TAG"; \
+    git checkout "$DSH_TAG"; \
+    git rev-parse HEAD
+
+# ---------------------------------------------------------------------------
+# 9. 安装 pnpm(用户级, 版本对齐所构建 tag 的 packageManager)
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    USER_HOME=/home/dsh; \
+    PNPM_HOME="$USER_HOME/.local/share/pnpm"; \
+    USER_BIN="$USER_HOME/.local/bin"; \
+    mkdir -p "$PNPM_HOME" "$USER_BIN"; \
+    PNPM_VERSION="$(node -p "require('/opt/deepseek-harness/package.json').packageManager.split('@')[1]")"; \
+    npm install --global --prefix "$PNPM_HOME" --no-fund --no-audit "pnpm@$PNPM_VERSION"; \
+    ln -sfn "$PNPM_HOME/bin/pnpm" "$USER_BIN/pnpm"; \
+    ln -sfn "$USER_BIN/pnpm" /usr/local/bin/pnpm; \
+    chown -R dsh:dsh "$USER_HOME/.local"; \
+    HOME="$USER_HOME" PNPM_HOME="$PNPM_HOME" "$PNPM_HOME/bin/pnpm" --version
+
+# ---------------------------------------------------------------------------
+# 10. 从源码构建 dsh(系统层 /opt/deepseek-harness; 构建产物与镜像绑定)
+# ---------------------------------------------------------------------------
+RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
+    set -eux; \
+    export CI=true; \
+    cd /opt/deepseek-harness; \
+    pnpm install --frozen-lockfile --store-dir /root/.pnpm-store; \
+    pnpm run build:official; \
+    ln -sfn /opt/deepseek-harness/apps/cli/lib/bin.js /usr/local/bin/dsh; \
+    DSH_CLIENT_PATCH_ROOT=/opt/deepseek-harness dsh-client-patch; \
+    chown -R dsh:dsh /opt/deepseek-harness; \
+    dsh --version
+
+# ---------------------------------------------------------------------------
+# 11. 运行配置
 # ---------------------------------------------------------------------------
 WORKDIR /home/dsh
 EXPOSE 3081
 
 # Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:3080;
-# healthcheck 同时要求 dsh 和代理可响应。
+# healthcheck 同时要求 dsh 和代理可响应。dsh web 对无会话的根请求返回 401,
+# 因此这里用 curl 的退出码(连接成功)而不是 HTTP 200 作为存活判据。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:3080/ >/dev/null && curl -sS -o /dev/null http://127.0.0.1:3081/ >/dev/null || exit 1
+    CMD curl -sS -o /dev/null http://127.0.0.1:3080/ && curl -sS -o /dev/null http://127.0.0.1:3081/ || exit 1
 
 USER dsh
 ENTRYPOINT ["entrypoint"]

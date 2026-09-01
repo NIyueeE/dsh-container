@@ -3,10 +3,10 @@
 #   1. 还原 HOME(数值 USER 1000 不会自动设置)
 #   2. 使用默认用户层路径: dsh 数据 ~/.dsh(上游默认, 不设 DSH_HOME),
 #      进程 cwd 直接使用 $HOME(dsh 按需在 $HOME 下创建目录);
-#      Rust/cargo、uv、pnpm 都在 ~/ 下的用户级目录, 整个 home 由数据卷持久化
-#   3. DSH_AUTO_UPDATE=1 时启动前把 dsh 更新到 npm latest(默认 0, 只升不降)
-#   4. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081)
-#   5. 启动 Caddy 反向代理监听 0.0.0.0:3081: 把 Host/Origin 改写为回环后转发到
+#      Rust/cargo、uv、pnpm 都在 ~/ 下的用户级目录, 整个 home 由数据卷持久化;
+#      dsh 本体在系统层 /opt/deepseek-harness, 随镜像更新, 不在用户数据卷中
+#   3. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081)
+#   4. 启动 Caddy 反向代理监听 0.0.0.0:3081: 把 Host/Origin 改写为回环后转发到
 #      127.0.0.1:$PORT, 并对 UI 资源做 gzip 压缩(UI 静态资源约
 #      1.3MB, 压缩后约 360KB, 远端访问显著更快); SSE/WebSocket 流式响应
 #      不缓冲(Caddy 对 text/event-stream 即时 flush, WebSocket 直通)。
@@ -14,12 +14,14 @@
 #      接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理 ——
 #      DSH_PROXY_USER + DSH_PROXY_PASSWORD 必须成对设置以启用 basic auth,
 #      只设置一个会直接退出(fail closed), 详见 docs/security.md。
-#   6. 通过 `dsh-web` 守护脚本启动 Web UI, 监听 127.0.0.1:3080
-#      (npm 发布版与上游 main 均拒绝 --host 0.0.0.0); dsh web 崩溃/退出后
+#   5. 通过 `dsh-web` 守护脚本启动 Web UI, 监听 127.0.0.1:3080
+#      (上游 tag 与 main 均拒绝 --host 0.0.0.0); dsh web 崩溃/退出后
 #      会自动重新拉起, 容器内部可用 `dsh-restart` 手动重启 dsh web。
+#      dsh web 会打印带 ?token=... 的一次性登录 URL 到容器日志, 通过对外
+#      3081 端口打开该 URL 即可换取浏览器会话 cookie。
 #      dsh-web 每次启动前会运行 dsh-client-patch, 把经代理的远程浏览器视为
 #      回环并注入 crypto.randomUUID polyfill(见 container/dsh-client-patch.sh)。
-#   7. Caddy 运行期崩溃由守护循环自动重启; 配置错误在启动时 fail-fast,
+#   6. Caddy 运行期崩溃由守护循环自动重启; 配置错误在启动时 fail-fast,
 #      持续不可用由 HEALTHCHECK 标 unhealthy, 交给编排层重启容器。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
 set -euo pipefail
@@ -48,14 +50,6 @@ export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
 mkdir -p "$HOME/.cargo/bin" "$HOME/.local/bin" "$PNPM_HOME"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 cd "$HOME"
-
-# 自动更新默认关闭(DSH_AUTO_UPDATE=0), 显式设 1 才在启动时更新;
-# 失败(如离线)时沿用镜像内已装版本继续启动。
-if [ "${DSH_AUTO_UPDATE:-0}" = "1" ]; then
-  if ! dsh-update; then
-    echo "[entrypoint] dsh auto-update failed; continuing with installed version" >&2
-  fi
-fi
 
 # 从附加参数中提取 --port <N> / --port=<N>, 使 Caddy 转发目标与 dsh 实际
 # 监听端口一致(对外端口固定 3081, 不受影响)。

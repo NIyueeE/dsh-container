@@ -6,7 +6,7 @@ the Compose example also works on Docker Desktop for macOS/Windows).
 ## 1. Prerequisites
 
 - Linux host (Docker Engine ≥ 24 or Podman ≥ 4.4) — or Docker Desktop for the Compose example
-- Access to `ghcr.io`; `registry.npmjs.org` is only needed if you set `DSH_AUTO_UPDATE=1`
+- Access to `ghcr.io`
 - Port `3081` free (the exposed port; dsh itself listens on `127.0.0.1:3080` inside the container)
 - In-container rootless podman needs a host runtime that allows nested user namespaces (Docker's
   default seccomp profile may block it); see [security.md](security.md)
@@ -15,13 +15,17 @@ the Compose example also works on Docker Desktop for macOS/Windows).
 
 ```bash
 docker compose -f examples/compose.yaml up -d
-docker compose -f examples/compose.yaml logs -f
+docker compose logs dsh | grep 'dsh web:'
 ```
 
-Open `http://127.0.0.1:3081`. On first use, follow the Web UI wizard to configure a model (API key)
+`dsh web` prints a login URL with a one-time `?token=...` query. Open it through the published
+proxy port once — for a local deployment that means replacing dsh's internal loopback port with
+`3081`, e.g. `http://127.0.0.1:3081/?token=<token>`. The token is exchanged for a browser session
+cookie and redirects to `/`. On first use, follow the Web UI wizard to configure a model (API key)
 and pick a working directory under `/home/dsh` (dsh creates folders there as needed).
 
-Images are published by `v*` release tags; `:latest` points to the most recent release.
+Images are published by `dsh-v*` release tags that match upstream dsh tags; `:latest` points to
+the most recent release.
 
 - `compose.yaml` publishes port `3081` on the host (`ports: ["3081:3081"]`, plain bridge networking).
   Inside the container, a **Caddy reverse proxy** listens on `0.0.0.0:3081`, rewrites `Host`/`Origin`
@@ -33,13 +37,14 @@ Images are published by `v*` release tags; `:latest` points to the most recent r
   - container-only (not reachable from the host): just don't publish the port.
 - Data persistence: the `dsh-home` volume is mounted on the **whole `/home/dsh` directory**.
   This is the immutable-image user layer: `~/.dsh` (profiles / sessions / plugins / credentials),
-  `~/.cargo`, npm cache, dotfiles, and any folders dsh creates under `$HOME` survive image
-  upgrades, while the system layer (`/usr/local`, apt packages) comes from the new image. To
-  access those files directly from the host, switch the volume to a bind mount at `/home/dsh`
-  and keep it owned by uid 1000; on SELinux hosts keep `:Z` in that bind-mount definition. An
-  empty bind mount hides the image-baked user-level tools (`~/.rustup`, `~/.cargo`, `~/.local`,
-  pnpm), so prefer the named volume on first start, or copy `/home/dsh` out of the image
-  into the host directory first.
+  `~/.cargo`, pnpm store/cache, dotfiles, and any folders dsh creates under `$HOME` survive image
+  upgrades, while the system layer (`/usr/local`, `/opt`, apt packages) comes from the new image.
+  The dsh source tree and built artifacts live in `/opt/deepseek-harness`, so an empty or fresh
+  `/home/dsh` volume never hides dsh. To access user files directly from the host, switch the
+  volume to a bind mount at `/home/dsh` and keep it owned by uid 1000; on SELinux hosts keep `:Z`
+  in that bind-mount definition. An empty bind mount hides the image-baked user-level tools
+  (`~/.rustup`, `~/.cargo`, `~/.local`, pnpm), so prefer the named volume on first start, or copy
+  `/home/dsh` out of the image into the host directory first.
 
 ## 3. Podman Quadlet deployment (recommended)
 
@@ -50,8 +55,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 
 systemctl status dsh.service
-journalctl -u dsh.service -f
+journalctl -u dsh.service -f | grep 'dsh web:'
 ```
+
+Open the printed `?token=...` login URL through the published port once
+(`http://127.0.0.1:3081/?token=<token>` for the default `PublishPort=3081:3081`).
 
 - `dsh.container` publishes port `3081` via `PublishPort=3081:3081` (default bridge network);
   access `http://127.0.0.1:3081`. For host-only publishing use `PublishPort=127.0.0.1:3081:3081`.
@@ -61,29 +69,15 @@ journalctl -u dsh.service -f
 - For user-level (rootless podman) deployment, put the file in `~/.config/containers/systemd/`
   and change `WantedBy` in `[Install]` to `default.target`.
 
-## 4. Auto-update mechanisms
+## 4. Updating dsh and the image
 
-Two layers that don't conflict:
+dsh is built into the image at `/opt/deepseek-harness` and there is no runtime npm auto-update.
+To run a different dsh version, publish/use an image built from that upstream tag:
 
-1. **dsh itself (inside the container)** — opt-in, off by default (`DSH_AUTO_UPDATE=0`).
-   When you set `DSH_AUTO_UPDATE=1`, `entrypoint.sh` calls `dsh-update` on start:
-   - compares `dsh --version` with `npm view @deepseek-ai/dsh version` (semver: only upgrades —
-     never downgrades a version pinned at build time);
-   - when the npm latest is newer, runs `npm install -g` (the in-image npm global directory is
-     owned by uid 1000, so no root needed);
-   - when offline or on failure it prints a warning and keeps the in-image version — availability
-     is not affected.
-   - Manual update: `docker exec dsh dsh-update` (or `podman exec dsh dsh-update`) updates the
-     npm package on disk; then run `docker exec dsh dsh-restart` (or `podman exec dsh
-     dsh-restart`) so the running `dsh web` process loads it without restarting the container.
-     `systemctl restart dsh` also works for a Quadlet deployment (and runs boot auto-update if it
-     is enabled).
-
-2. **The image itself (orchestration layer)** —
-   - Quadlet already sets `Pull=newer` (pulls on restart when a newer remote image exists) and
-     `AutoUpdate=registry`; combine with `systemctl enable --now podman-auto-update.timer` to
-     periodically pull new images and restart the container.
-   - Compose: `docker compose pull && docker compose up -d` achieves the same manually.
+- **Quadlet** already sets `Pull=newer` (pulls on restart when a newer remote image exists) and
+  `AutoUpdate=registry`; combine with `systemctl enable --now podman-auto-update.timer` to
+  periodically pull new images and restart the container.
+- **Compose**: `docker compose pull && docker compose up -d` achieves the same manually.
 
 ### 4.1 Restart dsh web without restarting the container
 
@@ -118,8 +112,10 @@ ssh -L 3081:127.0.0.1:3081 user@your-host
 ```
 
 The proxy's header rewrite makes every request look loopback, so there is no trust configuration
-to set for remote access — basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) is the access
-control.
+to set for remote access — basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) and the browser
+session token are the access controls. The token is printed once per `dsh web` process launch to
+the container logs; anyone who can read the logs and reach port `3081` can establish a browser
+session.
 
 Upstream dsh's browser code still gates the settings/credentials pages on
 `window.location.hostname`, so the Caddy rewrite alone would not make those pages usable in a
@@ -166,9 +162,15 @@ need the raised idle timeouts (Caddy's defaults are already unlimited).
 
 ## 6. Offline use
 
-- Auto-update is already off by default (`DSH_AUTO_UPDATE=0`), so no runtime setting is needed.
-- Pin the dsh version at image build time with `--build-arg DSH_VERSION=x.y.z`; updates then go
-  through the image release process (see [releasing.md](releasing.md)).
+The running image does not contact the npm registry, and there is no boot-time dsh update to
+disable. Build the image once from the desired upstream tag (pin `DSH_TAG`), then run it on hosts
+that only need access to `ghcr.io` for image pulls:
+
+```bash
+podman build --format docker \
+             --build-arg DSH_TAG=dsh-v0.1.2-alpha.3 \
+             -t dsh-container .
+```
 
 ## 7. FAQ
 
@@ -188,9 +190,17 @@ then use the new port. To move dsh's internal port, pass `command: ["--port", "8
 Basic auth is enabled only when both variables are set. The entrypoint refuses to start when just
 one is present, instead of silently leaving the proxy unauthenticated. Set both or remove both.
 
-**`npm registry unreachable` in the startup logs**
-This only happens when `DSH_AUTO_UPDATE=1`. The container couldn't reach the npm registry and
-kept the in-image dsh version; restart after network is restored, or leave auto-update off.
+**Browser shows "dsh web authentication required" or the page redirects to a 401**
+dsh web mints a fresh login token each time it starts and prints the URL to the container logs.
+Get it with `docker compose logs dsh | grep 'dsh web:'` (or `journalctl -u dsh.service | grep
+'dsh web:'` for Quadlet), then open the printed URL through the published port `3081` once. After
+that the browser holds the session cookie and plain `http://host:3081/` works until the cookie
+expires or the `/home/dsh` volume is recreated.
+
+**How do I update dsh inside a running container?**
+dsh is built into the image and immutable at runtime. Pull/run the image that is tagged with the
+desired upstream dsh tag (`dsh-v*`), then recreate the container. `dsh-restart` only restarts the
+current dsh web process; it does not change the dsh version.
 
 **Remote access fails with `transport failure for /api/...: HTTP 403`**
 That was the `/api` browser-trust fence rejecting non-loopback `Host` headers (settings/credentials

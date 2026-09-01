@@ -16,7 +16,7 @@ if [ -z "$HOME" ]; then
 fi
 export HOME
 
-# 确保用户级工具(dsh 等)在 PATH 中，并把工作目录切到 $HOME(dsh 的工作区)。
+# 确保用户级工具在 PATH 中, 并把工作目录切到 $HOME(dsh 的工作区)。
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 cd "$HOME"
 
@@ -35,8 +35,8 @@ cleanup() {
 trap cleanup TERM INT EXIT
 
 while [ "$STOPPING" = "0" ]; do
-  # 每次启动前重打前端兼容补丁: dsh 自动更新或手动 dsh-update 会覆盖已打补丁
-  # 的文件, 而 dsh-restart 只重启 dsh web 子进程, 不会重跑 entrypoint。
+  # 每次启动前重打前端兼容补丁(幂等, 已打过则跳过): 构建产物在系统层
+  # /opt/deepseek-harness, 镜像构建时已打, 运行时再打一次兜底。
   if command -v dsh-client-patch >/dev/null 2>&1; then
     dsh-client-patch || echo "[dsh-web] dsh-client-patch failed; continuing" >&2
   fi

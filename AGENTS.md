@@ -14,17 +14,16 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 
 | Path | Purpose |
 |---|---|
-| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, user-level rustup/uv, apt podman/Caddy/gh, npm dsh, entrypoint |
+| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, user-level rustup/uv, apt podman/Caddy/gh, source-built dsh (`/opt/deepseek-harness`), entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
-| `container/dsh-update.sh` | Idempotent dsh auto-updater, installed as `/usr/local/bin/dsh-update` |
 | `container/dsh-web.sh` | dsh web supervisor (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
 | `container/dsh-client-patch.sh` | Idempotent client-side compatibility patch, installed as `/usr/local/bin/dsh-client-patch` |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, design, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
-| `.github/workflows/image.yml` | CI: build + smoke test always; push to GHCR + GitHub Release only on `v*` tags |
-| `justfile` | Local build / debug / update commands (podman or docker) |
+| `.github/workflows/image.yml` | CI: build + smoke test always; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags) |
+| `justfile` | Local build / debug / restart commands (podman or docker) |
 
 ## Runtime architecture (understand before editing)
 
@@ -36,18 +35,17 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    `DSH_HOME` override), the process cwd is `$HOME` itself (dsh creates directories under it as
    needed), Rust/cargo live in `~/.rustup` + `~/.cargo`, uv in `~/.local/bin`, and pnpm in
    `~/.local/share/pnpm`. The whole `/home/dsh` directory is mounted as the persistent user
-   layer; the system layer (`/usr/local`, apt packages) is reset by image upgrades.
-3. Runs `dsh-update` only when `DSH_AUTO_UPDATE=1` (default `0`; offline-safe — keeps the
-   in-image version on failure).
-4. Parses `--port <N>` / `--port=<N>` (default 3080) and rejects `0` and `3081`.
-5. Starts a **Caddy reverse proxy**: listens on `0.0.0.0:3081` and forwards to dsh's
+   layer; the system layer (`/usr/local`, `/opt`, apt packages) is reset by image upgrades.
+   dsh itself is built from source into `/opt/deepseek-harness` and is not part of the user layer.
+3. Parses `--port <N>` / `--port=<N>` (default 3080) and rejects `0` and `3081`.
+4. Starts a **Caddy reverse proxy**: listens on `0.0.0.0:3081` and forwards to dsh's
    `127.0.0.1:$PORT`, rewriting `Host`/`Origin` to loopback and gzip-compressing UI assets; it
    restarts itself if it crashes (config errors still fail fast at startup). The Caddyfile is
    generated at runtime into `/tmp/dsh-caddy/Caddyfile`; `DSH_PROXY_USER` + `DSH_PROXY_PASSWORD`
    add basic auth (Caddyfile `basicauth` directive on the distro caddy 2.6 — renamed `basic_auth`
    upstream in 2.7; password bcrypt-hashed via `caddy hash-password`, fed over stdin). Setting only
    one auth variable is a startup error, not a silent no-auth fallback.
-6. Starts `dsh-web` (the dsh web supervisor) with any extra container `command` args
+5. Starts `dsh-web` (the dsh web supervisor) with any extra container `command` args
    (e.g. `--port`). Before every `dsh web` launch, `dsh-web` runs `dsh-client-patch`, an idempotent
    compatibility patch for upstream's browser-side loopback gate (settings/credentials) and a
    `crypto.randomUUID` polyfill for plain-HTTP LAN use. `dsh-web` also restarts `dsh web`
@@ -56,15 +54,18 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 
 ### Hard constraints from upstream dsh (do not fight these)
 
-- **Both npm releases and upstream main of `dsh` reject `--host 0.0.0.0`** (intentional safety
+- **Upstream dsh (both source tags and main) rejects `--host 0.0.0.0`** (intentional safety
   design). dsh always listens on `127.0.0.1` in this image; the Caddy proxy is the exposure
   mechanism.
 - **The `/api` browser-trust fence checks HTTP headers only** (`Host`/`Origin`/`sec-fetch-site`),
   never the TCP source address. The proxy's loopback rewrite therefore passes every endpoint —
-  **including `PRIVILEGED_METHODS`** (`settings.*`, `credentials.*`, `agentPreset.*`,
-  `host.pickDirectory`/`host.openPath`, `llm.discoverModels`) that upstream hard-pins to loopback
-  via an empty trust list. This is intentional: the **proxy is the security boundary** — anyone
-  reaching `3081` can read/write all settings and credentials. Never present this as "secure by
+  **including `PRIVILEGED_METHODS`** (`settings/describe`, `settings/update`, `credentials.*`,
+  `agentPreset.*`, `host.pickDirectory`/`host.openPath`, `llm.discoverModels`) that upstream
+  hard-pins to loopback via an empty trust list. Upstream also requires a browser session cookie:
+  `dsh web` prints a one-time `?token=...` login URL to the container logs, and the first request
+  through the proxy exchanges it for a signed cookie. This is intentional: the **proxy is the
+  security boundary** — anyone who can read the container logs and reach `3081` can establish a
+  browser session and read/write all settings and credentials. Never present this as "secure by
   default"; `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control.
 - **Upstream's browser code still gates settings/credentials on `location.hostname`**, so the Caddy
   header rewrite alone is not enough for the settings UI. `dsh-client-patch` makes the browser treat
@@ -82,7 +83,8 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   cwd `$HOME`, `~/.rustup` + `~/.cargo`, `~/.local/bin`, `~/.local/share/pnpm`. Do not turn
   these paths into entrypoint configuration variables. The whole `/home/dsh` directory is the
   persistence boundary; user-level tools are initialized by the image but then belong to the
-  persisted volume.
+  persisted volume. dsh source/build artifacts live in the system layer at
+  `/opt/deepseek-harness` and are owned by the image, not by the persisted volume.
 - **`dsh` has passwordless sudo** via the `sudo` group (`%sudo ALL=(ALL) NOPASSWD:ALL`). This is
   intentional for a development container, but it means uid 1000 can reach root; treat the
   container root as reachable by the agent.
@@ -111,14 +113,14 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 ```sh
 just build      # build ghcr.io/niyueee/dsh-container:local (podman or docker)
 just debug      # run in the foreground with port 3081 published
-just update-dsh # update the npm package in the running "dsh" container
 just restart-dsh # restart dsh web inside the running "dsh" container
 ```
 
 - The justfile passes `--format docker` only for podman (Docker has no such flag). podman needs it
   so `HEALTHCHECK` survives; GHCR images use the docker format.
-- Releasing: push a `v*` tag → CI builds, smoke-tests, then pushes `v*` + `<sha>` + `latest` and
-  creates a GitHub Release.
+- Releasing: push a `dsh-v*` tag matching the upstream dsh repository tag → CI builds from
+  that upstream tag, smoke-tests amd64, then pushes multi-platform `dsh-v*` + `<sha>` + `latest`
+  and creates a GitHub Release with the same tag name.
 
 ## Validation checklist before committing
 
@@ -127,11 +129,14 @@ just restart-dsh # restart dsh web inside the running "dsh" container
 3. README/README.zh parity: equal heading count, link count, and code-fence count
 4. `just --list` parses with both the podman and docker branches in mind; Docker-only hosts must
    not receive podman-only flags.
-5. If you changed networking/trust behavior, verify end to end in a container: a loopback-only
-   privileged method (`settings.describe`) must return **200 through the proxy** (header rewrite
-   works); with `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` set, the same request must return **401
-   without credentials and 200 with them**, and setting only one auth variable must exit nonzero.
+5. If you changed networking/trust behavior, verify end to end in a container: parse the
+   `?token=...` login URL from `dsh web` logs, exchange it through the proxy for the browser
+   cookie, then a privileged method (`POST /api/settings/describe`) must return **200 with the
+   cookie and 401 without it** (header rewrite + browser session both work). With
+   `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` set, the same flow must return **401 without basic
+   credentials and succeed with them**, and setting only one auth variable must exit nonzero.
    Always test inside the built image (the dev machine may lack `caddy`).
 6. If you touched the client patch, run the `dsh-client-patch` validate step and verify the served
-   `/plugins/@deepseek-ai/dsh-client-connection/client.js` contains the `isLoopback` patch and the
-   served index.html contains the `crypto.randomUUID` polyfill.
+   index.html contains the `crypto.randomUUID` polyfill; for the connection bundle, extract the
+   `/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=...` URL from the served index and
+   verify it contains the `isLoopback` patch.

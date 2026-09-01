@@ -20,15 +20,15 @@ Image=ghcr.io/niyueee/dsh-container:latest
 ContainerName=dsh
 # Host 3081 -> container 3081. Caddy listens on 0.0.0.0:3081 inside the
 # container and rewrites Host/Origin to loopback before forwarding to dsh on
-# 127.0.0.1:3080. The image also applies an idempotent client-side patch before
+# 127.0.0.1:3080. dsh web prints a login URL with a one-time token to the
+# container logs; open it through this published port once to get the browser
+# session cookie. The image also applies an idempotent client-side patch before
 # each dsh web start so remote browsers can use settings/credentials.
 # For host-loopback-only access use:
 # PublishPort=127.0.0.1:3081:3081
 PublishPort=3081:3081
-# Runtime configuration surface: auth pair + optional auto-update.
-# Auto-update is off by default; set to 1 to follow npm latest on boot.
-Environment=DSH_AUTO_UPDATE=0
-# Set both auth variables or neither. Setting only one fails startup.
+# Runtime configuration surface: auth pair. Set both auth variables or
+# neither. Setting only one fails startup.
 # Environment=DSH_PROXY_USER=admin
 # Environment=DSH_PROXY_PASSWORD=replace-with-a-strong-password
 # Optional: change dsh's internal port (the exposed port stays 3081).

@@ -10,7 +10,7 @@
 # 打印警告并跳过, 而不是阻止 dsh web 启动。CI 应能捕获这类版本漂移。
 set -euo pipefail
 
-# 允许显式覆盖(测试用); 否则使用容器内持久化的用户级 dsh 安装。
+# 允许显式覆盖(测试用); 默认使用镜像内源码构建的 dsh 产物。
 if [ -z "${HOME:-}" ]; then
   HOME="$(getent passwd "$(id -u)" | cut -d: -f6)" || true
   export HOME
@@ -20,14 +20,38 @@ if [ -z "${HOME:-}" ]; then
   exit 0
 fi
 
-DSH_PKG_ROOT="${DSH_CLIENT_PATCH_ROOT:-$HOME/.local/lib/node_modules/@deepseek-ai/dsh}"
+DSH_PKG_ROOT="${DSH_CLIENT_PATCH_ROOT:-/opt/deepseek-harness}"
 if [ ! -d "$DSH_PKG_ROOT" ]; then
-  echo "[dsh-client-patch] dsh package not found at $DSH_PKG_ROOT; skipping" >&2
+  echo "[dsh-client-patch] dsh source tree not found at $DSH_PKG_ROOT; skipping" >&2
   exit 0
 fi
 
-CONNECTION_BUNDLE="$(find "$DSH_PKG_ROOT" -path '*/@deepseek-ai/dsh-client-connection/lib/client.js' -print -quit)"
-INDEX_HTML="$(find "$DSH_PKG_ROOT" -path '*/@deepseek-ai/dsh-web-frontend/dist/index.html' -print -quit)"
+# 源码构建布局(默认)与 npm 全局安装布局(旧版兼容)都支持。
+CONNECTION_BUNDLE=""
+for candidate in \
+  "$DSH_PKG_ROOT/packages/client/connection/lib/client.js" \
+  "$DSH_PKG_ROOT/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js"; do
+  if [ -f "$candidate" ]; then
+    CONNECTION_BUNDLE="$candidate"
+    break
+  fi
+done
+if [ -z "$CONNECTION_BUNDLE" ]; then
+  CONNECTION_BUNDLE="$(find "$DSH_PKG_ROOT" -path '*/@deepseek-ai/dsh-client-connection/lib/client.js' -print -quit)"
+fi
+
+INDEX_HTML=""
+for candidate in \
+  "$DSH_PKG_ROOT/apps/web/dist/index.html" \
+  "$DSH_PKG_ROOT/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html"; do
+  if [ -f "$candidate" ]; then
+    INDEX_HTML="$candidate"
+    break
+  fi
+done
+if [ -z "$INDEX_HTML" ]; then
+  INDEX_HTML="$(find "$DSH_PKG_ROOT" -path '*/@deepseek-ai/dsh-web-frontend/dist/index.html' -print -quit)"
+fi
 
 patch_connection() {
   if [ -z "$CONNECTION_BUNDLE" ]; then
@@ -41,18 +65,22 @@ patch_connection() {
 const fs = require('fs')
 const file = process.env.CONNECTION_BUNDLE
 const marker = 'dsh-container remote-proxy patch'
-const old = 'isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),'
+const candidates = [
+  'isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),',
+  'isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),',
+]
 const neu = 'isLoopback: true, // ' + marker
 let src = fs.readFileSync(file, 'utf8')
 if (src.includes(marker)) {
   console.log('[dsh-client-patch] isLoopback already patched')
   process.exit(0)
 }
-if (!src.includes(old)) {
+const old = candidates.find((candidate) => src.includes(candidate))
+if (old === undefined) {
   console.error('[dsh-client-patch] isLoopback pattern not found; upstream may have changed; skipping')
   process.exit(2)
 }
-src = src.replace(old, neu)
+src = src.split(old).join(neu)
 fs.writeFileSync(file, src)
 console.log('[dsh-client-patch] isLoopback patched')
 NODE

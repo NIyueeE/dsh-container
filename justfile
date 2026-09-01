@@ -13,10 +13,6 @@ debug:
     {{container}} run --rm -p 3081:3081 \
         ghcr.io/niyueee/dsh-container:local
 
-# 更新正在运行的 dsh 容器内的全局 npm 包(运行中的 dsh web 需重启后生效)
-update-dsh:
-    {{container}} exec dsh dsh-update
-
 # 在不重启容器的情况下重启容器内的 dsh web(dsh-web 守护会自动重新拉起)
 restart-dsh:
     {{container}} exec dsh dsh-restart

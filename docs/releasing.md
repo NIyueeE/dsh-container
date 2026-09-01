@@ -2,36 +2,49 @@
 
 ## Image tags
 
+Each release pushes one multi-platform image (Linux `amd64` + `arm64`) with three tags:
+
 | Tag | Source | Description |
 |---|---|---|
-| `v*` (e.g. `v1.2.0`) | version tags | semantic versions — the release artifact |
-| `latest` | newest `v*` release | points to the most recent release; what the examples pull |
+| `dsh-v*` (e.g. `dsh-v0.1.2-alpha.3`) | upstream dsh tags | the release artifact; image tag, release page tag, and built dsh source tag are all the same upstream tag |
+| `latest` | newest `dsh-v*` release | points to the most recent release; what the examples pull |
 | `<commit-sha>` | release builds | exactly reproducible |
+
+The version tag keeps the full `dsh-` prefix and is not published as a bare `v*` tag, so it never
+collides with older container-image tags such as `v0.2.2`.
 
 ## CI release workflow
 
 Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/image.yml):
 
-- **main / PR / manual dispatch**: build + smoke test a temporary image only — **nothing is pushed
+- **main / PR / manual dispatch**: build (amd64) + smoke test a temporary image only — **nothing is pushed
   to GHCR**. CI validates that the image is usable, nothing more.
-- **`v*` tag (release)**: build + smoke test, and only after the smoke test passes push
-  `v*` + `<sha>` + `latest` to GHCR, then create a **GitHub Release page** (auto-generated notes).
-  A broken image never reaches the registry; the release is not created if build or smoke fails.
+- **`dsh-v*` tag (release)**: the workflow checks out the matching upstream
+  `deepseek-ai/deepseek-harness` tag (`DSH_TAG=<tag>`), builds and smoke-tests the amd64 image, and
+  only after the smoke test passes pushes the multi-platform image (`linux/amd64,linux/arm64`)
+  with `dsh-v*` + `<sha>` + `latest` to GHCR, then creates a **GitHub Release page**
+  (auto-generated notes) with the same tag. A broken image never reaches the registry; the release
+  is not created if build or smoke fails.
 
-### Version alignment (image version only)
+### Tag alignment
 
-For a tag build, one version string flows through the image's own release:
+For a tag build, one version string flows through the whole release:
 
-- git tag `v1.2.0` → Release page `v1.2.0` → image tag `ghcr.io/niyueee/dsh-container:v1.2.0`
-- OCI label `org.opencontainers.image.version` = `1.2.0` (leading `v` stripped), via the
-  `BUILD_VERSION` build arg (`latest` for non-release builds, which are never published)
+- upstream dsh tag `dsh-v0.1.2-alpha.3` → release page `dsh-v0.1.2-alpha.3` → image tag
+  `ghcr.io/niyueee/dsh-container:dsh-v0.1.2-alpha.3`
+- `Containerfile` checks out that same tag before `pnpm install` / `pnpm run build:official`
+- OCI label `org.opencontainers.image.version` = `dsh-v0.1.2-alpha.3`, via the `BUILD_VERSION`
+  build arg (`latest` for non-release builds, which are never published)
 
-The image version is **decoupled from the dsh npm version**: `DSH_VERSION` is not derived from the
-tag. By default every build installs the npm `latest` at build time, and runtime auto-update is off
-(`DSH_AUTO_UPDATE=0`), so the installed version stays put until the next image release. To pin dsh
-inside a published image, set the repository variable **`DSH_VERSION`** (Settings → Variables →
-Actions); CI passes it as a build arg when set. Local/manual builds can pin directly with
-`--build-arg DSH_VERSION=x.y.z` (see [build.md](build.md)).
+Releases are created by pushing the matching tag to this repository:
+
+```bash
+git tag dsh-v0.1.2-alpha.3
+git push origin dsh-v0.1.2-alpha.3
+```
+
+For local/manual builds, pin directly with `--build-arg DSH_TAG=dsh-v0.1.2-alpha.3` (see
+[build.md](build.md)).
 
 ## Cleaning up published images
 
@@ -50,7 +63,7 @@ gh api /user/packages/container/dsh-container/versions --jq '.[].id' | while rea
 done
 ```
 
-- Deleting **versions** keeps the package; the next release tag recreates `v*` + `<sha>` +
+- Deleting **versions** keeps the package; the next release tag recreates `dsh-v*` + `<sha>` +
   `latest`.
 - Deleting the **whole package** removes its settings too; after recreating the package, set its
   visibility in the GitHub package settings if public pulls are needed.

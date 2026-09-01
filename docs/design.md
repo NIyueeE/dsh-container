@@ -7,7 +7,7 @@ The image follows patterns proven by similar agent-container projects and offici
 - [mattolson/agent-sandbox](https://github.com/mattolson/agent-sandbox) — pinned tool versions, a separate
   persistent state volume, and a sandbox that grants only minimal filesystem/network access;
 - [Claude Code dev container documentation](https://code.claude.com/docs/en/devcontainer) — auth/state volume
-  mounting and `CLAUDE_CONFIG_DIR` on the same volume, an in-container auto-update kill switch
-  (`DISABLE_AUTOUPDATER` corresponds to this image's `DSH_AUTO_UPDATE=0`), and the warning against mounting host
-  keys into the container;
+  mounting and `CLAUDE_CONFIG_DIR` on the same volume, an immutable image with the dsh version pinned
+  at build time (`DSH_TAG`, no runtime auto-update), and the warning against mounting host keys into
+  the container;
 - [Running Claude Code in Docker (Dennis van der Stelt)](https://github.com/dvdstelt/weblog/blob/main/src/content/posts/2026-02-19-claude-code-in-docker.md) — the host-side launch-script wrapper around `docker run` experience.

@@ -3,14 +3,14 @@ name: Image
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['dsh-v*']
   pull_request:
   workflow_dispatch:
 
-# 所有 v* tag 构建共用同一个并发组, 串行推送, 避免两个 tag 并发时竞争
+# 所有 dsh-v* tag 构建共用同一个并发组, 串行推送, 避免两个 tag 并发时竞争
 # latest; 非 tag 构建仍按 ref 隔离。
 concurrency:
-  group: image-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || github.ref }}
+  group: image-${{ startsWith(github.ref, 'refs/tags/dsh-v') && 'release' || github.ref }}
   cancel-in-progress: false
 
 # 默认只读; 需要写权限的 job 单独声明
@@ -27,21 +27,51 @@ jobs:
       - name: Shell syntax check
         run: bash -n container/*.sh
 
+      - name: No removed auto-update remnants
+        run: |
+          set -euo pipefail
+          if grep -RIn --exclude-dir=.git --exclude='image.yml' \
+               -E 'DSH_AUTO_UPDATE|dsh-update|update-dsh|DSH_VERSION|@deepseek-ai/dsh@' .; then
+            echo "found references to removed dsh auto-update / npm install" >&2
+            exit 1
+          fi
+          if grep -nE 'DSH_AUTO_UPDATE[ =:]|dsh-update\.sh|update-dsh[ :]|DSH_VERSION[ =:]' .github/workflows/image.yml; then
+            echo "workflow still references removed dsh auto-update / npm install" >&2
+            exit 1
+          fi
+
+      - name: README parity
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          en = Path('README.md').read_text()
+          zh = Path('README.zh.md').read_text()
+          def headings(text):
+              return re.findall(r'^#{1,6} .*$', text, re.M)
+          def links(text):
+              return len(re.findall(r'\[[^\]]*\]\([^)]*\)', text))
+          assert len(headings(en)) == len(headings(zh)), 'heading count mismatch'
+          assert links(en) == links(zh), 'link count mismatch'
+          assert en.count('```') == zh.count('```'), 'code fence count mismatch'
+          print('README parity OK')
+          PY
+
       - name: dsh-client-patch is idempotent and warns on drift
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           mkdir -p \
-            "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib" \
-            "$tmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist"
-          cat > "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js" <<'EOF'
+            "$tmp/dsh/packages/client/connection/lib" \
+            "$tmp/dsh/apps/web/dist"
+          cat > "$tmp/dsh/packages/client/connection/lib/client.js" <<'EOF'
           const handle = {
             api,
-            isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
+            isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
           };
           EOF
-          cat > "$tmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html" <<'EOF'
+          cat > "$tmp/dsh/apps/web/dist/index.html" <<'EOF'
           <!doctype html>
           <html>
           <head>
@@ -53,42 +83,26 @@ jobs:
           HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null
           HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null
           grep -q 'isLoopback: true, // dsh-container remote-proxy patch' \
-            "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js"
+            "$tmp/dsh/packages/client/connection/lib/client.js"
           if grep -q 'isLoopback: pageLocation === void 0' \
-            "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js"; then
+            "$tmp/dsh/packages/client/connection/lib/client.js"; then
             echo "old isLoopback gate still present after patch" >&2
             exit 1
           fi
-          test "$(grep -c 'dsh-container randomUUID polyfill' "$tmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html")" -eq 1
+          if grep -q 'isLoopback: transport?.ownsHost === true' \
+            "$tmp/dsh/packages/client/connection/lib/client.js"; then
+            echo "old isLoopback gate still present after patch" >&2
+            exit 1
+          fi
+          test "$(grep -c 'dsh-container randomUUID polyfill' "$tmp/dsh/apps/web/dist/index.html")" -eq 1
           # Version drift must not fail the supervisor: warn and skip with exit 0.
-          cat > "$tmp/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js" <<'EOF'
+          cat > "$tmp/dsh/packages/client/connection/lib/client.js" <<'EOF'
           const handle = { api, isLoopback: somethingElse };
           EOF
-          cat > "$tmp/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html" <<'EOF'
+          cat > "$tmp/dsh/apps/web/dist/index.html" <<'EOF'
           <html><head><script defer src="/x.js"></script></head></html>
           EOF
           HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null 2>&1
-
-      - name: dsh-update must never downgrade a newer installed version
-        run: |
-          set -euo pipefail
-          tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
-          cat > "$tmp/dsh" <<'EOF'
-          #!/bin/sh
-          echo 99.0.0
-          EOF
-          cat > "$tmp/npm" <<'EOF'
-          #!/bin/sh
-          if [ "$1" = "view" ]; then
-            echo 1.0.0
-            exit 0
-          fi
-          echo "unexpected npm invocation: $*" >&2
-          exit 9
-          EOF
-          chmod +x "$tmp/dsh" "$tmp/npm"
-          PATH="$tmp:$PATH" bash container/dsh-update.sh | grep 'not newer than installed'
 
       - name: Validate compose example
         run: docker compose -f examples/compose.yaml config --quiet
@@ -114,7 +128,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/dsh-v')
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -126,53 +140,42 @@ jobs:
         id: image
         run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      # 版本号对齐(仅指镜像自身的版本): 打 v* tag 时, release 版本 ==
-      # 镜像 tag(v1.2.0) == OCI 版本 label(1.2.0); 非发布构建 label 为 latest。
-      # 镜像版本与 dsh npm 版本解耦: 未传 DSH_VERSION 时构建安装 npm latest,
-      # 运行时默认不自动更新, 版本由镜像 tag 决定。
-      - name: Compute version metadata
-        id: version
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "label=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "label=latest" >> "$GITHUB_OUTPUT"
-          fi
-
-      # 组装 build args: DSH_VERSION 仅当仓库变量(Settings → Variables → DSH_VERSION)
-      # 设置了才传, 避免空值覆盖 Containerfile 里的默认值。
+      # 本仓库 release tag 与官方仓库 tag 完全一致(如 dsh-v0.1.2-alpha.3);
+      # DSH_TAG 与 BUILD_VERSION 都直接使用该 tag。非发布构建 label 为 latest。
       - name: Compute build args
         id: args
+        env:
+          DSH_TAG_REPO: ${{ vars.DSH_TAG || 'latest' }}
         run: |
+          dsh_tag="$DSH_TAG_REPO"
+          label="latest"
+          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == dsh-v* ]]; then
+            dsh_tag="${{ github.ref_name }}"
+            label="${{ github.ref_name }}"
+          fi
           {
             echo "BUILD_GIT_SHA=${{ github.sha }}"
             echo "BUILD_GIT_REF=${{ github.ref_name }}"
             echo "BUILD_VERSION=$label"
-            [ -z "$dsh" ] || echo "DSH_VERSION=$dsh"
+            echo "DSH_TAG=$dsh_tag"
           } > /tmp/build-args.txt
           {
             echo "args<<EOF"
             cat /tmp/build-args.txt
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-        env:
-          label: ${{ steps.version.outputs.label }}
-          dsh: ${{ vars.DSH_VERSION }}
 
-      # 只有 v* tag(正式发布)才推送镜像; 其余事件(main / PR / dispatch)
-      # 只构建 + 冒烟验证临时镜像, 不产生任何 GHCR 产物。
-      # 单平台(当前基础镜像按 amd64 验证), load 后本地可直接冒烟。
+      # 验证构建: 仅 linux/amd64, load 到本地供冒烟测试; 不推送。
       - name: Build image (validation)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Containerfile
+          platforms: linux/amd64
           push: false
           load: true
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.sha }}
-            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', steps.image.outputs.name, github.ref_name) || '' }}
-            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:latest', steps.image.outputs.name) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: ${{ steps.args.outputs.args }}
@@ -181,30 +184,65 @@ jobs:
         run: |
           set -euo pipefail
           image="${{ steps.image.outputs.name }}:${{ github.sha }}"
+          cookie_jar="$(mktemp)"
+          auth_cookie_jar="$(mktemp)"
+          trap 'docker rm -f "$cid" "$auth_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$auth_cookie_jar"' EXIT
+
           # 桥接 + 端口映射, 与默认部署方式一致(对外端口 3081)。
           cid="$(docker run -d --rm --name dsh-smoke -p 3081:3081 \
             -e DSH_HOME=/tmp/dsh-smoke-home \
-            -e DSH_AUTO_UPDATE=0 \
             "$image")"
-          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 
-          # 等待 Web UI 就绪(首次启动需自动初始化 web profile)
+          # dsh web 启动后会把登录 URL(?token=...)打印到容器日志;
+          # 通过 Caddy 代理用该 token 在 / 换取持久 cookie(303)。
+          token=""
           for _ in $(seq 1 60); do
-            if curl -fsS -o /dev/null http://127.0.0.1:3081/ 2>/dev/null; then
-              break
-            fi
+            token="$(docker logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"
+            if [ -n "$token" ]; then break; fi
             sleep 2
           done
+          if [ -z "$token" ]; then
+            echo "=== dsh-smoke: no login token printed ===" >&2
+            docker logs "$cid" >&2 2>&1 || true
+            exit 1
+          fi
+          exchange="$(curl -sS -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
+            "http://127.0.0.1:3081/?token=$token")"
+          [ "$exchange" = "303" ]
+          root_unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/)"
+          [ "$root_unauth" = "401" ]
+
           # grep 不带 -q: -q 匹配即退出会让管道上游(docker exec/curl)写
           # 入已关闭的管道触发 SIGPIPE(141), 在 set -euo pipefail 下误报失败。
-          if ! curl -fsS http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null; then
+          if ! curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null; then
             echo "=== dsh-smoke container logs ===" >&2
             docker logs "$cid" >&2 2>&1 || true
             exit 1
           fi
 
-          # 工具链与 dsh 版本
-          docker exec "$cid" dsh --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
+          # HEALTHCHECK 本身也要能被 Docker 判为 healthy。
+          health=""
+          for _ in $(seq 1 40); do
+            health="$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)"
+            if [ "$health" = "healthy" ]; then break; fi
+            sleep 2
+          done
+          if [ "$health" != "healthy" ]; then
+            echo "container health status is '$health', expected healthy" >&2
+            docker inspect -f '{{json .State.Health}}' "$cid" >&2 2>/dev/null || true
+            exit 1
+          fi
+
+          # 工具链与 dsh 版本; 发布构建必须与官方仓库 tag 的版本号一致。
+          dsh_version="$(docker exec "$cid" dsh --version | head -n1 | tr -d '\r\n' | sed 's/^v//')"
+          echo "$dsh_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
+          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == dsh-v* ]]; then
+            expected_dsh_version="${GITHUB_REF_NAME#dsh-v}"
+            if [ "$dsh_version" != "$expected_dsh_version" ]; then
+              echo "dsh version '$dsh_version' does not match release tag ${{ github.ref_name }}" >&2
+              exit 1
+            fi
+          fi
           docker exec "$cid" node --version | grep -Eq '^v[0-9]+\.'
           docker exec "$cid" cargo --version | grep -Eq '^cargo [0-9]+\.'
           docker exec "$cid" uv --version | grep -Eq '^uv [0-9]+\.'
@@ -226,83 +264,102 @@ jobs:
           # Caddy 代理已在容器内运行(头改写链路)
           docker exec "$cid" sh -c 'pgrep -x caddy >/dev/null'
 
-          # 头改写代理链路: settings.describe 属上游仅回环特权方法, 经代理
-          # 改写 Host/Origin 后应返回 200(远程访问全功能的核心保证)。
-          settings_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-            http://127.0.0.1:3081/api/settings.describe -H 'content-type: application/json' \
-            --data '{"type":"client-request","rpcId":"1","method":"settings.describe","payload":{}}')"
+          # 头改写代理链路 + 浏览器会话认证: /api/settings/describe 属上游
+          # 特权方法, 未带 cookie 必须 401, 经代理改写 Host/Origin 并携带
+          # cookie 后应返回 200(远程访问全功能的核心保证)。
+          unauth_api="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
+            --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
+          [ "$unauth_api" = "401" ]
+          settings_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" -X POST \
+            http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
+            --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
           [ "$settings_code" = "200" ]
 
-          # 前端兼容补丁: 代理返回的 HTML 必须带 crypto.randomUUID polyfill,
-          # 返回的 connection client bundle 必须把 isLoopback 全局放开, 且旧的
-          # 非回环判断必须消失。再用非回环 Host 头模拟远程浏览器请求代理。
-          curl -fsS http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
-          curl -fsS http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+          # 前端兼容补丁: 代理返回的 HTML 必须带 crypto.randomUUID polyfill;
+          # 新的 upstream dsh 以 /plugins/??<id>/client.js&rev=... 形式在首页
+          # 注入 bundle URL, 提取 connection 的单包 URL 后验证 isLoopback 补丁。
+          curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
+          connection_bundle_url="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ \
+            | grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' | head -n1)"
+          if [ -z "$connection_bundle_url" ]; then
+            echo "connection client bundle URL not found in served index" >&2
+            exit 1
+          fi
+          curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
             grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
-          if curl -fsS http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+          if curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
             grep -q 'isLoopback: pageLocation === void 0'; then
             echo "old isLoopback gate is still present in the served client bundle" >&2
             exit 1
           fi
-          curl -fsS -H 'Host: dsh.test' http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
-          curl -fsS -H 'Host: dsh.test' http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+          if curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
+            grep -q 'isLoopback: transport?.ownsHost === true'; then
+            echo "old isLoopback gate is still present in the served client bundle" >&2
+            exit 1
+          fi
+          curl -fsS -b "$cookie_jar" -H 'Host: dsh.test' http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
+          curl -fsS -H 'Host: dsh.test' "http://127.0.0.1:3081${connection_bundle_url}" | \
             grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
           docker exec "$cid" sh -c 'command -v dsh-client-patch >/dev/null'
 
-          # 真实更新链路: 卸载后由 dsh-update 重新安装, 验证 uid 1000 的
-          # 全局 npm install(含 node-pty 等原生模块 install scripts)全链路可用。
-          docker exec "$cid" npm uninstall --global --no-fund --no-audit @deepseek-ai/dsh
-          docker exec "$cid" dsh-update | grep -E 'installing|installed|updating|already up to date'
-          docker exec "$cid" dsh --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
-          # 幂等: 再次运行不再安装
-          docker exec "$cid" dsh-update | grep 'already up to date'
-
-          # dsh web 守护/重启: dsh-restart 后 dsh web 仍可用
+          # dsh web 守护/重启: dsh-restart 后 dsh web 仍可用, 浏览器 cookie
+          # 保持有效(签名密钥持久化), 补丁也仍生效(dsh-web 每次启动前重打)。
           docker exec "$cid" dsh-restart
           for _ in $(seq 1 60); do
-            if curl -fsS -o /dev/null http://127.0.0.1:3081/ 2>/dev/null; then
+            if curl -fsS -b "$cookie_jar" -o /dev/null http://127.0.0.1:3081/ 2>/dev/null; then
               break
             fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null
-          # 更新 + 重启后补丁必须仍然生效(dsh-web 会在每次启动前重打补丁),
-          # 旧的非回环判断也必须仍然不存在。
-          curl -fsS http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
-          curl -fsS http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+          curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null
+          curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
+          connection_bundle_url="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ \
+            | grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' | head -n1)"
+          [ -n "$connection_bundle_url" ]
+          curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
             grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
-          if curl -fsS http://127.0.0.1:3081/plugins/@deepseek-ai/dsh-client-connection/client.js | \
+          if curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
             grep -q 'isLoopback: pageLocation === void 0'; then
-            echo "old isLoopback gate reappeared after update/restart" >&2
+            echo "old isLoopback gate reappeared after restart" >&2
             exit 1
           fi
 
-          # basic auth 模式: 未带凭据 401, 带凭据 200。
+          # basic auth 模式: 未带 basic 凭据 401; 带凭据后 token 换 cookie(303),
+          # 之后 root 与特权 API 均 200。
           auth_cid="$(docker run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
             -e DSH_HOME=/tmp/dsh-smoke-auth-home \
-            -e DSH_AUTO_UPDATE=0 \
             -e DSH_PROXY_USER=smoke \
             -e DSH_PROXY_PASSWORD=smoke-pass \
             "$image")"
-          trap 'docker rm -f "$cid" "$auth_cid" >/dev/null 2>&1 || true' EXIT
+          auth_token=""
           for _ in $(seq 1 60); do
-            if curl -s -o /dev/null http://127.0.0.1:3082/ 2>/dev/null; then
-              break
-            fi
+            auth_token="$(docker logs "$auth_cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"
+            if [ -n "$auth_token" ]; then break; fi
             sleep 2
           done
-          unauth="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-            http://127.0.0.1:3082/api/host.describe -H 'content-type: application/json' \
-            --data '{"type":"client-request","rpcId":"1","method":"host.describe","payload":{}}')"
-          auth="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass -X POST \
-            http://127.0.0.1:3082/api/host.describe -H 'content-type: application/json' \
-            --data '{"type":"client-request","rpcId":"1","method":"host.describe","payload":{}}')"
-          [ "$unauth" = "401" ] && [ "$auth" = "200" ]
+          if [ -z "$auth_token" ]; then
+            echo "=== dsh-smoke-auth: no login token printed ===" >&2
+            docker logs "$auth_cid" >&2 2>&1 || true
+            exit 1
+          fi
+          unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/)"
+          [ "$unauth" = "401" ]
+          auth_exchange="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
+            -c "$auth_cookie_jar" "http://127.0.0.1:3082/?token=$auth_token")"
+          [ "$auth_exchange" = "303" ]
+          auth_root="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
+            -b "$auth_cookie_jar" http://127.0.0.1:3082/)"
+          [ "$auth_root" = "200" ]
+          auth_api="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
+            -b "$auth_cookie_jar" -X POST \
+            http://127.0.0.1:3082/api/settings/describe -H 'content-type: application/json' \
+            --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
+          [ "$auth_api" = "200" ]
 
           # 只设置 basic auth 一半变量时必须 fail closed, 不能静默裸奔。
           if timeout 30 docker run --rm --name dsh-smoke-partial-auth \
               -e DSH_HOME=/tmp/dsh-smoke-partial-home \
-              -e DSH_AUTO_UPDATE=0 \
               -e DSH_PROXY_USER=smoke \
               "$image" >/tmp/dsh-partial-auth.log 2>&1; then
             echo "container with only DSH_PROXY_USER set unexpectedly started" >&2
@@ -311,27 +368,35 @@ jobs:
           fi
           grep -F 'must be set together' /tmp/dsh-partial-auth.log >/dev/null
 
-      # 冒烟通过后才推送(正式发布): v* 版本 tag + sha + latest(指向最近一次发布,
-      # 供示例直接拉取)。坏镜像不会进入 GHCR。
-      - name: Push image (release only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          set -euo pipefail
-          image="${{ steps.image.outputs.name }}"
-          docker push "$image:${{ github.sha }}"
-          docker push "$image:${{ github.ref_name }}"
-          docker push "$image:latest"
+      # 冒烟通过后才推送多平台正式镜像。amd64 已被上面冒烟验证;
+      # arm64 与 amd64 使用同一 Containerfile 与同一批 build args 构建。
+      # 版本 tag 只用 dsh-v*(与官方仓库 tag 一致), 避免与历史 v* tag 冲突。
+      - name: Push multi-platform image (release only)
+        if: startsWith(github.ref, 'refs/tags/dsh-v')
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: ${{ steps.args.outputs.args }}
 
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: image
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/dsh-v')
     permissions:
       contents: write
     steps:
       # 镜像构建 + 冒烟通过后才创建 Release 页面;
-      # 版本号与镜像 tag 对齐(均由 git tag 派生, 如 v1.2.0)。
+      # 页面 tag 使用官方仓库 tag(如 dsh-v0.1.2-alpha.3)。
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:

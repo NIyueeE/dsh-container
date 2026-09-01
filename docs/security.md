@@ -5,7 +5,7 @@ day job — so follow this baseline when running it:
 
 ## Networking & exposure
 
-`dsh web` listens on `127.0.0.1` by default, and both the npm releases and upstream main reject
+`dsh web` listens on `127.0.0.1` by default, and upstream dsh rejects
 `--host 0.0.0.0` (an intentional upstream safety design: without an auth layer it would expose
 remote code execution to the network). This image exposes the UI through a **Caddy reverse proxy**
 (`0.0.0.0:3081` → `127.0.0.1:3080`), and the orchestration examples publish port `3081` on plain
@@ -17,12 +17,15 @@ the proxy stays down).
 
 The proxy rewrites the `Host` and `Origin` headers to loopback before forwarding. dsh's `/api`
 browser-trust fence checks **HTTP headers only** (it never looks at the connection's source
-address), so from dsh's point of view every proxied request comes from `127.0.0.1` and passes every
-endpoint — **including the settings/credentials methods that upstream deliberately pins to
-loopback** (`settings.*`, `credentials.*`, `agentPreset.*`, `host.pickDirectory`/`host.openPath`,
-`llm.discoverModels`). This is intentional: it makes remote access fully functional, but it means
-**the fence's loopback pin no longer protects anything** — whoever can reach port `3081` can read
-and modify all configuration and API credentials, not just drive the agent.
+address), so from dsh's point of view every proxied request comes from `127.0.0.1` and passes the
+trust fence — **including the settings/credentials methods that upstream deliberately pins to
+loopback** (`settings/describe`, `settings/update`, `credentials.*`, `agentPreset.*`,
+`host.pickDirectory`/`host.openPath`, `llm.discoverModels`). On top of that fence, upstream now
+requires a browser session: dsh web prints a one-time `?token=...` login URL to the container
+logs, the first request through `3081` exchanges it for a signed cookie, and subsequent `/api`
+requests must carry that cookie. The loopback pin therefore still does not protect anything by
+itself — anyone who can read the container logs (token) and reach port `3081` can establish a
+browser session and read/modify all configuration and API credentials.
 
 Upstream dsh's browser code still gates the settings/credentials pages on `window.location.hostname`,
 so the header rewrite alone would not make those pages usable in a remote browser. This image
@@ -35,7 +38,8 @@ Consequences:
 - **Enable basic auth** on the proxy by setting both `DSH_PROXY_USER` and `DSH_PROXY_PASSWORD`
   (recommended for any non-loopback deployment). The entrypoint refuses to start when only one is
   set — a half-configured auth block must never silently start open. Without auth, anyone who can
-  reach `3081` gets full control — same exposure as before, plus settings/credentials.
+  read the container logs and reach `3081` can exchange the printed token for a session cookie and
+  get full control — same exposure as before, plus settings/credentials.
 - Keep the host firewall closed for `3081` unless LAN access is actually needed.
 - For anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) or an
   SSH tunnel in front — don't rely on the raw port; there is still no TLS on `3081` itself.
@@ -69,20 +73,19 @@ experimental in-container dev tool, not a guaranteed isolation primitive.
 ## `~/.dsh` holds API keys
 
 The persisted `/home/dsh` volume contains `~/.dsh` — model API credentials, profiles and
-session data — plus `~/.cargo`, npm cache, dotfiles, and folders created by dsh under `$HOME`.
+session data — plus `~/.cargo`, pnpm store/cache, dotfiles, and folders created by dsh under `$HOME`.
 Mind the volume's access permissions and backups; don't share it with untrusted containers.
 
 ## Only run trusted repositories
 
 Even with the approval mechanism in place, don't let agents process untrusted code repositories.
 
-## Auto-update trust
+## Build-time source trust
 
-`DSH_AUTO_UPDATE=1` is opt-in (default `0`). It runs an npm global install with install scripts on
-every boot, and uid 1000 can escalate to root inside the container via passwordless sudo. For
-untrusted networks or long-running production deployments, keep auto-update off and pin
-`DSH_VERSION` at build time, or at least treat npm registry access as a supply-chain trust
-boundary.
+The image builds dsh from the official `deepseek-ai/deepseek-harness` repository at a pinned
+`dsh-v*` tag. Runtime updates happen only by replacing the image; the container does not run a
+boot-time package update. Treat the upstream repository and its pnpm dependency tree as the
+supply-chain trust boundary.
 
 ## Remote access
 
