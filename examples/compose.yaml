@@ -23,12 +23,12 @@ services:
     restart: unless-stopped
     ports:
       - "3081:3081"
-    environment:
-      # Runtime configuration surface: auth pair. Set both auth variables or
-      # neither. Setting only one fails startup.
-      # The proxy is the security boundary; see docs/security.md.
-      # DSH_PROXY_USER: "admin"
-      # DSH_PROXY_PASSWORD: "replace-with-a-strong-password"
+    # Runtime configuration surface: auth pair. Set both auth variables or
+    # neither. Setting only one fails startup.
+    # The proxy is the security boundary; see docs/security.md.
+    # environment:
+    #   DSH_PROXY_USER: "admin"
+    #   DSH_PROXY_PASSWORD: "replace-with-a-strong-password"
     volumes:
       - dsh-home:/home/dsh
       # Host-visible alternative (owner must be uid 1000; keep :Z on SELinux):
