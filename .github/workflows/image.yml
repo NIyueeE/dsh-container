@@ -115,12 +115,15 @@ jobs:
           systemctl cat dsh.service >/dev/null
 
   image:
-    name: Build and validate image
+    name: Build, validate and publish image (linux/amd64)
     runs-on: ubuntu-latest
     needs: validate
     permissions:
       contents: read
       packages: write
+    outputs:
+      name: ${{ steps.image.outputs.name }}
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
       - uses: actions/checkout@v5
 
@@ -392,29 +395,121 @@ jobs:
           grep -F 'must be set together' /tmp/dsh-partial-auth.log >/dev/null \
             || die "partial-auth container failed without the expected message"
 
-      # 冒烟通过后才推送多平台正式镜像。amd64 已被上面冒烟验证;
-      # arm64 与 amd64 使用同一 Containerfile 与同一批 build args 构建。
-      # 版本 tag 只用 dsh-v*(与官方仓库 tag 一致), 避免与历史 v* tag 冲突。
-      - name: Push multi-platform image (release only)
+      # 冒烟通过后才把 amd64 镜像按 digest 推到 GHCR(不打版本 tag):
+      # arm64 由原生 runner 并行构建, 最后由 merge job 合并为多架构镜像
+      # 并统一打 dsh-v* + <sha> + latest。坏镜像不会拿到任何 tag。
+      - name: Push linux/amd64 by digest (release only)
+        id: publish
         if: startsWith(github.ref, 'refs/tags/dsh-v')
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Containerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ steps.image.outputs.name }}:${{ github.sha }}
-            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
-            ${{ steps.image.outputs.name }}:latest
+          platforms: linux/amd64
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: ${{ steps.args.outputs.args }}
 
+  # arm64 用 GitHub 公开仓库免费提供的原生 Arm runner 构建, 不走 QEMU 模拟
+  # (QEMU 下 pnpm 全量构建会慢一个数量级)。与 amd64 并行, 仅发布时构建。
+  image-arm64:
+    name: Build and publish image (linux/arm64)
+    runs-on: ubuntu-24.04-arm
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/dsh-v')
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 与 amd64 job 相同的镜像名与 build args 计算。
+      - name: Compute lowercase image name
+        id: image
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Compute build args
+        id: args
+        env:
+          DSH_TAG_REPO: ${{ vars.DSH_TAG || 'latest' }}
+        run: |
+          dsh_tag="$DSH_TAG_REPO"
+          label="latest"
+          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == dsh-v* ]]; then
+            dsh_tag="${{ github.ref_name }}"
+            label="${{ github.ref_name }}"
+          fi
+          {
+            echo "BUILD_GIT_SHA=${{ github.sha }}"
+            echo "BUILD_GIT_REF=${{ github.ref_name }}"
+            echo "BUILD_VERSION=$label"
+            echo "DSH_TAG=$dsh_tag"
+          } > /tmp/build-args.txt
+          {
+            echo "args<<EOF"
+            cat /tmp/build-args.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: publish
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/arm64
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-arm64
+          cache-to: type=gha,mode=max,scope=build-arm64
+          build-args: ${{ steps.args.outputs.args }}
+
+  # 两个平台的 digest 都就绪后, 合并为一个多架构镜像并统一打版本 tag。
+  merge:
+    name: Merge multi-arch manifest
+    runs-on: ubuntu-latest
+    needs: [image, image-arm64]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and tag multi-arch manifest
+        run: |
+          set -euo pipefail
+          image="${{ needs.image.outputs.name }}"
+          docker buildx imagetools create \
+            -t "$image:${{ github.sha }}" \
+            -t "$image:${{ github.ref_name }}" \
+            -t "$image:latest" \
+            "$image@${{ needs.image.outputs.digest }}" \
+            "$image@${{ needs.image-arm64.outputs.digest }}"
+
+      - name: Inspect multi-arch manifest
+        run: docker buildx imagetools inspect "${{ needs.image.outputs.name }}:${{ github.ref_name }}"
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: image
+    needs: merge
     if: startsWith(github.ref, 'refs/tags/dsh-v')
     permissions:
       contents: write

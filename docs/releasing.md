@@ -21,10 +21,11 @@ Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/
   to GHCR**. CI validates that the image is usable, nothing more.
 - **`dsh-v*` tag (release)**: the workflow checks out the matching upstream
   `deepseek-ai/deepseek-harness` tag (`DSH_TAG=<tag>`), builds and smoke-tests the amd64 image, and
-  only after the smoke test passes pushes the multi-platform image (`linux/amd64,linux/arm64`)
-  with `dsh-v*` + `<sha>` + `latest` to GHCR, then creates a **GitHub Release page**
-  (auto-generated notes) with the same tag. A broken image never reaches the registry; the release
-  is not created if build or smoke fails.
+  only after the smoke test passes publishes it by digest. In parallel, the arm64 image is built on
+  GitHub's free native Arm runner (`ubuntu-24.04-arm`) — no QEMU emulation. Once both platform
+  digests exist, a merge job combines them into one multi-arch image and applies
+  `dsh-v*` + `<sha>` + `latest`. A broken image never gets a tag; the release is not created if
+  build or smoke fails.
 
 ### Tag alignment
 

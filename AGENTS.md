@@ -120,8 +120,10 @@ just restart-dsh # restart dsh web inside the running "dsh" container
 - The justfile passes `--format docker` only for podman (Docker has no such flag). podman needs it
   so `HEALTHCHECK` survives; GHCR images use the docker format.
 - Releasing: push a `dsh-v*` tag matching the upstream dsh repository tag → CI builds from
-  that upstream tag, smoke-tests amd64, then pushes multi-platform `dsh-v*` + `<sha>` + `latest`
-  and creates a GitHub Release with the same tag name.
+  that upstream tag, smoke-tests amd64, then publishes amd64 by digest; arm64 builds in parallel
+  on GitHub's free native Arm runner (`ubuntu-24.04-arm`), and a merge job combines both into a
+  multi-arch image tagged `dsh-v*` + `<sha>` + `latest`, then creates a GitHub Release with the
+  same tag name. No QEMU emulation anywhere.
 
 ## Validation checklist before committing
 
