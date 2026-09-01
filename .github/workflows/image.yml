@@ -184,9 +184,19 @@ jobs:
         run: |
           set -euo pipefail
           image="${{ steps.image.outputs.name }}:${{ github.sha }}"
+          cid=""
+          auth_cid=""
           cookie_jar="$(mktemp)"
+          cookie_relogin="$(mktemp)"
           auth_cookie_jar="$(mktemp)"
-          trap 'docker rm -f "$cid" "$auth_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$auth_cookie_jar"' EXIT
+          trap 'docker rm -f "$cid" "$auth_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$cookie_relogin" "$auth_cookie_jar"' EXIT
+
+          # 失败辅助: 打印标记与容器日志后退出, 便于定位是哪一环、服务端发生了什么。
+          die() {
+            echo "=== [smoke] FAIL: $*" >&2
+            docker logs "$cid" >&2 2>&1 || true
+            exit 1
+          }
 
           # 桥接 + 端口映射, 与默认部署方式一致(对外端口 3081)。
           cid="$(docker run -d --rm --name dsh-smoke -p 3081:3081 \
@@ -201,24 +211,24 @@ jobs:
             if [ -n "$token" ]; then break; fi
             sleep 2
           done
-          if [ -z "$token" ]; then
-            echo "=== dsh-smoke: no login token printed ===" >&2
-            docker logs "$cid" >&2 2>&1 || true
-            exit 1
-          fi
+          [ -n "$token" ] || die "no login token printed by dsh web"
+
           exchange="$(curl -sS -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
             "http://127.0.0.1:3081/?token=$token")"
-          [ "$exchange" = "303" ]
-          root_unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/)"
-          [ "$root_unauth" = "401" ]
+          [ "$exchange" = "303" ] || die "token exchange returned $exchange, expected 303"
 
-          # grep 不带 -q: -q 匹配即退出会让管道上游(docker exec/curl)写
-          # 入已关闭的管道触发 SIGPIPE(141), 在 set -euo pipefail 下误报失败。
-          if ! curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null; then
-            echo "=== dsh-smoke container logs ===" >&2
-            docker logs "$cid" >&2 2>&1 || true
-            exit 1
-          fi
+          # 未认证的根路径必须 401(dsh web 浏览器会话围栏生效)。
+          root_unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/)"
+          [ "$root_unauth" = "401" ] || die "unauthenticated / returned $root_unauth, expected 401"
+
+          # 会话内页面: 标题与前端补丁。先取回整个 index 再做包含判断,
+          # 避免 curl | grep -q 的 SIGPIPE/静默失败。
+          index_html="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
+            || die "GET / with session cookie failed"
+          [[ "$index_html" == *'<title>DeepSeek Harness</title>'* ]] \
+            || die "served index.html does not contain the expected title"
+          [[ "$index_html" == *'dsh-container randomUUID polyfill'* ]] \
+            || die "served index.html lacks the crypto.randomUUID polyfill"
 
           # HEALTHCHECK 本身也要能被 Docker 判为 healthy。
           health=""
@@ -227,21 +237,16 @@ jobs:
             if [ "$health" = "healthy" ]; then break; fi
             sleep 2
           done
-          if [ "$health" != "healthy" ]; then
-            echo "container health status is '$health', expected healthy" >&2
-            docker inspect -f '{{json .State.Health}}' "$cid" >&2 2>/dev/null || true
-            exit 1
-          fi
+          [ "$health" = "healthy" ] || die "container health status is '$health', expected healthy"
 
           # 工具链与 dsh 版本; 发布构建必须与官方仓库 tag 的版本号一致。
           dsh_version="$(docker exec "$cid" dsh --version | head -n1 | tr -d '\r\n' | sed 's/^v//')"
-          echo "$dsh_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
+          echo "$dsh_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' \
+            || die "dsh --version output '$dsh_version' is not a semver"
           if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == dsh-v* ]]; then
             expected_dsh_version="${GITHUB_REF_NAME#dsh-v}"
-            if [ "$dsh_version" != "$expected_dsh_version" ]; then
-              echo "dsh version '$dsh_version' does not match release tag ${{ github.ref_name }}" >&2
-              exit 1
-            fi
+            [ "$dsh_version" = "$expected_dsh_version" ] \
+              || die "dsh version '$dsh_version' does not match release tag ${{ github.ref_name }}"
           fi
           docker exec "$cid" node --version | grep -Eq '^v[0-9]+\.'
           docker exec "$cid" cargo --version | grep -Eq '^cargo [0-9]+\.'
@@ -249,6 +254,7 @@ jobs:
           docker exec "$cid" pnpm --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
           docker exec "$cid" podman --version | grep -Eq '^podman version [0-9]+\.'
           docker exec "$cid" gh --version | grep -Eq '^gh version [0-9]+\.'
+
           # 用户级工具目录必须可写/可执行, 并位于持久化的 /home/dsh 下。
           docker exec "$cid" sh -c '
             home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
@@ -260,70 +266,87 @@ jobs:
             test -x "$home/.local/bin/uv"
             test -x "$home/.local/bin/pnpm"
             mkdir -p "$cargo_home/registry/cache" "$cargo_home/registry/index" "$pnpm_home"
-          '
+          ' || die "user-level tool directories check failed"
           # Caddy 代理已在容器内运行(头改写链路)
-          docker exec "$cid" sh -c 'pgrep -x caddy >/dev/null'
+          docker exec "$cid" sh -c 'pgrep -x caddy >/dev/null' \
+            || die "caddy process not found inside the container"
 
           # 头改写代理链路 + 浏览器会话认证: /api/settings/describe 属上游
-          # 特权方法, 未带 cookie 必须 401, 经代理改写 Host/Origin 并携带
-          # cookie 后应返回 200(远程访问全功能的核心保证)。
+          # 特权方法, 未带 cookie 必须 401, 携带 cookie 后应返回 200。
           unauth_api="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
             http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
             --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
-          [ "$unauth_api" = "401" ]
+          [ "$unauth_api" = "401" ] || die "unauthenticated /api/settings/describe returned $unauth_api, expected 401"
           settings_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" -X POST \
             http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
             --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
-          [ "$settings_code" = "200" ]
+          [ "$settings_code" = "200" ] || die "/api/settings/describe with cookie returned $settings_code, expected 200"
 
-          # 前端兼容补丁: 代理返回的 HTML 必须带 crypto.randomUUID polyfill;
-          # 新的 upstream dsh 以 /plugins/??<id>/client.js&rev=... 形式在首页
-          # 注入 bundle URL, 提取 connection 的单包 URL 后验证 isLoopback 补丁。
-          curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
-          connection_bundle_url="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ \
-            | grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' | head -n1)"
-          if [ -z "$connection_bundle_url" ]; then
-            echo "connection client bundle URL not found in served index" >&2
-            exit 1
-          fi
-          curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
-            grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
-          if curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
-            grep -q 'isLoopback: pageLocation === void 0'; then
-            echo "old isLoopback gate is still present in the served client bundle" >&2
-            exit 1
-          fi
-          if curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
-            grep -q 'isLoopback: transport?.ownsHost === true'; then
-            echo "old isLoopback gate is still present in the served client bundle" >&2
-            exit 1
-          fi
-          curl -fsS -b "$cookie_jar" -H 'Host: dsh.test' http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
-          curl -fsS -H 'Host: dsh.test' "http://127.0.0.1:3081${connection_bundle_url}" | \
-            grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
-          docker exec "$cid" sh -c 'command -v dsh-client-patch >/dev/null'
+          # 前端兼容补丁: 新 upstream dsh 以 /plugins/??<id>/client.js&rev=...
+          # 形式在首页注入 bundle URL, 提取 connection 的单包 URL 后验证补丁。
+          connection_bundle_url="$(grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' \
+            <<<"$index_html" | head -n1 || true)"
+          [ -n "$connection_bundle_url" ] \
+            || die "connection client bundle URL not found in served index"
+          connection_bundle="$(curl -fsS "http://127.0.0.1:3081${connection_bundle_url}")" \
+            || die "fetching the connection client bundle failed"
+          [[ "$connection_bundle" == *'isLoopback: true, // dsh-container remote-proxy patch'* ]] \
+            || die "served connection bundle lacks the isLoopback patch"
+          [[ "$connection_bundle" != *'isLoopback: pageLocation === void 0'* ]] \
+            || die "old isLoopback gate still present in the served bundle"
+          [[ "$connection_bundle" != *'isLoopback: transport?.ownsHost === true'* ]] \
+            || die "old isLoopback gate still present in the served bundle"
 
-          # dsh web 守护/重启: dsh-restart 后 dsh web 仍可用, 浏览器 cookie
-          # 保持有效(签名密钥持久化), 补丁也仍生效(dsh-web 每次启动前重打)。
-          docker exec "$cid" dsh-restart
-          for _ in $(seq 1 60); do
-            if curl -fsS -b "$cookie_jar" -o /dev/null http://127.0.0.1:3081/ 2>/dev/null; then
-              break
+          # 非回环 Host 头模拟远程浏览器: 改写后同样可用。
+          index_alt="$(curl -fsS -b "$cookie_jar" -H 'Host: dsh.test' http://127.0.0.1:3081/)" \
+            || die "GET / with Host: dsh.test failed"
+          [[ "$index_alt" == *'dsh-container randomUUID polyfill'* ]] \
+            || die "Host: dsh.test index lacks the polyfill"
+          bundle_alt="$(curl -fsS -H 'Host: dsh.test' "http://127.0.0.1:3081${connection_bundle_url}")" \
+            || die "fetching the connection bundle with Host: dsh.test failed"
+          [[ "$bundle_alt" == *'isLoopback: true, // dsh-container remote-proxy patch'* ]] \
+            || die "Host: dsh.test bundle lacks the isLoopback patch"
+          docker exec "$cid" sh -c 'command -v dsh-client-patch >/dev/null' \
+            || die "dsh-client-patch not installed"
+
+          # dsh web 守护/重启: dsh-restart 后由 dsh-web 重新拉起, 新进程会打印
+          # 新 token; 等新 token 出现后重新登录, 再验证页面与补丁仍然可用。
+          docker exec "$cid" dsh-restart || die "dsh-restart failed"
+          token2=""
+          exchange2=""
+          for _ in $(seq 1 90); do
+            token2="$(docker logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | tail -n1 | cut -d= -f2 || true)"
+            if [ -n "$token2" ] && [ "$token2" != "$token" ]; then
+              exchange2="$(curl -sS -o /dev/null -w '%{http_code}' -c "$cookie_relogin" \
+                "http://127.0.0.1:3081/?token=$token2" || true)"
+              if [ "$exchange2" = "303" ]; then break; fi
             fi
             sleep 1
           done
-          curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ | grep '<title>DeepSeek Harness</title>' >/dev/null
-          curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ | grep -q 'dsh-container randomUUID polyfill'
-          connection_bundle_url="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/ \
-            | grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' | head -n1)"
-          [ -n "$connection_bundle_url" ]
-          curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
-            grep -q 'isLoopback: true, // dsh-container remote-proxy patch'
-          if curl -fsS "http://127.0.0.1:3081${connection_bundle_url}" | \
-            grep -q 'isLoopback: pageLocation === void 0'; then
-            echo "old isLoopback gate reappeared after restart" >&2
-            exit 1
+          [ "$exchange2" = "303" ] \
+            || die "re-login after dsh-restart failed (last exchange=${exchange2:-none})"
+          # 信息性: 重启前的会话 cookie 是否仍被接受(不作为判定条件)。
+          old_cookie_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
+          if [ "$old_cookie_code" != "200" ]; then
+            echo "=== [smoke] note: pre-restart session cookie no longer accepted after restart (code=$old_cookie_code); re-login used" >&2
           fi
+
+          index_restart="$(curl -fsS -b "$cookie_relogin" http://127.0.0.1:3081/)" \
+            || die "GET / after restart failed"
+          [[ "$index_restart" == *'<title>DeepSeek Harness</title>'* ]] \
+            || die "served index.html after restart lacks the expected title"
+          [[ "$index_restart" == *'dsh-container randomUUID polyfill'* ]] \
+            || die "served index.html after restart lacks the polyfill"
+          bundle_restart_url="$(grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' \
+            <<<"$index_restart" | head -n1 || true)"
+          [ -n "$bundle_restart_url" ] \
+            || die "connection bundle URL not found in served index after restart"
+          bundle_restart="$(curl -fsS "http://127.0.0.1:3081${bundle_restart_url}")" \
+            || die "fetching the connection bundle after restart failed"
+          [[ "$bundle_restart" == *'isLoopback: true, // dsh-container remote-proxy patch'* ]] \
+            || die "connection bundle after restart lacks the isLoopback patch"
+          [[ "$bundle_restart" != *'isLoopback: pageLocation === void 0'* ]] \
+            || die "old isLoopback gate reappeared after restart"
 
           # basic auth 模式: 未带 basic 凭据 401; 带凭据后 token 换 cookie(303),
           # 之后 root 与特权 API 均 200。
@@ -338,24 +361,20 @@ jobs:
             if [ -n "$auth_token" ]; then break; fi
             sleep 2
           done
-          if [ -z "$auth_token" ]; then
-            echo "=== dsh-smoke-auth: no login token printed ===" >&2
-            docker logs "$auth_cid" >&2 2>&1 || true
-            exit 1
-          fi
+          [ -n "$auth_token" ] || die "no login token printed by the basic-auth container"
           unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/)"
-          [ "$unauth" = "401" ]
+          [ "$unauth" = "401" ] || die "basic-auth proxy returned $unauth without credentials, expected 401"
           auth_exchange="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
             -c "$auth_cookie_jar" "http://127.0.0.1:3082/?token=$auth_token")"
-          [ "$auth_exchange" = "303" ]
+          [ "$auth_exchange" = "303" ] || die "basic-auth token exchange returned $auth_exchange, expected 303"
           auth_root="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
             -b "$auth_cookie_jar" http://127.0.0.1:3082/)"
-          [ "$auth_root" = "200" ]
+          [ "$auth_root" = "200" ] || die "basic-auth root with cookie returned $auth_root, expected 200"
           auth_api="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
             -b "$auth_cookie_jar" -X POST \
             http://127.0.0.1:3082/api/settings/describe -H 'content-type: application/json' \
             --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
-          [ "$auth_api" = "200" ]
+          [ "$auth_api" = "200" ] || die "basic-auth API with cookie returned $auth_api, expected 200"
 
           # 只设置 basic auth 一半变量时必须 fail closed, 不能静默裸奔。
           if timeout 30 docker run --rm --name dsh-smoke-partial-auth \
@@ -366,7 +385,8 @@ jobs:
             cat /tmp/dsh-partial-auth.log >&2 || true
             exit 1
           fi
-          grep -F 'must be set together' /tmp/dsh-partial-auth.log >/dev/null
+          grep -F 'must be set together' /tmp/dsh-partial-auth.log >/dev/null \
+            || die "partial-auth container failed without the expected message"
 
       # 冒烟通过后才推送多平台正式镜像。amd64 已被上面冒烟验证;
       # arm64 与 amd64 使用同一 Containerfile 与同一批 build args 构建。
