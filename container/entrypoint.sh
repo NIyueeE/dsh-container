@@ -4,7 +4,9 @@
 #   2. 使用默认用户层路径: dsh 数据 ~/.dsh(上游默认, 不设 DSH_HOME),
 #      进程 cwd 直接使用 $HOME(dsh 按需在 $HOME 下创建目录);
 #      Rust/cargo、uv、pnpm 都在 ~/ 下的用户级目录, 整个 home 由数据卷持久化;
-#      dsh 本体在系统层 /opt/deepseek-harness, 随镜像更新, 不在用户数据卷中
+#      dsh 本体在系统层 /opt/deepseek-harness, 随镜像更新, 不在用户数据卷中;
+#      PATH 镜像优先 (/usr/local/bin 最前), 旧卷遗留的 npm 版 dsh 会在启动时
+#      被 dsh-migrate-legacy 幂等清除, 不会遮蔽镜像内新版本
 #   3. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081)
 #   4. 启动 Caddy 反向代理监听 0.0.0.0:3081: 把 Host/Origin 改写为回环后转发到
 #      127.0.0.1:$PORT, 并对 UI 资源做 gzip 压缩(UI 静态资源约
@@ -48,8 +50,18 @@ export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
 mkdir -p "$HOME/.cargo/bin" "$HOME/.local/bin" "$PNPM_HOME"
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+# PATH 镜像优先 (hermes-agent 模式): 镜像提供的 dsh (/usr/local/bin ->
+# /opt/deepseek-harness) 必须压过用户层; 用户层工具 (uv/pnpm/cargo 与
+# /usr/local/bin 中的符号链接同源) 不受影响。
+export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 cd "$HOME"
+
+# 迁移: 旧镜像 (v0.2.x) 曾把 dsh 作为 npm 全局包装进持久化用户层
+# (~/.local), 旧数据卷会遮蔽镜像内新版本; 启动时幂等清除旧副本
+# (失败仅告警, 不阻塞启动), 详见 container/dsh-migrate-legacy.sh。
+if ! dsh-migrate-legacy; then
+  echo "[entrypoint] legacy dsh migration failed; continuing" >&2
+fi
 
 # 从附加参数中提取 --port <N> / --port=<N>, 使 Caddy 转发目标与 dsh 实际
 # 监听端口一致(对外端口固定 3081, 不受影响)。

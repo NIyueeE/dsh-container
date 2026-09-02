@@ -17,8 +17,9 @@ if [ -z "$HOME" ]; then
 fi
 export HOME
 
-# 确保用户级工具在 PATH 中, 并把工作目录切到 $HOME(dsh 的工作区)。
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+# PATH 镜像优先: dsh 必须解析到镜像内的 /usr/local/bin/dsh, 而不是旧数据卷
+# 中可能残留的 npm 版 dsh; 再拼接用户层工具目录。
+export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 cd "$HOME"
 
 # 容器内没有浏览器: 默认补上 --no-open, 避免每次启动 dsh web 都尝试打开

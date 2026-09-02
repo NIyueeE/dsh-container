@@ -74,6 +74,15 @@ Open the printed `?token=...` login URL through the published port once
 dsh is built into the image at `/opt/deepseek-harness` and there is no runtime npm auto-update.
 To run a different dsh version, publish/use an image built from that upstream tag:
 
+**Upgrading from v0.2.x images:** those images npm-installed dsh into the persisted volume
+(`~/.local`), and that stale copy would shadow the image-provided dsh. The entrypoint handles
+this automatically: on first boot with the new image it removes the legacy
+`~/.local/lib/node_modules/@deepseek-ai/dsh` tree and `~/.local/bin/dsh` entry from the volume
+(idempotently; unrelated npm packages are kept), and PATH is image-first. After upgrading and
+restarting the container, verify with `docker exec dsh dsh --version` (or `podman exec dsh dsh
+--version`) — it must print the version matching the image tag. To clean an image's provenance
+stamp: `docker exec dsh cat /etc/dsh-container/provenance.json`.
+
 - **Quadlet** already sets `Pull=newer` (pulls on restart when a newer remote image exists) and
   `AutoUpdate=registry`; combine with `systemctl enable --now podman-auto-update.timer` to
   periodically pull new images and restart the container.

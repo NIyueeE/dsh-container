@@ -10,6 +10,7 @@ container/
   dsh-web.sh             # dsh web supervisor: auto-restart dsh web, installed as /usr/local/bin/dsh-web
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
   dsh-client-patch.sh    # idempotent frontend compatibility patch, installed as /usr/local/bin/dsh-client-patch
+  dsh-migrate-legacy.sh  # removes legacy npm-installed dsh from old data volumes on boot
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)

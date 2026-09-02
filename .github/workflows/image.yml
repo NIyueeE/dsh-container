@@ -104,6 +104,34 @@ jobs:
           EOF
           HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null 2>&1
 
+      - name: legacy npm dsh migration is idempotent and preserves unrelated packages
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          home="$tmp/home"
+          mkdir -p \
+            "$home/.local/lib/node_modules/@deepseek-ai/dsh" \
+            "$home/.local/lib/node_modules/@other/keepme" \
+            "$home/.local/bin"
+          printf 'legacy' > "$home/.local/lib/node_modules/@deepseek-ai/dsh/package.json"
+          printf '#!/bin/sh\necho 9.9.9-legacy\n' > "$home/.local/bin/dsh"
+          chmod +x "$home/.local/bin/dsh"
+          HOME="$home" bash container/dsh-migrate-legacy.sh
+          test ! -e "$home/.local/lib/node_modules/@deepseek-ai/dsh" \
+            || { echo "legacy package was not removed" >&2; exit 1; }
+          test ! -e "$home/.local/bin/dsh" \
+            || { echo "legacy bin was not removed" >&2; exit 1; }
+          test -e "$home/.local/lib/node_modules/@other/keepme" \
+            || { echo "unrelated global npm package was removed" >&2; exit 1; }
+          # 幂等: 再跑一次仍是成功 no-op
+          HOME="$home" bash container/dsh-migrate-legacy.sh
+          # 悬空符号链接也要清掉
+          ln -s /nonexistent/dsh "$home/.local/bin/dsh"
+          HOME="$home" bash container/dsh-migrate-legacy.sh
+          test ! -e "$home/.local/bin/dsh" && test ! -L "$home/.local/bin/dsh" \
+            || { echo "dangling legacy symlink was not removed" >&2; exit 1; }
+
       - name: Validate compose example
         run: docker compose -f examples/compose.yaml config --quiet
 
@@ -273,6 +301,11 @@ jobs:
           # Caddy 代理已在容器内运行(头改写链路)
           docker exec "$cid" sh -c 'pgrep -x caddy >/dev/null' \
             || die "caddy process not found inside the container"
+          # dsh 必须解析到镜像内版本 (卷中旧 npm 副本若存在也不得遮蔽)。
+          docker exec "$cid" sh -c '[ "$(command -v dsh)" = "/usr/local/bin/dsh" ]' \
+            || die "dsh does not resolve to the image-provided /usr/local/bin/dsh"
+          docker exec "$cid" cat /etc/dsh-container/provenance.json | grep -q '"image":"ghcr.io/niyueee/dsh-container"' \
+            || die "image provenance stamp missing or invalid"
 
           # 头改写代理链路 + 浏览器会话认证: /api/settings/describe 属上游
           # 特权方法, 未带 cookie 必须 401, 携带 cookie 后应返回 200。

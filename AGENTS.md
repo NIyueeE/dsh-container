@@ -19,6 +19,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `container/dsh-web.sh` | dsh web supervisor (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
 | `container/dsh-client-patch.sh` | Idempotent client-side compatibility patch, installed as `/usr/local/bin/dsh-client-patch` |
+| `container/dsh-migrate-legacy.sh` | One-time startup migration: removes the legacy npm-installed dsh from old data volumes, installed as `/usr/local/bin/dsh-migrate-legacy` |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, design, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -37,6 +38,10 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    `~/.local/share/pnpm`. The whole `/home/dsh` directory is mounted as the persistent user
    layer; the system layer (`/usr/local`, `/opt`, apt packages) is reset by image upgrades.
    dsh itself is built from source into `/opt/deepseek-harness` and is not part of the user layer.
+   PATH is image-first (`/usr/local/bin` before `$HOME/.local/bin`, the hermes-agent pattern), and
+   the entrypoint runs `dsh-migrate-legacy` to remove the npm-installed dsh that pre-source-build
+   images (v0.2.x) left inside old data volumes — otherwise that stale copy would shadow the
+   image-provided dsh. The migration is idempotent and preserves unrelated npm packages.
 3. Parses `--port <N>` / `--port=<N>` (default 3080) and rejects `0` and `3081`.
 4. Starts a **Caddy reverse proxy**: listens on `0.0.0.0:3081` and forwards to dsh's
    `127.0.0.1:$PORT`, rewriting `Host`/`Origin` to loopback and gzip-compressing UI assets; it

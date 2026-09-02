@@ -49,7 +49,9 @@ The whole `/home/dsh` directory is the persistence boundary: mount it as one vol
 state survives while `/usr/local`, `/opt`, and the rest of the system layer are reset on image
 upgrades. User-level tools (Rust/uv/pnpm) are baked into the image and copied into a fresh named
 volume on first start; the dsh source tree and built artifacts live in the system layer at
-`/opt/deepseek-harness` and are replaced with each image upgrade. System packages installed later
+`/opt/deepseek-harness` and are replaced with each image upgrade. PATH is image-first, and data
+volumes created by older (v0.2.x) images get their legacy npm-installed dsh removed automatically
+on first boot, so the image-provided dsh can never be shadowed by the volume. System packages installed later
 with `sudo apt` live in the container/system layer and are not part of the persistent home volume.
 
 The exposed port is `3081`: a **Caddy reverse proxy** inside the container listens on

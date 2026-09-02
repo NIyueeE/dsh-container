@@ -73,7 +73,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HOME=/home/dsh/.cargo \
     PNPM_HOME=/home/dsh/.local/share/pnpm \
     NPM_CONFIG_PREFIX=/home/dsh/.local \
-    PATH=/home/dsh/.local/bin:/home/dsh/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/usr/local/sbin:/usr/local/bin:/home/dsh/.local/bin:/home/dsh/.cargo/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ---------------------------------------------------------------------------
 # 1. 安装基础工具链、C/C++ 编译依赖、Caddy、嵌套 Podman 及 GitHub CLI 源
@@ -174,7 +174,8 @@ COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-web.sh /usr/local/bin/dsh-web
 COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
 COPY container/dsh-client-patch.sh /usr/local/bin/dsh-client-patch
-RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/dsh-client-patch
+COPY container/dsh-migrate-legacy.sh /usr/local/bin/dsh-migrate-legacy
+RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/dsh-client-patch /usr/local/bin/dsh-migrate-legacy
 
 # ---------------------------------------------------------------------------
 # 8. 拉取 dsh 官方源码并切换到指定 tag(默认 latest = 官方最新 tag)
@@ -217,6 +218,11 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     ln -sfn /opt/deepseek-harness/apps/cli/lib/bin.js /usr/local/bin/dsh; \
     DSH_CLIENT_PATCH_ROOT=/opt/deepseek-harness dsh-client-patch; \
     chown -R dsh:dsh /opt/deepseek-harness; \
+    mkdir -p /etc/dsh-container; \
+    printf '{"schema":1,"image":"ghcr.io/niyueee/dsh-container","version":"%s","dsh_tag":"%s","revision":"%s"}\n' \
+      "${BUILD_VERSION}" "${DSH_TAG}" "${BUILD_GIT_SHA}" > /etc/dsh-container/provenance.json; \
+    chmod 0444 /etc/dsh-container/provenance.json; \
+    cat /etc/dsh-container/provenance.json; \
     dsh --version
 
 # ---------------------------------------------------------------------------

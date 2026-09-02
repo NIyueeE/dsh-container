@@ -44,7 +44,9 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 
 持久化边界是**整个 `/home/dsh`**:把它挂载为一个卷,用户层状态在镜像升级后保留,
 `/usr/local`、`/opt` 等系统层随新镜像重置。Rust/uv/pnpm 等用户级工具已打进镜像,首次使用空命名
-卷时会复制进卷;dsh 源码树与构建产物位于系统层 `/opt/deepseek-harness`,随镜像升级替换。之后通过
+卷时会复制进卷;dsh 源码树与构建产物位于系统层 `/opt/deepseek-harness`,随镜像升级替换。PATH 以
+镜像优先,旧版(v0.2.x)镜像创建的数据卷中遗留的 npm 版 dsh 会在首次启动时自动清除,
+镜像内的 dsh 永远不会被卷遮蔽。之后通过
 `sudo apt` 安装的系统包位于容器/系统层,不属于持久化 home 卷。
 
 对外端口为 `3081`:容器内 **Caddy 反向代理**监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为
