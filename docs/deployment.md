@@ -140,7 +140,7 @@ an authenticated reverse proxy (nginx, Caddy, Traefik, ...). The proxy config ma
 mistakes silently break the Web UI's event streams while the page itself still loads:
 
 - **Missing WebSocket upgrade headers.** The UI streams agent events over WebSocket
-  (`/api/events.mux`, `/api/events.host`). dsh answers handshakes without `Upgrade`/`Connection`
+  (`/api/remote.mux`). dsh answers handshakes without `Upgrade`/`Connection`
   with `426 Upgrade Required`, and proxies that strip these hop-by-hop headers (nginx's default)
   kill the streams: agent output never updates, and the container journal fills with periodic
   `aborting with incomplete response ... context canceled` errors.
@@ -223,6 +223,13 @@ compatibility patch (and that `dsh web` was restarted after an update).
 **Podman rootless + bind mounts**
 If you bind-mount a host directory at `/home/dsh`, make sure it is owned by your uid and
 readable by the container; keep the `:Z` label with SELinux.
+
+**UI loads but event streams fail with 502 after an image upgrade**
+The browser was holding a cached, pre-upgrade frontend that still calls WebSocket endpoints the
+new dsh no longer serves. This image's Caddy proxy marks the index as `Cache-Control: no-store`,
+so fresh loads always fetch the matching frontend; if you upgraded from an older image (or an
+outer proxy cached the page), do one hard refresh (Ctrl+F5) or clear site data for the UI origin.
+Confirm the running dsh version with `docker exec dsh dsh --version`.
 
 **Remote access feels slow**
 The proxy itself does not buffer: SSE responses are flushed immediately and WebSocket streams pass

@@ -96,7 +96,8 @@ fi
 # 全部配置与凭据, 必须配合 basic auth(下面两个变量)或防火墙/反代收口,
 # 详见 docs/security.md。设置 DSH_PROXY_USER + DSH_PROXY_PASSWORD 启用认证。
 # gzip 压缩对 SSE/WebSocket 无影响(Caddy 对 text/event-stream 即时 flush、
-# WebSocket 直通, 实测不引入缓冲延迟)。Caddy 启动失败(如配置错误)时立即
+# WebSocket 直通, 实测不引入缓冲延迟); 首页强制 no-store, 防止镜像升级后
+# 浏览器沿用旧前端。Caddy 启动失败(如配置错误)时立即
 # 退出, 不静默降级; 运行期崩溃由下方守护循环自动重启。
 mkdir -p /tmp/dsh-caddy
 CADDYFILE=/tmp/dsh-caddy/Caddyfile
@@ -108,6 +109,11 @@ cat > "$CADDYFILE" <<EOF
 }
 :3081 {
 	encode gzip
+	# index.html 是动态启动清单(内联 bundle URL 与 rev): 必须禁缓存。否则镜像
+	# 升级后浏览器会用旧前端调用已被移除的端点(旧 /api/events.mux ->
+	# 新 /api/remote.mux), 表现为页面能开但事件流全部 502。
+	@index path /
+	header @index Cache-Control "no-store"
 	reverse_proxy 127.0.0.1:$PORT {
 		header_up Host 127.0.0.1:$PORT
 		header_up Origin http://127.0.0.1:$PORT

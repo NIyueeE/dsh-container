@@ -251,6 +251,9 @@ jobs:
           # 未认证的根路径必须 401(dsh web 浏览器会话围栏生效)。
           root_unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/)"
           [ "$root_unauth" = "401" ] || die "unauthenticated / returned $root_unauth, expected 401"
+          # 首页必须 no-store: 防止镜像升级后浏览器沿用旧前端。
+          curl -sS -o /dev/null -D - http://127.0.0.1:3081/ | grep -qi 'cache-control: no-store' \
+            || die "GET / response lacks Cache-Control: no-store"
 
           # 会话内页面: 标题与前端补丁。先取回整个 index 再做包含判断,
           # 避免 curl | grep -q 的 SIGPIPE/静默失败。
