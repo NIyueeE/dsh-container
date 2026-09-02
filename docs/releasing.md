@@ -6,7 +6,7 @@ Each release pushes one multi-platform image (Linux `amd64` + `arm64`) with thre
 
 | Tag | Source | Description |
 |---|---|---|
-| `dsh-v*` (e.g. `dsh-v0.1.2-alpha.3`) | upstream dsh tags | the release artifact; image tag, release page tag, and built dsh source tag are all the same upstream tag |
+| `dsh-v*` (e.g. `dsh-v0.1.2-alpha.4`) | upstream dsh tags | the release artifact; image tag, release page tag, and built dsh source tag are all the same upstream tag |
 | `latest` | newest `dsh-v*` release | points to the most recent release; what the examples pull |
 | `<commit-sha>` | release builds | exactly reproducible |
 
@@ -31,20 +31,20 @@ Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/
 
 For a tag build, one version string flows through the whole release:
 
-- upstream dsh tag `dsh-v0.1.2-alpha.3` → release page `dsh-v0.1.2-alpha.3` → image tag
-  `ghcr.io/niyueee/dsh-container:dsh-v0.1.2-alpha.3`
+- upstream dsh tag `dsh-v0.1.2-alpha.4` → release page `dsh-v0.1.2-alpha.4` → image tag
+  `ghcr.io/niyueee/dsh-container:dsh-v0.1.2-alpha.4`
 - `Containerfile` checks out that same tag before `pnpm install` / `pnpm run build:official`
-- OCI label `org.opencontainers.image.version` = `dsh-v0.1.2-alpha.3`, via the `BUILD_VERSION`
+- OCI label `org.opencontainers.image.version` = `dsh-v0.1.2-alpha.4`, via the `BUILD_VERSION`
   build arg (`latest` for non-release builds, which are never published)
 
 Releases are created by pushing the matching tag to this repository:
 
 ```bash
-git tag dsh-v0.1.2-alpha.3
-git push origin dsh-v0.1.2-alpha.3
+git tag dsh-v0.1.2-alpha.4
+git push origin dsh-v0.1.2-alpha.4
 ```
 
-For local/manual builds, pin directly with `--build-arg DSH_TAG=dsh-v0.1.2-alpha.3` (see
+For local/manual builds, pin directly with `--build-arg DSH_TAG=dsh-v0.1.2-alpha.4` (see
 [build.md](build.md)).
 
 ## Cleaning up published images

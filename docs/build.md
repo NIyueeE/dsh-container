@@ -43,7 +43,7 @@ drops it):
 
 ```bash
 podman build --format docker \
-             --build-arg DSH_TAG=dsh-v0.1.2-alpha.3 \
+             --build-arg DSH_TAG=dsh-v0.1.2-alpha.4 \
              --build-arg RUST_TOOLCHAIN=1.88.0 \
              -t dsh-container .
 ```

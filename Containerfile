@@ -13,7 +13,7 @@
 # dsh 依赖树由官方 pnpm-lock.yaml 锁定, 默认构建安装官方最新 tag。
 # 生产发布建议固定 DSH_TAG:
 #   podman build --format docker \
-#                --build-arg DSH_TAG=dsh-v0.1.2-alpha.3 \
+#                --build-arg DSH_TAG=dsh-v0.1.2-alpha.4 \
 #                --build-arg RUST_TOOLCHAIN=1.88.0 \
 #                -t dsh-container .
 # BUILD_VERSION 写入 OCI 版本 label: CI 打 dsh-v* tag 时传官方仓库 tag,

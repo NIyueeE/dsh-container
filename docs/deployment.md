@@ -177,7 +177,7 @@ that only need access to `ghcr.io` for image pulls:
 
 ```bash
 podman build --format docker \
-             --build-arg DSH_TAG=dsh-v0.1.2-alpha.3 \
+             --build-arg DSH_TAG=dsh-v0.1.2-alpha.4 \
              -t dsh-container .
 ```
 
@@ -230,6 +230,17 @@ new dsh no longer serves. This image's Caddy proxy marks the index as `Cache-Con
 so fresh loads always fetch the matching frontend; if you upgraded from an older image (or an
 outer proxy cached the page), do one hard refresh (Ctrl+F5) or clear site data for the UI origin.
 Confirm the running dsh version with `docker exec dsh dsh --version`.
+
+**dsh web exits with `cannot resolve profile bundle "..."`**
+A failed or partial plugin install can leave a bundle listed in
+`/home/dsh/.dsh/profiles/<profile>/package.json` (`dsh.profile.bundles`) that no dsh
+installation can resolve — for example a package that was never actually published. dsh refuses
+to boot while that entry exists, and because the profile lives on the persisted `/home/dsh`
+volume the failure survives image upgrades and `dsh-restart`. Remove the unresolvable entry from
+the `dsh.profile.bundles` list (keep the default `@deepseek-ai/dsh-base` /
+`@deepseek-ai/dsh-web-app` entries for the `web` profile; back the file up first), then run
+`dsh-restart`. The entrypoint does not rewrite profile manifests automatically — user data on the
+volume is never modified behind your back.
 
 **Remote access feels slow**
 The proxy itself does not buffer: SSE responses are flushed immediately and WebSocket streams pass
