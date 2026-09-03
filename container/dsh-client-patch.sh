@@ -9,10 +9,11 @@
 # 设计为 best-effort: 若上游 dsh 版本改变了 bundle 路径或源码字符串, 脚本
 # 打印警告并跳过, 而不是阻止 dsh web 启动。CI 应能捕获这类版本漂移。
 #
-# 上游核对(dsh-v0.1.2-alpha.5): connection 包源码与 alpha.4 逐字节一致,
-# isLoopback 表达式原样保留 —— 本补丁仍然必需(新增的 trustedHosts 只作用于
-# 服务端请求围栏, 不影响浏览器侧设置/凭据页的门); 上游已自带不依赖 secure
-# context 的 randomUuid(), randomUUID polyfill 仅作为其余 bundle 代码的保险。
+# 上游核对(dsh-v0.1.2-rc.1): 相对 alpha.5 仅 package.json 版本号变更, 无源码
+# 改动 —— isLoopback 表达式原样保留(connection/src/client/index.ts:228),
+# isLoopbackHostname 未变; 本补丁仍然必需(新增的 trustedHosts 只作用于服务端
+# 请求围栏, 不影响浏览器侧设置/凭据页的门)。上游已自带不依赖 secure context
+# 的 randomUuid(), randomUUID polyfill 仅作为其余 bundle 代码的保险。
 set -euo pipefail
 
 # 允许显式覆盖(测试用); 默认使用镜像内源码构建的 dsh 产物。
