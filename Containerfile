@@ -161,7 +161,8 @@ RUN set -eux; \
     else \
       UV_URL="https://astral.sh/uv/${UV_VERSION}/install.sh"; \
     fi; \
-    curl --proto '=https' --tlsv1.2 -sSf "$UV_URL" -o /tmp/uv-install.sh; \
+    # astral.sh 的安装 URL 会 302 跳转, 必须带 -L 跟随, 否则存下的是 HTML 跳转页
+    curl -sSfL --proto '=https' --tlsv1.2 "$UV_URL" -o /tmp/uv-install.sh; \
     sh /tmp/uv-install.sh; \
     rm -f /tmp/uv-install.sh; \
     uv --version
