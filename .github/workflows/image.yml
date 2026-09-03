@@ -234,23 +234,40 @@ jobs:
             -e DSH_HOME=/tmp/dsh-smoke-home \
             "$image")"
 
-          # dsh web 启动后会把登录 URL(?token=...)打印到容器日志;
-          # 通过 Caddy 代理用该 token 在 / 换取持久 cookie(303)。
+          # dsh web 启动后会把登录 URL(?token=...)打印到容器日志(经 dsh-web
+          # 镜像到容器日志); supervisor 会用它自举会话, 这里取 token 供交换
+          # 流程断言使用。容器提前退出时快速失败并带出日志。
+          running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
           token=""
           for _ in $(seq 1 60); do
             token="$(docker logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"
-            if [ -n "$token" ]; then break; fi
+            [ -n "$token" ] && break
+            running "$cid" || { docker logs --tail 30 "$cid" >&2 || true; die "container exited before printing a login token"; }
             sleep 2
           done
-          [ -n "$token" ] || die "no login token printed by dsh web"
+          [ -n "$token" ] || { docker logs --tail 30 "$cid" >&2 || true; die "no login token printed by dsh web"; }
+
+          # 栈引导顺序: dsh web 先行, dsh-web 换取会话 cookie 后才拉起 Caddy。
+          # token 出现后等 3081 可连通再继续, 消除引导竞态。
+          for _ in $(seq 1 60); do
+            curl -s -o /dev/null http://127.0.0.1:3081/ 2>/dev/null && break
+            running "$cid" || { docker logs --tail 30 "$cid" >&2 || true; die "container exited before the proxy became ready"; }
+            sleep 1
+          done
 
           exchange="$(curl -sS -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
             "http://127.0.0.1:3081/?token=$token")"
           [ "$exchange" = "303" ] || die "token exchange returned $exchange, expected 303"
 
-          # 未认证的根路径必须 401(dsh web 浏览器会话围栏生效)。
-          root_unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/)"
-          [ "$root_unauth" = "401" ] || die "unauthenticated / returned $root_unauth, expected 401"
+          # 会话注入: 不带任何 cookie 的请求也拿到完整页面 —— dsh 的浏览器围栏
+          # 被 Caddy 侧自举的会话吸收, 3081 上不再有 401 流程, 鉴权只看 Caddy。
+          proxied_open="$(curl -sS http://127.0.0.1:3081/)"
+          [[ "$proxied_open" == *'<title>DeepSeek Harness</title>'* ]] \
+            || die "proxied / without cookies does not serve the app (session injection broken)"
+          # 鉴权职责没有后退到 dsh: 3080 直连(绕过 Caddy)无 cookie 仍必须 401,
+          # 同网段容器/进程无法绕过代理直接使用。
+          direct_unauth="$(docker exec "$cid" curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/)"
+          [ "$direct_unauth" = "401" ] || die "direct dsh (3080) without cookie returned $direct_unauth, expected 401"
           # 首页必须 no-store: 防止镜像升级后浏览器沿用旧前端。
           curl -sS -o /dev/null -D - http://127.0.0.1:3081/ | grep -qi 'cache-control: no-store' \
             || die "GET / response lacks Cache-Control: no-store"
@@ -289,18 +306,27 @@ jobs:
           docker exec "$cid" podman --version | grep -Eq '^podman version [0-9]+\.'
           docker exec "$cid" gh --version | grep -Eq '^gh version [0-9]+\.'
 
-          # 用户级工具目录必须可写/可执行, 并位于持久化的 /home/dsh 下。
+          # 分层布局: 工具链是镜像系统层真二进制(/usr/local/bin, /opt/rust),
+          # 卷上只有可写缓存与自装区 —— 路径解析与读写边界都必须成立。
           docker exec "$cid" sh -c '
             home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
-            rustup_home="${RUSTUP_HOME:-$home/.rustup}"
             cargo_home="${CARGO_HOME:-$home/.cargo}"
             pnpm_home="${PNPM_HOME:-$home/.local/share/pnpm}"
-            test -w "$rustup_home"
+            test "$(command -v uv)" = "/usr/local/bin/uv"
+            test "$(command -v pnpm)" = "/usr/local/bin/pnpm"
+            test "$(command -v cargo)" = "/usr/local/bin/cargo"
+            test -d "${RUSTUP_HOME:-/opt/rust/rustup}/toolchains"
             test -w "$cargo_home"
-            test -x "$home/.local/bin/uv"
-            test -x "$home/.local/bin/pnpm"
+            test -w "$home/.local/bin"
             mkdir -p "$cargo_home/registry/cache" "$cargo_home/registry/index" "$pnpm_home"
-          ' || die "user-level tool directories check failed"
+          ' || die "toolchain/user-layer layout check failed"
+
+          # 旧卷工具副本不得遮蔽镜像真二进制: 种入旧 uv 后 PATH 镜像优先仍解析到
+          # /usr/local/bin/uv(清理不进镜像, 手动步骤见 release notes)。
+          docker exec "$cid" sh -c 'home="$(getent passwd "$(id -u)" | cut -d: -f6)"; printf "#!/bin/sh\necho \"uv 0.0.1 (fake-old)\"\n" > "$home/.local/bin/uv" && chmod +x "$home/.local/bin/uv"'
+          docker exec "$cid" sh -c 'test "$(command -v uv)" = "/usr/local/bin/uv"' \
+            || die "a stale volume uv copy shadows the image-provided uv"
+          docker exec "$cid" sh -c 'home="$(getent passwd "$(id -u)" | cut -d: -f6)"; rm -f "$home/.local/bin/uv"'
           # Caddy 代理已在容器内运行(头改写链路)
           docker exec "$cid" sh -c 'pgrep -x caddy >/dev/null' \
             || die "caddy process not found inside the container"
@@ -309,17 +335,30 @@ jobs:
             || die "dsh does not resolve to the image-provided /usr/local/bin/dsh"
           docker exec "$cid" cat /etc/dsh-container/provenance.json | grep -q '"image":"ghcr.io/niyueee/dsh-container"' \
             || die "image provenance stamp missing or invalid"
+          # 镜像拥有全部工具链后, provenance 首次能如实记录实际工具版本
+          docker exec "$cid" jq -e '.tools.node and .tools.pnpm and .tools.rust and .tools.uv' \
+            /etc/dsh-container/provenance.json >/dev/null \
+            || die "provenance tool versions missing"
 
-          # 头改写代理链路 + 浏览器会话认证: /api/settings/describe 属上游
-          # 特权方法, 未带 cookie 必须 401, 携带 cookie 后应返回 200。
-          unauth_api="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+          # supervisor 安全细节: 凭证类文件仅运行时用户可读; 未配置 basic auth
+          # 的容器必须打印裸奔警告(本容器即无 auth)。
+          docker exec "$cid" sh -c \
+            '[ "$(stat -c %a /tmp/dsh-caddy/session-cookie)" = "600" ] && [ "$(stat -c %a /tmp/dsh-caddy/Caddyfile)" = "600" ]' \
+            || die "session-cookie/Caddyfile permissions are not 0600"
+          docker logs "$cid" 2>&1 | grep -F 'WARNING: the proxy listens on 0.0.0.0:3081 with NO authentication' \
+            || die "no-auth proxy did not print the exposure warning"
+
+          # 特权 API(/api/settings/describe 属上游 PRIVILEGED_METHODS): 经代理
+          # 一律 200(会话由 Caddy 注入); 3080 直连无 cookie 必须 401 —— 同网段
+          # 容器无法绕过代理拿特权接口。
+          settings_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
             http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
             --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
-          [ "$unauth_api" = "401" ] || die "unauthenticated /api/settings/describe returned $unauth_api, expected 401"
-          settings_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" -X POST \
-            http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
+          [ "$settings_code" = "200" ] || die "proxied /api/settings/describe returned $settings_code, expected 200"
+          direct_api="$(docker exec "$cid" curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:3080/api/settings/describe -H 'content-type: application/json' \
             --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
-          [ "$settings_code" = "200" ] || die "/api/settings/describe with cookie returned $settings_code, expected 200"
+          [ "$direct_api" = "401" ] || die "direct dsh (3080) /api without cookie returned $direct_api, expected 401"
 
           # 前端兼容补丁: 新 upstream dsh 以 /plugins/??<id>/client.js&rev=...
           # 形式在首页注入 bundle URL, 提取 connection 的单包 URL 后验证补丁。
@@ -368,6 +407,16 @@ jobs:
           done
           [ "$exchange2" = "303" ] \
             || die "re-login after dsh-restart failed (last exchange=${exchange2:-none})"
+          # 会话跨 dsh web 重启存活(签名密钥持久化在卷): 重启后无 cookie 的代理
+          # 请求必须仍是 200 —— supervisor 可能正带着新 cookie 重启 Caddy, 短重试。
+          survive=""
+          for _ in $(seq 1 15); do
+            survive="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/ || true)"
+            [ "$survive" = "200" ] && break
+            sleep 1
+          done
+          [ "$survive" = "200" ] \
+            || die "proxied / after dsh-restart returned $survive, expected 200 (session did not survive restart)"
           # 信息性: 重启前的会话 cookie 是否仍被接受(不作为判定条件)。
           old_cookie_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
           if [ "$old_cookie_code" != "200" ]; then
@@ -401,10 +450,17 @@ jobs:
           auth_token=""
           for _ in $(seq 1 60); do
             auth_token="$(docker logs "$auth_cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"
-            if [ -n "$auth_token" ]; then break; fi
+            [ -n "$auth_token" ] && break
+            running "$auth_cid" || { docker logs --tail 30 "$auth_cid" >&2 || true; die "basic-auth container exited before printing a login token"; }
             sleep 2
           done
-          [ -n "$auth_token" ] || die "no login token printed by the basic-auth container"
+          [ -n "$auth_token" ] || { docker logs --tail 30 "$auth_cid" >&2 || true; die "no login token printed by the basic-auth container"; }
+          # 等 Caddy(basic auth)就绪: 未认证请求返回 401 即代表代理已监听。
+          for _ in $(seq 1 60); do
+            curl -s -o /dev/null http://127.0.0.1:3082/ 2>/dev/null && break
+            running "$auth_cid" || { docker logs --tail 30 "$auth_cid" >&2 || true; die "basic-auth container exited before the proxy became ready"; }
+            sleep 1
+          done
           unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/)"
           [ "$unauth" = "401" ] || die "basic-auth proxy returned $unauth without credentials, expected 401"
           auth_exchange="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
@@ -552,10 +608,32 @@ jobs:
     steps:
       # 镜像构建 + 冒烟通过后才创建 Release 页面;
       # 页面 tag 使用官方仓库 tag(如 dsh-v0.1.2-alpha.3)。
+      # body 是给从旧分层镜像升级的卷的迁移说明(工具链已归镜像所有,
+      # 旧种子副本惰性遮蔽, 手动清理见下) —— generate_release_notes 会追加。
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          body: |
+            > **Upgrading a data volume created before the image-owned-toolchain layout:** the image
+            > now owns the whole toolchain as read-only system layer (uv/pnpm in `/usr/local/bin`,
+            > Rust toolchains in `/opt/rust`, dsh in `/opt/deepseek-harness`); `/home/dsh` holds only
+            > data and caches. Toolchain copies seeded into older volumes are inert (PATH prefers the
+            > image binaries) but waste space — remove them manually inside the container if desired:
+            >
+            > ```bash
+            > rm -rf ~/.local/bin/uv ~/.local/bin/uvx ~/.local/bin/pnpm \
+            >        ~/.local/share/pnpm/lib/node_modules/pnpm ~/.local/share/pnpm/bin/pnpm
+            > # only if you keep no custom toolchains (~/.rustup is ~1GB):
+            > rm -rf ~/.rustup ~/.cargo/bin/cargo ~/.cargo/bin/rustc ~/.cargo/bin/rustdoc \
+            >        ~/.cargo/bin/rustup ~/.cargo/bin/rust-gdb ~/.cargo/bin/rust-lldb \
+            >        ~/.cargo/bin/rust-lldb-server
+            > ```
+            >
+            > Caches (`~/.cargo/registry`, `~/.local/share/uv`, the pnpm store) and all dsh data stay
+            > on the volume unchanged. Logging in no longer needs the token URL: the proxy
+            > bootstraps the dsh session automatically, and authentication is Caddy's job — enable
+            > `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` for any non-loopback exposure.
           generate_release_notes: true
           make_latest: true

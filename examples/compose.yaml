@@ -4,13 +4,14 @@
 # Pulls the published GHCR image; no local build is required.
 # See docs/deployment.md for the full guide.
 #
-# Networking: plain bridge networking with host port 3081. dsh web listens on
+# Networking: plain bridge networking; the host port is published on loopback
+# only (127.0.0.1:3081), so LAN/public exposure is an explicit step (see the
+# ports block and docs/deployment.md "Public deployment"). dsh web listens on
 # 127.0.0.1 inside the container (upstream dsh rejects --host 0.0.0.0); Caddy
 # listens on 0.0.0.0:3081 and rewrites Host/Origin to loopback before forwarding
-# to dsh on 127.0.0.1:3080. dsh web prints a login URL with a one-time token to the
-# container logs; open it through this published port once to get the browser session
-# cookie. The image also applies an idempotent client-side patch before each dsh web
-# start so remote browsers can use settings/credentials.
+# to dsh on 127.0.0.1:3080. The proxy bootstraps the dsh browser session
+# automatically (no login URL), and the image applies an idempotent client-side
+# patch before each dsh web start so remote browsers can use settings/credentials.
 #
 # Persistence: the whole /home/dsh directory is one named volume (the user
 # layer). System packages and /usr/local are replaced on image upgrades while
@@ -22,10 +23,15 @@ services:
     container_name: dsh
     restart: unless-stopped
     ports:
-      - "3081:3081"
+      # Host loopback only: reachable from the host itself (and from a host-side
+      # reverse proxy such as nginx). For plain LAN access use "3081:3081" —
+      # basic auth below then becomes mandatory, not optional.
+      - "127.0.0.1:3081:3081"
     # Runtime configuration surface: auth pair. Set both auth variables or
-    # neither. Setting only one fails startup.
-    # The proxy is the security boundary; see docs/security.md.
+    # neither. Setting only one fails startup. Loopback-only publishing (the
+    # default) is safe without auth; enable basic auth before switching the
+    # publish line to "3081:3081" (plain LAN) or exposing the host proxy
+    # publicly. The proxy is the security boundary; see docs/security.md.
     # environment:
     #   DSH_PROXY_USER: "admin"
     #   DSH_PROXY_PASSWORD: "replace-with-a-strong-password"

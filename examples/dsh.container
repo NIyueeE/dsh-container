@@ -8,7 +8,7 @@
 #   sudo systemctl enable --now dsh.service
 #
 # Pulls the published GHCR image; no local build is required.
-# Open http://127.0.0.1:3081 (PublishPort on the default bridge network).
+# Open http://127.0.0.1:3081 (published on host loopback).
 
 [Unit]
 Description=DeepSeek Harness (dsh) Web UI
@@ -18,17 +18,18 @@ Wants=network-online.target
 [Container]
 Image=ghcr.io/niyueee/dsh-container:latest
 ContainerName=dsh
-# Host 3081 -> container 3081. Caddy listens on 0.0.0.0:3081 inside the
+# Host loopback -> container 3081. Caddy listens on 0.0.0.0:3081 inside the
 # container and rewrites Host/Origin to loopback before forwarding to dsh on
-# 127.0.0.1:3080. dsh web prints a login URL with a one-time token to the
-# container logs; open it through this published port once to get the browser
-# session cookie. The image also applies an idempotent client-side patch before
+# 127.0.0.1:3080. The proxy bootstraps the dsh browser session automatically
+# (no login URL) and the image applies an idempotent client-side patch before
 # each dsh web start so remote browsers can use settings/credentials.
-# For host-loopback-only access use:
-# PublishPort=127.0.0.1:3081:3081
-PublishPort=3081:3081
+# For plain LAN access use (basic auth then mandatory):
+# PublishPort=3081:3081
+PublishPort=127.0.0.1:3081:3081
 # Runtime configuration surface: auth pair. Set both auth variables or
-# neither. Setting only one fails startup.
+# neither. Setting only one fails startup. Loopback-only publishing (the
+# default) is safe without auth; enable basic auth before switching to
+# PublishPort=3081:3081 (plain LAN) or exposing the host proxy publicly.
 # Environment=DSH_PROXY_USER=admin
 # Environment=DSH_PROXY_PASSWORD=replace-with-a-strong-password
 # Optional: change dsh's internal port (the exposed port stays 3081).
