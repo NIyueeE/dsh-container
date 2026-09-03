@@ -22,7 +22,7 @@ jobs:
     name: Validate scripts and examples
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Shell syntax check
         run: bash -n container/*.sh
@@ -153,7 +153,7 @@ jobs:
       name: ${{ steps.image.outputs.name }}
       digest: ${{ steps.publish.outputs.digest }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -516,7 +516,7 @@ jobs:
     outputs:
       digest: ${{ steps.publish.outputs.digest }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
