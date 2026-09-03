@@ -232,7 +232,8 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     DSH_CLIENT_PATCH_ROOT=/opt/deepseek-harness dsh-client-patch; \
     chown -R dsh:dsh /opt/deepseek-harness; \
     mkdir -p /etc/dsh-container; \
-    jq -n --arg version "${BUILD_VERSION}" --arg dsh_tag "${DSH_TAG}" \
+    # -c 紧凑输出: 冒烟测试按 '"image":"ghcr.io/niyueee/dsh-container"' 精确 grep
+    jq -cn --arg version "${BUILD_VERSION}" --arg dsh_tag "${DSH_TAG}" \
           --arg revision "${BUILD_GIT_SHA}" \
           --arg node "$(node --version)" --arg pnpm "$(pnpm --version)" \
           --arg rust "$(rustc --version | awk '{print $2}')" \
