@@ -1,0 +1,20 @@
+# Dependabot 定期版本更新配置。
+# 注意: Dependabot 没有"监视另一个仓库 git tag"的 ecosystem(它只认
+# package-ecosystem: github-actions / docker / npm 等), 所以上游 dsh 的
+# dsh-v* tag 由 .github/workflows/upstream-tag.yml 的定时任务监视。
+# 这里只覆盖本仓库能直接 pin 的依赖:
+#   - github-actions: image.yml 里的 action 版本 pin
+#     (actions/checkout、docker/*、softprops/action-gh-release)
+#   - docker: Containerfile 的 debian:13-slim 基础镜像
+#     (uv 已改用官方安装脚本安装, 不再是 COPY --from 的镜像 pin)
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"

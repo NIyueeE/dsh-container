@@ -1,0 +1,202 @@
+name: Upstream dsh tag watch
+
+# Dependabot 没有"监视另一个仓库 git tag"的 ecosystem(它只认
+# package-ecosystem: github-actions / docker / npm 等), 因此上游 dsh 的
+# dsh-v* tag 由这个定时任务监视: 每天对照 GitHub API, 上游
+# deepseek-ai/deepseek-harness 出现本仓库尚未镜像的新 dsh-v* tag 时, 开一个
+# 提醒 issue(含发布命令); 本仓库推上同名 tag 后(image.yml 会自动构建并
+# 发布镜像), 下次运行自动关闭该 issue。推送 dsh-v* tag 或手动 dispatch 时
+# 也会立即检查。
+#
+# 上游仓库可用仓库变量 DSH_UPSTREAM_REPO 覆盖(与 image.yml 的 vars.DSH_TAG
+# 模式一致), 默认 deepseek-ai/deepseek-harness。
+
+on:
+  schedule:
+    - cron: "23 4 * * *" # 每日 UTC 04:23 一次
+  workflow_dispatch:
+  push:
+    tags: ['dsh-v*']
+
+# 默认只读; 仅 issue/label 管理需要写权限
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-tag-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Compare newest dsh-v* tags
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # 本 workflow 不 checkout, gh 的 issue/label 命令需要显式指定仓库
+      GH_REPO: ${{ github.repository }}
+      SELF_REPO: ${{ github.repository }}
+      UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
+      ISSUE_TITLE_PREFIX: 'New upstream dsh release available:'
+    steps:
+      - name: Compare newest dsh-v* tags and open/close a tracker issue
+        run: |
+          set -euo pipefail
+
+          # 列出仓库全部 tag 名(分页拉全量; API 失败直接让 job 失败)
+          list_tags() {
+            gh api --paginate "repos/$1/tags?per_page=100" --jq '.[].name'
+          }
+
+          upstream_tags="$(list_tags "$UPSTREAM_REPO")"
+          self_tags="$(list_tags "$SELF_REPO")"
+
+          comparison="$(
+            UPSTREAM_TAGS="$upstream_tags" SELF_TAGS="$self_tags" node <<'NODE'
+          // semver 排序键: 核心版本 X.Y.Z 各段定宽; 预发布段逐标识符编码
+          // (数字段定宽加 "0" 前缀, 字母数字段加 "1" 前缀), 稳定版无预发布段
+          // 用 "~"(ASCII 最大)。于是 0.1.2-alpha.4 < 0.1.2 < 0.1.10, 与
+          // semver 一致; GNU sort -V 做不到(它把 -alpha.4 排在 0.1.2 之后)。
+          const key = (tag) => {
+            const m = /^dsh-v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(tag);
+            if (!m) return null;
+            const core = [m[1], m[2], m[3]].map((s) => s.padStart(8, "0")).join(".");
+            const pre = m[4]
+              ? m[4].split(".").map((id) => (/^\d+$/.test(id) ? `0${id.padStart(12, "0")}` : `1${id}`)).join(".")
+              : "~";
+            return `${core}|${pre}`;
+          };
+          const newest = (names) => {
+            const tags = (names ?? "").split("\n").map((t) => t.trim()).filter(Boolean)
+              .map((t) => [key(t), t]).filter(([k]) => k !== null)
+              .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+            return tags.length ? tags[tags.length - 1][1] : "";
+          };
+          const up = newest(process.env.UPSTREAM_TAGS);
+          const self = newest(process.env.SELF_TAGS);
+          const upNewer = up !== "" && up !== self && key(up) > (key(self) ?? "");
+          console.log(JSON.stringify({ upstream: up, self, upNewer }));
+          NODE
+          )"
+
+          upstream_tag="$(jq -r '.upstream' <<<"$comparison")"
+          self_tag="$(jq -r '.self' <<<"$comparison")"
+          upstream_newer="$(jq -r '.upNewer' <<<"$comparison")"
+
+          echo "upstream newest dsh-v* tag: ${upstream_tag:-<none>}"
+          echo "this repo  newest dsh-v* tag: ${self_tag:-<none>}"
+
+          {
+            echo "### Upstream dsh tag watch"
+            echo
+            echo "| repo | newest \`dsh-v*\` tag |"
+            echo "|---|---|"
+            echo "| [$UPSTREAM_REPO](https://github.com/$UPSTREAM_REPO) | \`${upstream_tag:-none}\` |"
+            echo "| this repo | \`${self_tag:-none}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "$upstream_tag" ]; then
+            echo "no dsh-v* tag found upstream; nothing to do"
+            exit 0
+          fi
+
+          # 收集本仓库未关闭 issue(编号<TAB>标题); gh 失败则整体失败,
+          # 避免因误判"提醒不存在"而重复开 issue
+          issue_list="$(gh issue list --state open --json number,title --jq '.[] | "\(.number)\t\(.title)"')"
+          mapfile -t issues <<<"$issue_list"
+
+          title="$ISSUE_TITLE_PREFIX $upstream_tag"
+
+          if [ "$upstream_newer" != "true" ]; then
+            # 已跟上上游: 关闭遗留的提醒 issue
+            closed=0
+            for line in "${issues[@]}"; do
+              num="${line%%$'\t'*}"
+              ititle="${line#*$'\t'}"
+              case "$ititle" in
+                "$ISSUE_TITLE_PREFIX"*)
+                  gh issue close "$num" --comment \
+                    "Caught up: the newest \`dsh-v*\` tag in this repository is ${self_tag:-none}; no upstream release is pending." \
+                    >/dev/null || true
+                  closed=$((closed + 1))
+                  ;;
+              esac
+            done
+            if [ "$closed" -gt 0 ]; then
+              echo "closed $closed tracker issue(s)"
+            else
+              echo "this repository is up to date with upstream; nothing to do"
+            fi
+            exit 0
+          fi
+
+          # 上游有新 tag: 同标题的提醒已存在则不重复开
+          existing=""
+          for line in "${issues[@]}"; do
+            num="${line%%$'\t'*}"
+            ititle="${line#*$'\t'}"
+            if [ "$ititle" = "$title" ]; then
+              existing="$num"
+              break
+            fi
+          done
+          if [ -n "$existing" ]; then
+            echo "issue #$existing already tracks $upstream_tag; nothing to do"
+            exit 0
+          fi
+
+          # 关闭旧版本的提醒, 避免堆积
+          for line in "${issues[@]}"; do
+            num="${line%%$'\t'*}"
+            ititle="${line#*$'\t'}"
+            case "$ititle" in
+              "$ISSUE_TITLE_PREFIX"*)
+                gh issue close "$num" --comment "Superseded by $upstream_tag." >/dev/null || true
+                ;;
+            esac
+          done
+
+          # label 缺失时补建(失败不致命: issue 创建会走无 label 的兜底分支)
+          gh label create upstream-dsh --color 1D76DB \
+            --description "New upstream dsh tag pending release" --force >/dev/null 2>&1 || true
+
+          release_url="https://github.com/$UPSTREAM_REPO/releases/tag/$upstream_tag"
+          image_name="ghcr.io/$(echo "$SELF_REPO" | tr '[:upper:]' '[:lower:]')"
+          docs_url="https://github.com/$SELF_REPO/blob/main/docs/releasing.md"
+          if [ -n "$self_tag" ]; then
+            self_cell="\`$self_tag\`"
+            compare_line="Upstream diff: https://github.com/$UPSTREAM_REPO/compare/$self_tag...$upstream_tag"
+          else
+            self_cell="none"
+            compare_line="This repository has no \`dsh-v*\` tags yet."
+          fi
+
+          body_file="$(mktemp)"
+          trap 'rm -f "$body_file"' EXIT
+          cat > "$body_file" <<EOF
+          Upstream [$UPSTREAM_REPO](https://github.com/$UPSTREAM_REPO) published a new \`dsh-v*\` tag that this repository has not mirrored yet.
+
+          | | tag |
+          |---|---|
+          | upstream | \`$upstream_tag\` ([release notes]($release_url)) |
+          | this repo | $self_cell |
+
+          $compare_line
+
+          **How to release the matching image**
+
+          CI builds the image from that exact upstream tag once the same tag exists here
+          (see the [release guide]($docs_url)):
+
+              git tag $upstream_tag
+              git push origin $upstream_tag
+
+          The workflow then builds and smoke-tests both architectures and publishes
+          \`$image_name:$upstream_tag\` together with the \`latest\` tag. This issue closes
+          automatically once the tag exists in this repository.
+          EOF
+
+          if ! gh issue create --title "$title" --body-file "$body_file" --label upstream-dsh; then
+            gh issue create --title "$title" --body-file "$body_file"
+          fi
+          echo "opened tracker issue for $upstream_tag"
