@@ -611,7 +611,7 @@ jobs:
       # body 是给从旧分层镜像升级的卷的迁移说明(工具链已归镜像所有,
       # 旧种子副本惰性遮蔽, 手动清理见下) —— generate_release_notes 会追加。
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
