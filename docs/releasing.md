@@ -47,6 +47,61 @@ git push origin dsh-v0.1.2-alpha.4
 For local/manual builds, pin directly with `--build-arg DSH_TAG=dsh-v0.1.2-alpha.4` (see
 [build.md](build.md)).
 
+## Tracking upstream releases
+
+There is no version pin in this repository to bump: a release exists as soon as the matching
+upstream tag is pushed here. Two automated helpers keep the repository in sync with upstream:
+
+### Upstream tag watcher (`.github/workflows/upstream-tag.yml`)
+
+Dependabot cannot watch another repository's git tags, so a small scheduled workflow does it.
+Running daily (plus on every `dsh-v*` tag push and on manual dispatch), it compares the newest
+`dsh-v*` tag of `deepseek-ai/deepseek-harness` with the newest `dsh-v*` tag of this repository
+(semver-aware, so a stable tag outranks its pre-releases: `dsh-v0.1.2-alpha.5` < `dsh-v0.1.2`):
+
+- **upstream ahead** → opens one issue ("New upstream dsh release available: …") with the release
+  notes link, the upstream diff, and the `git tag` / `git push` commands that trigger the release
+  build; an older tracker issue is closed first so at most one stays open;
+- **tags equal** → any open tracker issue is closed automatically.
+
+The upstream repository can be overridden with the `DSH_UPSTREAM_REPO` repository variable
+(default `deepseek-ai/deepseek-harness`), mirroring `vars.DSH_TAG` in `image.yml`. To re-check on
+demand, run "Upstream dsh tag watch" → "Run workflow" from the Actions tab.
+
+### Dependabot (`.github/dependabot.yml`)
+
+Weekly version updates for the dependencies that are pinned in this repository:
+
+- `github-actions` — the action pins in `image.yml` (`actions/checkout`, `docker/*`,
+  `softprops/action-gh-release`);
+- `docker` — the `debian:13-slim` base image in the `Containerfile` (uv switched to the official
+  installer script, so it is no longer a Dependabot-managed pin).
+
+Upstream dsh tags are intentionally *not* covered by Dependabot — it has no ecosystem for watching
+another repository's git tags; that is the watcher workflow's job.
+
+## Upgrading data volumes to the image-owned toolchain
+
+The image carries the whole toolchain (uv/pnpm in `/usr/local/bin`, Rust toolchains in
+`/opt/rust`, dsh in `/opt/deepseek-harness`) and the `/home/dsh` volume holds only data and caches.
+Volumes created by older images still hold seeded toolchain copies (`~/.local/bin` uv/uvx, the
+pnpm prefix under `~/.local/share/pnpm`, rustup proxies in `~/.cargo/bin`, and the `~/.rustup`
+tree). They are inert — PATH prefers the image-owned binaries and they can never shadow them — but
+waste space (~1GB for `~/.rustup`). Remove them manually inside the container if desired; the same
+text ships in each release note:
+
+```bash
+rm -rf ~/.local/bin/uv ~/.local/bin/uvx ~/.local/bin/pnpm \
+       ~/.local/share/pnpm/lib/node_modules/pnpm ~/.local/share/pnpm/bin/pnpm
+# only if you keep no custom toolchains (~/.rustup is ~1GB):
+rm -rf ~/.rustup ~/.cargo/bin/cargo ~/.cargo/bin/rustc ~/.cargo/bin/rustdoc \
+       ~/.cargo/bin/rustup ~/.cargo/bin/rust-gdb ~/.cargo/bin/rust-lldb \
+       ~/.cargo/bin/rust-lldb-server
+```
+
+Caches (`~/.cargo/registry`, `~/.local/share/uv`, the pnpm store), `~/.dsh`, and user-installed
+tools stay on the volume unchanged.
+
 ## Cleaning up published images
 
 Deleting package versions requires the `read:packages` / `delete:packages` scopes on the token

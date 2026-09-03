@@ -15,7 +15,7 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 |---|---|
 | 基础镜像 | `debian:13-slim`(精简,可用 `BASE_IMAGE` 构建参数覆盖) |
 | 自带工具链 | Node.js 22 LTS、pnpm、uv、Rust/cargo、git、build-essential、Caddy、podman、gh |
-| 补装用户级工具 | Rust/cargo(`~/.rustup` + `~/.cargo`)、uv(`~/.local/bin`)、pnpm(`~/.local/share/pnpm`)——随 `/home/dsh` 持久化 |
+| 工具链布局 | 镜像所有的只读工具:uv/pnpm/rustup 代理在 `/usr/local/bin`、Rust 工具链在 `/opt/rust`——随镜像升级;可写缓存与自装工具随 `/home/dsh` 持久化 |
 | 容器开发工具 | podman(apt),已配置 rootless subuid/subgid 映射;嵌套 rootless 是否可用取决于宿主运行时 |
 | dsh | 从官方源码 tag 构建(`git clone` + `git checkout dsh-v*` + `pnpm install` + `pnpm run build:official`)到 `/opt/deepseek-harness`;`DSH_TAG` 可固定 |
 | 版本对齐 | 镜像发布 tag 与上游 dsh tag 一致(`dsh-v*`);`latest` 指向最新发布的镜像 |
@@ -25,7 +25,7 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 | 可观测性 | OCI labels(`org.opencontainers.image.*` 含 git revision)、`HEALTHCHECK`(curl 3080 + 3081) |
 | 运行时用户 | uid 1000(`dsh`);`/home/dsh` 是持久化用户层,`dsh` 拥有免密 sudo |
 
-基础镜像默认固定;dsh 源码 tag 与 Rust 工具链可用 `--build-arg` 固定。pnpm 按所检出 dsh tag
+基础镜像默认固定;dsh 源码 tag、Rust 工具链与 uv 版本可用 `--build-arg` 固定。pnpm 按所检出 dsh tag
 要求的版本安装,Caddy/podman/gh 来自 apt —— 详见 [build.md](docs/build.md)。
 
 ## 环境变量
@@ -38,15 +38,17 @@ DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/d
 
 - dsh 数据:`~/.dsh`(`/home/dsh/.dsh`)——上游默认,不设置 `DSH_HOME`
 - 工作目录:`$HOME`(`/home/dsh`);dsh 按需在其中创建目录
-- Rust/cargo:`~/.rustup` + `~/.cargo`
-- uv:`~/.local/bin`(托管的 Python/tool 数据在 `~/.local/share/uv`)
-- pnpm:`~/.local/share/pnpm`
+- Rust 工具链:`/opt/rust/rustup`(镜像所有,只读);cargo 缓存与 `cargo install` 自装二进制在 `~/.cargo`
+- uv:二进制在 `/usr/local/bin`;托管的 Python/tool 数据在 `~/.local/share/uv`
+- pnpm:二进制在 `/usr/local/bin`;store 与自装全局包在 `~/.local/share/pnpm`
 
-持久化边界是**整个 `/home/dsh`**:把它挂载为一个卷,用户层状态在镜像升级后保留,
-`/usr/local`、`/opt` 等系统层随新镜像重置。Rust/uv/pnpm 等用户级工具已打进镜像,首次使用空命名
-卷时会复制进卷;dsh 源码树与构建产物位于系统层 `/opt/deepseek-harness`,随镜像升级替换。PATH 以
-镜像优先,旧版(v0.2.x)镜像创建的数据卷中遗留的 npm 版 dsh 会在首次启动时自动清除,
-镜像内的 dsh 永远不会被卷遮蔽。之后通过
+持久化边界是**整个 `/home/dsh`**:把它挂载为一个卷,数据(用户文件、缓存、自装工具)在镜像升级后
+保留,而系统层——包括整套工具链:`/usr/local/bin` 中的 uv/pnpm/rustup 代理、`/opt/rust` 的 Rust
+工具链、`/opt/deepseek-harness` 的 dsh——随镜像升级整体替换。工具是镜像所有的真二进制,不会复制
+进卷,因此镜像升级必然升级工具、卷也永远遮蔽不了它们;PATH 以镜像优先,用户目录垫底。旧版镜像
+创建的数据卷中遗留的 npm 版 dsh 会在首次启动时自动清理(`dsh-migrate-legacy`);更早镜像种进卷的
+工具副本是惰性的(PATH 镜像优先),可手动删除回收空间(命令见 release notes),镜像内的工具永远
+不会被卷遮蔽。之后通过
 `sudo apt` 安装的系统包位于容器/系统层,不属于持久化 home 卷。
 
 对外端口为 `3081`:容器内 **Caddy 反向代理**监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为
@@ -61,8 +63,9 @@ agent 输出不会被代理延迟。如需跨公网访问,建议在 3081 前用�
 收口端口。上游 dsh 的浏览器代码仍按 `window.location.hostname` 限制设置/凭据页面,因此本镜像
 会在每次 `dsh web` 启动前应用一个幂等的前端补丁:把经代理的远程浏览器视为回环,并注入
 `crypto.randomUUID` polyfill 以兼容纯 HTTP 内网。若上游 dsh 版本改变了 bundle 字符串,补丁会
-警告并跳过,而不是阻止启动。`dsh web` 会把带 `?token=...` 的登录 URL 打印到容器日志;通过对外
-端口 `3081` 打开一次该 URL,浏览器即获得会话 cookie。`dsh web` 的附加参数可通过容器 `command` 透传,例如
+警告并跳过,而不是阻止启动。代理会在容器启动时自动自举 dsh 浏览器会话——守护脚本换取
+dsh 的一次性登录 token 并把会话 cookie 注入所有代理请求——直接打开 `http://host:3081/` 即可,
+无需任何 token 步骤(鉴权由 Caddy 承担,见 [security.md](docs/security.md))。`dsh web` 的附加参数可通过容器 `command` 透传,例如
 `["--port", "8080"]`(只改 dsh 内部端口,对外端口仍是 3081)。
 
 容器内 `dsh web` 由 `dsh-web` 守护:如果退出或崩溃会自动重新拉起。需要在不重启容器的情况下
@@ -79,7 +82,7 @@ docker exec dsh dsh-restart
 ```bash
 docker compose -f examples/compose.yaml up -d
 docker compose logs dsh | grep 'dsh web:'
-# 打开日志中带 token 的登录 URL, 把内部端口换成对外代理端口, 例如 http://127.0.0.1:3081/?token=<token>
+# 在本地浏览器直接打开 http://127.0.0.1:3081/(代理会自动完成登录自举)
 ```
 
 ### Podman Quadlet(Linux,推荐)

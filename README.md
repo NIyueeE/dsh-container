@@ -17,7 +17,7 @@ official README describes: clone the repository, check out a `dsh-v*` tag, then 
 |---|---|
 | Base image | `debian:13-slim` (small, overridable via the `BASE_IMAGE` build arg) |
 | Built-in toolchain | Node.js 22 LTS, pnpm, uv, Rust/cargo, git, build-essential, Caddy, podman, gh |
-| Added user-level tools | Rust/cargo (`~/.rustup` + `~/.cargo`), uv (`~/.local/bin`), pnpm (`~/.local/share/pnpm`) — persisted with `/home/dsh` |
+| Toolchain layout | Image-owned read-only tools: uv/pnpm/rustup proxies in `/usr/local/bin`, Rust toolchains in `/opt/rust` — upgraded with the image; writable caches and user-installed tools persist on `/home/dsh` |
 | Container dev tool | podman (apt), with rootless subuid/subgid mapping configured; nested rootless operation depends on the host runtime |
 | dsh | Built from the official source tag (`git clone` + `git checkout dsh-v*` + `pnpm install` + `pnpm run build:official`) into `/opt/deepseek-harness`; pinnable via `DSH_TAG` |
 | Versioning | Image release tags match the upstream dsh tags (`dsh-v*`); `latest` points to the most recent release image |
@@ -27,8 +27,8 @@ official README describes: clone the repository, check out a `dsh-v*` tag, then 
 | Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`); `/home/dsh` is the persisted user layer and `dsh` has passwordless sudo |
 
-The base image is pinned by default; the dsh source tag and Rust toolchain can be pinned with
-`--build-arg`. pnpm is installed at the version required by the checked-out dsh tag, and
+The base image is pinned by default; the dsh source tag, Rust toolchain, and uv version can be
+pinned with `--build-arg`. pnpm is installed at the version required by the checked-out dsh tag, and
 Caddy/podman/gh come from apt — see [build.md](docs/build.md).
 
 ## Environment variables
@@ -41,17 +41,22 @@ Everything else uses built-in defaults:
 
 - dsh data: `~/.dsh` (`/home/dsh/.dsh`) — upstream default, no `DSH_HOME` override
 - working directory: `$HOME` (`/home/dsh`); dsh creates folders under it as needed
-- Rust/cargo: `~/.rustup` + `~/.cargo`
-- uv: `~/.local/bin` (managed Python/tool data in `~/.local/share/uv`)
-- pnpm: `~/.local/share/pnpm`
+- Rust toolchain: `/opt/rust/rustup` (image-owned, read-only); cargo caches and `cargo install`
+  binaries in `~/.cargo`
+- uv: binary in `/usr/local/bin`; managed Python/tool data in `~/.local/share/uv`
+- pnpm: binary in `/usr/local/bin`; store and user global packages in `~/.local/share/pnpm`
 
-The whole `/home/dsh` directory is the persistence boundary: mount it as one volume so user-level
-state survives while `/usr/local`, `/opt`, and the rest of the system layer are reset on image
-upgrades. User-level tools (Rust/uv/pnpm) are baked into the image and copied into a fresh named
-volume on first start; the dsh source tree and built artifacts live in the system layer at
-`/opt/deepseek-harness` and are replaced with each image upgrade. PATH is image-first, and data
-volumes created by older (v0.2.x) images get their legacy npm-installed dsh removed automatically
-on first boot, so the image-provided dsh can never be shadowed by the volume. System packages installed later
+The whole `/home/dsh` directory is the persistence boundary: mount it as one volume so data (user
+files, caches, self-installed tools) survives while the system layer — including the entire
+toolchain: uv/pnpm/rustup proxies in `/usr/local/bin`, Rust toolchains in `/opt/rust`, dsh in
+`/opt/deepseek-harness` — is replaced with each image upgrade. Tools are real image-owned binaries,
+never seeded into the volume, so an image upgrade always upgrades the tools and a volume can never
+shadow them; PATH is image-first and user directories sit last. Data volumes created by older
+images get their legacy npm-installed dsh removed automatically on first boot (`dsh-migrate-legacy`);
+seeded toolchain copies from even older images are inert (PATH prefers the image-owned binaries)
+and can be removed manually to reclaim space (commands ship in the release notes), so the
+image-provided tools can never be shadowed by the volume.
+System packages installed later
 with `sudo apt` live in the container/system layer and are not part of the persistent home volume.
 
 The exposed port is `3081`: a **Caddy reverse proxy** inside the container listens on
@@ -70,8 +75,10 @@ still gates the settings/credentials pages on `window.location.hostname`, so thi
 applies a small idempotent client-side patch before every `dsh web` start: it treats proxied
 remote browsers as loopback and injects a `crypto.randomUUID` polyfill for plain-HTTP LAN use. If
 an upstream dsh version changes the bundle strings the patch warns and skips instead of blocking
-startup. dsh web prints a login URL with a `?token=...` query to the container logs; open that
-URL through the published port `3081` once so the browser receives the session cookie. Extra `dsh web` arguments can be passed through the container `command`, e.g.
+startup. The proxy bootstraps the dsh browser session automatically — the supervisor exchanges
+dsh's one-time login token at startup and injects the session cookie into every proxied request —
+so just open `http://host:3081/`; there is no token step (authentication is Caddy's job, see
+[security.md](docs/security.md)). Extra `dsh web` arguments can be passed through the container `command`, e.g.
 `["--port", "8080"]` (changes only dsh's internal port; the exposed port stays `3081`).
 
 Inside the container, `dsh web` is supervised by `dsh-web`: if it exits or crashes it is restarted
@@ -88,7 +95,7 @@ docker exec dsh dsh-restart
 ```bash
 docker compose -f examples/compose.yaml up -d
 docker compose logs dsh | grep 'dsh web:'
-# open the printed token URL through the published proxy port, e.g. http://127.0.0.1:3081/?token=<token>
+# open http://127.0.0.1:3081/ in your local browser (the proxy bootstraps the login)
 ```
 
 ### Podman Quadlet (Linux, recommended)

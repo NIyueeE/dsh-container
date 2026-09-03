@@ -21,8 +21,11 @@ docs/
   releasing.md           # image tags & publishing
   design.md              # design references
   development.md         # this file
+.github/
+  dependabot.yml         # Dependabot: weekly github-actions + docker (base image) updates
 .github/workflows/
   image.yml              # build + validate image; publish + GitHub Release on dsh-v* tags
+  upstream-tag.yml       # daily watcher: opens/closes a tracker issue when upstream dsh tags ahead
 ```
 
 ## Local development

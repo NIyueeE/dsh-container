@@ -18,33 +18,36 @@ docker compose -f examples/compose.yaml up -d
 docker compose logs dsh | grep 'dsh web:'
 ```
 
-`dsh web` prints a login URL with a one-time `?token=...` query. Open it through the published
-proxy port once — for a local deployment that means replacing dsh's internal loopback port with
-`3081`, e.g. `http://127.0.0.1:3081/?token=<token>`. The token is exchanged for a browser session
-cookie and redirects to `/`. On first use, follow the Web UI wizard to configure a model (API key)
-and pick a working directory under `/home/dsh` (dsh creates folders there as needed).
+Open `http://127.0.0.1:3081/` and follow the Web UI wizard to configure a model (API key) and pick
+a working directory under `/home/dsh` (dsh creates folders there as needed). There is no login
+step: the proxy bootstraps the dsh browser session automatically (the supervisor exchanges dsh's
+one-time login token at startup and injects the session cookie into every proxied request —
+authentication is Caddy's job, see [security.md](security.md)).
 
 Images are published by `dsh-v*` release tags that match upstream dsh tags; `:latest` points to
 the most recent release.
 
-- `compose.yaml` publishes port `3081` on the host (`ports: ["3081:3081"]`, plain bridge networking).
+- `compose.yaml` publishes the proxy on host loopback (`ports: ["127.0.0.1:3081:3081"]`) — reachable
+  from the host itself and from a host-side reverse proxy, not from other machines.
   Inside the container, a **Caddy reverse proxy** listens on `0.0.0.0:3081`, rewrites `Host`/`Origin`
   to loopback, and forwards to dsh on `127.0.0.1:3080` — so remote browsers pass every endpoint,
   including settings/credentials (see [security.md](security.md) — the proxy is the security
   boundary; enable `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`; the image also applies an idempotent
   client-side patch so the settings pages work in remote browsers):
-  - host-only publishing: change the mapping to `"127.0.0.1:3081:3081"`;
+  - plain LAN publishing: change the mapping to `"3081:3081"` (then enable basic auth — it is
+    mandatory once the port leaves loopback; see security.md);
   - container-only (not reachable from the host): just don't publish the port.
 - Data persistence: the `dsh-home` volume is mounted on the **whole `/home/dsh` directory**.
-  This is the immutable-image user layer: `~/.dsh` (profiles / sessions / plugins / credentials),
-  `~/.cargo`, pnpm store/cache, dotfiles, and any folders dsh creates under `$HOME` survive image
-  upgrades, while the system layer (`/usr/local`, `/opt`, apt packages) comes from the new image.
-  The dsh source tree and built artifacts live in `/opt/deepseek-harness`, so an empty or fresh
-  `/home/dsh` volume never hides dsh. To access user files directly from the host, switch the
-  volume to a bind mount at `/home/dsh` and keep it owned by uid 1000; on SELinux hosts keep `:Z`
-  in that bind-mount definition. An empty bind mount hides the image-baked user-level tools
-  (`~/.rustup`, `~/.cargo`, `~/.local`, pnpm), so prefer the named volume on first start, or copy
-  `/home/dsh` out of the image into the host directory first.
+  The volume holds only data — `~/.dsh` (profiles / sessions / plugins / credentials), writable
+  caches (`~/.cargo` registry, uv data, pnpm store), dotfiles, and anything the user installs
+  under `$HOME` — all of it survives image upgrades. The toolchain is image-owned: uv, pnpm, and
+  the Rust toolchain live in the read-only system layer (`/usr/local/bin`, `/opt/rust`) and are
+  upgraded together with the image, so a volume can never shadow a newer image's tools. The dsh
+  source tree and built artifacts live in `/opt/deepseek-harness`, so an empty or fresh `/home/dsh`
+  volume never hides dsh. To access user files directly from the host, switch the volume to a bind
+  mount at `/home/dsh` and keep it owned by uid 1000; on SELinux hosts keep `:Z` in that
+  bind-mount definition. Because all tools are image-owned, an empty bind mount loses nothing —
+  no seeding step is needed.
 
 ## 3. Podman Quadlet deployment (recommended)
 
@@ -58,11 +61,12 @@ systemctl status dsh.service
 journalctl -u dsh.service -f | grep 'dsh web:'
 ```
 
-Open the printed `?token=...` login URL through the published port once
-(`http://127.0.0.1:3081/?token=<token>` for the default `PublishPort=3081:3081`).
+Open `http://127.0.0.1:3081/` (default `PublishPort=127.0.0.1:3081:3081`) — the proxy bootstraps the dsh
+session automatically, no login URL needed.
 
-- `dsh.container` publishes port `3081` via `PublishPort=3081:3081` (default bridge network);
-  access `http://127.0.0.1:3081`. For host-only publishing use `PublishPort=127.0.0.1:3081:3081`.
+- `dsh.container` publishes the proxy on host loopback via `PublishPort=127.0.0.1:3081:3081`;
+  access `http://127.0.0.1:3081`. For plain LAN publishing use `PublishPort=3081:3081` (basic auth
+  then mandatory).
 - The `dsh-home` volume is mounted on the whole `/home/dsh` directory (same persistence
   model as Compose). If you prefer host-visible storage, replace it with a bind mount at
   `/home/dsh` owned by uid 1000.
@@ -78,7 +82,9 @@ To run a different dsh version, publish/use an image built from that upstream ta
 (`~/.local`), and that stale copy would shadow the image-provided dsh. The entrypoint handles
 this automatically: on first boot with the new image it removes the legacy
 `~/.local/lib/node_modules/@deepseek-ai/dsh` tree and `~/.local/bin/dsh` entry from the volume
-(idempotently; unrelated npm packages are kept), and PATH is image-first. After upgrading and
+(idempotently; unrelated npm packages are kept), and PATH is image-first. Toolchain copies seeded
+into volumes by even older images are inert (PATH prefers the image-owned binaries); remove them
+manually to reclaim space (see the release notes). After upgrading and
 restarting the container, verify with `docker exec dsh dsh --version` (or `podman exec dsh dsh
 --version`) — it must print the version matching the image tag. To clean an image's provenance
 stamp: `docker exec dsh cat /etc/dsh-container/provenance.json`.
@@ -104,16 +110,17 @@ without bouncing Caddy or the whole container.
 
 ## 5. Remote access
 
-With bridge networking the service is LAN-reachable by default (port `3081` published; a Caddy
-reverse proxy on `0.0.0.0:3081` rewrites `Host`/`Origin` to loopback and exposes the UI — see
-[security.md](security.md)). Treat it like any network service:
+By default the proxy is published on host loopback only (`127.0.0.1:3081`) — the UI is reachable
+from the host itself and from a host-side reverse proxy, but not from other machines. Serving other
+devices is an explicit step; when you do, treat it like any network service:
 
-- keep port `3081` closed in the host firewall unless LAN access is actually needed;
-- **enable the proxy's basic auth** (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) for any non-loopback
-  deployment — the header rewrite means anyone reaching `3081` can read/write settings and
-  credentials;
-- for anything beyond the LAN, use an authenticated reverse proxy on the host (e.g. Caddy + basic
-  auth) or an SSH tunnel:
+- **plain LAN publishing** (`"3081:3081"` / `PublishPort=3081:3081`): **enable basic auth**
+  (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) — the header rewrite means anyone reaching `3081` can
+  read/write settings and credentials — and keep the port behind the host firewall when unused;
+- **public HTTPS** (a host-side nginx in front, TLS at nginx): keep the container port on loopback
+  and see "Public deployment (nginx in front)" below — basic auth stays mandatory and nginx adds
+  rate limiting / banning;
+- **anything beyond that**: use an SSH tunnel instead:
 
 ```bash
 ssh -L 3081:127.0.0.1:3081 user@your-host
@@ -121,10 +128,9 @@ ssh -L 3081:127.0.0.1:3081 user@your-host
 ```
 
 The proxy's header rewrite makes every request look loopback, so there is no trust configuration
-to set for remote access — basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) and the browser
-session token are the access controls. The token is printed once per `dsh web` process launch to
-the container logs; anyone who can read the logs and reach port `3081` can establish a browser
-session.
+to set for remote access, and the proxy injects a dsh session cookie minted at container startup —
+**basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) is the access control**: anyone who can
+reach port `3081` gets a fully authenticated session (see [security.md](security.md)).
 
 Upstream dsh's browser code still gates the settings/credentials pages on
 `window.location.hostname`, so the Caddy rewrite alone would not make those pages usable in a
@@ -169,6 +175,56 @@ location / {
 Caddy and Traefik forward WebSocket upgrades and stream responses by default; with those you only
 need the raised idle timeouts (Caddy's defaults are already unlimited).
 
+### Public deployment (nginx in front)
+
+Serving dsh over the public internet means exposing an agent that executes arbitrary commands
+behind one authentication factor — treat this checklist seriously:
+
+- **Keep the container port on loopback.** With `127.0.0.1:3081:3081` (the examples' default) the
+  only path in is nginx; with `3081:3081` scanners can hit the plain-HTTP Caddy directly and skip
+  your TLS layer entirely.
+- **Basic auth stays on** (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`) — nginx has no auth in this
+  topology, so Caddy's prompt is the single authentication factor. Use a long random password
+  (20+ chars): Caddy has no rate limiting, so password entropy is what stops online brute force.
+- **Rate-limit and ban at nginx.** Brute force shows up as 401s in the nginx access log — a
+  fail2ban jail matching those (`maxretry=5`, `findtime=10m`) or a `limit_req` zone shuts it down.
+- **The nginx → container hop** is plain HTTP on host loopback — fine when nginx runs on the same
+  host; across machines it must be encrypted or on a private network.
+- **Consider mTLS** (`ssl_verify_client on` + client certs on your devices) or a VPN
+  (WireGuard/Tailscale) — for a single-user deployment both are strictly stronger than a password
+  factor on the public internet.
+
+A public-exposure server block (TLS termination, HSTS, rate limiting) around the `location /` block
+above:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=dsh:10m rate=10r/s;
+
+server {
+    listen 443 ssl;
+    http2 on;                             # nginx >= 1.25.1; older: listen 443 ssl http2;
+    server_name dsh.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/dsh.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dsh.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location / {
+        limit_req zone=dsh burst=20 nodelay;
+        # ... the location / block above (proxy_pass 127.0.0.1:3081,
+        # Upgrade/Connection headers, buffering off, raised timeouts) ...
+    }
+}
+
+server {
+    listen 80;
+    server_name dsh.example.com;
+    return 301 https://$host$request_uri;
+}
+```
+
 ## 6. Offline use
 
 The running image does not contact the npm registry, and there is no boot-time dsh update to
@@ -196,15 +252,16 @@ then use the new port. To move dsh's internal port, pass `command: ["--port", "8
 (proxy conflict) and `--port 0` (the proxy needs a fixed internal port).
 
 **Container exits with "DSH_PROXY_USER and DSH_PROXY_PASSWORD must be set together"**
-Basic auth is enabled only when both variables are set. The entrypoint refuses to start when just
-one is present, instead of silently leaving the proxy unauthenticated. Set both or remove both.
+Basic auth is enabled only when both variables are set. The supervisor (`dsh-web`) refuses to start
+when just one is present, instead of silently leaving the proxy unauthenticated. Set both or remove both.
 
-**Browser shows "dsh web authentication required" or the page redirects to a 401**
-dsh web mints a fresh login token each time it starts and prints the URL to the container logs.
-Get it with `docker compose logs dsh | grep 'dsh web:'` (or `journalctl -u dsh.service | grep
-'dsh web:'` for Quadlet), then open the printed URL through the published port `3081` once. After
-that the browser holds the session cookie and plain `http://host:3081/` works until the cookie
-expires or the `/home/dsh` volume is recreated.
+**Browser shows "dsh web authentication required"**
+The proxy injects a dsh session cookie minted at container startup, so this should not happen on
+the published port `3081` — if it does, the session bootstrap failed: check
+`docker compose logs dsh | grep 'dsh-web'` (or `journalctl -u dsh.service` for Quadlet) for
+bootstrap errors; the container exits non-zero on bootstrap failure, so the orchestrator restarts
+it. The message is expected when hitting dsh's internal port `3080` directly (not published;
+same-network containers get `401` there by design).
 
 **How do I update dsh inside a running container?**
 dsh is built into the image and immutable at runtime. Pull/run the image that is tagged with the
