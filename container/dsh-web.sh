@@ -14,8 +14,8 @@
 #      127.0.0.1:$DSH_WEB_PORT, 对 UI 资源做 gzip 压缩, 并注入会话 cookie;
 #      运行期崩溃自动重启(配置错误 fail-fast)。DSH_PROXY_USER +
 #      DSH_PROXY_PASSWORD 必须成对设置以启用 basic auth, 只设置一个直接退出。
-# 附加参数会原样透传给 dsh web, 例如 --port 8080; 容器内默认追加
-# --no-open(无浏览器环境), 用户显式传入时不重复。
+# 附加参数会原样透传给 dsh web, 例如 --port 8080。dsh web 自身不打开浏览器
+# (也没有 --no-open 这个 flag), 无需追加参数。
 set -euo pipefail
 
 # 独立执行时也尽量还原 HOME(与 entrypoint 行为一致)。
@@ -42,10 +42,7 @@ esac
 # 容器/调用方的附加参数(透传给 dsh web)。注意: 函数内的 "$@" 是函数自己的
 # 参数而非脚本的, 必须先捕获到数组, 否则 --port 等透传参数会静默丢失。
 WEB_ARGS=()
-case " $* " in
-  *" --no-open "*) WEB_ARGS=("$@") ;;
-  *) WEB_ARGS=("$@" "--no-open") ;;
-esac
+WEB_ARGS=("$@")
 
 cd "$HOME"
 

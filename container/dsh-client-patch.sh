@@ -9,8 +9,9 @@
 # 设计为 best-effort: 若上游 dsh 版本改变了 bundle 路径或源码字符串, 脚本
 # 打印警告并跳过, 而不是阻止 dsh web 启动。CI 应能捕获这类版本漂移。
 #
-# 上游核对(dsh-v0.1.2-rc.1): 相对 alpha.5 仅 package.json 版本号变更, 无源码
-# 改动 —— isLoopback 表达式原样保留(connection/src/client/index.ts:228),
+# 上游核对(dsh-v0.1.0-rc.7): 浏览器端 isLoopback 不再读取 transport.ownsHost,
+# 改为 pageLocation === undefined || isLoopbackHostname(...)
+# (connection/src/client/index.ts:106, esbuild 产物为 pageLocation === void 0),
 # isLoopbackHostname 未变; 本补丁仍然必需(新增的 trustedHosts 只作用于服务端
 # 请求围栏, 不影响浏览器侧设置/凭据页的门)。上游已自带不依赖 secure context
 # 的 randomUuid(), randomUUID polyfill 仅作为其余 bundle 代码的保险。
@@ -72,6 +73,7 @@ const fs = require('fs')
 const file = process.env.CONNECTION_BUNDLE
 const marker = 'dsh-container remote-proxy patch'
 const candidates = [
+  'isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),',
   'isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),',
   'isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),',
 ]

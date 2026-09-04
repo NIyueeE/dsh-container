@@ -78,11 +78,12 @@ found_in() { # <rel-root> <fixed-string> -> 0/1
 }
 
 # critical: 前端补丁锚点的源形态 —— dsh-client-patch.sh 的候选串由它编译而来。
-# 源码里两个特征同时成立才认为补丁锚点未漂移(connection/src/client/index.ts)。
+# dsh-v0.1.0-rc.7 起浏览器端 isLoopback 不再读取 transport.ownsHost; 源码里
+# 这两个特征同时成立才认为补丁锚点未漂移(connection/src/client/index.ts)。
 if [ -f "$ROOT/packages/client/connection/src/client/index.ts" ]; then
   f="$ROOT/packages/client/connection/src/client/index.ts"
-  if grep -qF 'isLoopbackHostname(pageLocation.hostname)' "$f" \
-      && grep -qF 'transport?.ownsHost === true' "$f"; then
+  if grep -qF 'isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),' "$f" \
+      && grep -qF 'isLoopbackHostname(pageLocation.hostname)' "$f"; then
     echo "PASS connection.isLoopback.source"
     pass=$((pass + 1))
   else
@@ -97,7 +98,7 @@ fi
 # critical: 编译产物里的补丁候选串(若上游把 lib/ 提交进仓库才存在;
 # 源码构建时该文件由 pnpm build 生成, 此时 SKIP, 由 smoke 做行为级验证)。
 if [ -f "$ROOT/packages/client/connection/lib/client.js" ]; then
-  if grep -qF 'isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),' \
+  if grep -qF 'isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),' \
       "$ROOT/packages/client/connection/lib/client.js"; then
     echo "PASS connection.isLoopback.built"
     pass=$((pass + 1))
@@ -139,18 +140,15 @@ else
   MISSED+=("server.request_fence"); miss=$((miss + 1))
 fi
 
-# critical: dsh web CLI 契约 —— entrypoint 解析 --port, dsh-web 追加 --no-open。
-for flag in -- --no-open --port; do
-  [ "$flag" = "--" ] && continue
-  id="cli.${flag#--}"
-  if found_in "." "$flag"; then
-    echo "PASS $id"
-    pass=$((pass + 1))
-  else
-    echo "MISS $id (flag string not found in upstream source)"
-    MISSED+=("$id"); miss=$((miss + 1))
-  fi
-done
+# critical: dsh web CLI 契约 —— entrypoint 解析 --port 并转发。上游 dsh web
+# 自身不打开浏览器(也没有 --no-open), dsh-web 只透传调用方参数。
+if found_in "." "--port"; then
+  echo "PASS cli.port"
+  pass=$((pass + 1))
+else
+  echo "MISS cli.port (--port flag string not found in upstream source)"
+  MISSED+=("cli.port"); miss=$((miss + 1))
+fi
 
 # warn: 一次性登录 URL 行为由 smoke 做行为级验证, 这里仅提示性检查。
 if found_in "." "token="; then

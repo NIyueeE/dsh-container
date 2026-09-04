@@ -20,13 +20,13 @@ affected enforcement point in `container/*.sh`.
 
 ## Critical items (checked by `tests/contract.sh`)
 
-| # | Item | Upstream location (`dsh-v0.1.2-rc.1`) | Why this image needs it | Enforcement |
+| # | Item | Upstream location (`dsh-v0.1.0-rc.7`) | Why this image needs it | Enforcement |
 |---|---|---|---|---|
-| 1 | Browser-side `isLoopback` gate compiled from `isLoopback: transport?.ownsHost === true \|\| pageLocation === undefined \|\| isLoopbackHostname(pageLocation.hostname)` | `packages/client/connection/src/client/index.ts:228` | `dsh-client-patch.sh` rewrites the built form (`pageLocation === void 0`) to `isLoopback: true` so remote browsers can use settings/credentials; if the expression changes shape the patch silently skips | `contract.sh connection.isLoopback.source` (static) + smoke bundle assertions (behavioral) |
+| 1 | Browser-side `isLoopback` gate compiled from `isLoopback: pageLocation === undefined \|\| isLoopbackHostname(pageLocation.hostname)` | `packages/client/connection/src/client/index.ts:106` | `dsh-client-patch.sh` rewrites the built form (`pageLocation === void 0`) to `isLoopback: true` so remote browsers can use settings/credentials; if the expression changes shape the patch silently skips | `contract.sh connection.isLoopback.source` (static) + smoke bundle assertions (behavioral) |
 | 2 | `index.html` module-script anchor `<script type="module"` | `apps/web/index.html` | `dsh-client-patch.sh` injects the `crypto.randomUUID` polyfill immediately before the first module script | `contract.sh web.index.anchor` + smoke polyfill assertions |
 | 3 | Header-based `/api` trust fence (checks `Host`/loopback/`trustedHosts`, `Origin`, `sec-fetch-site`) | `packages/client/connection/src/api-request-trust.ts` | The Caddy proxy rewrites `Host`/`Origin` to loopback and is the only exposure path; the whole remote-access design assumes the fence inspects headers, never TCP source | `contract.sh server.request_fence` + smoke 200/401 assertions on `/api/settings/describe` |
 | 4 | `dsh web` accepts `--port` | `apps/cli` arg pass-through (spec in `apps/cli/tests/args.spec.ts`) | `container/entrypoint.sh` parses `--port` and forwards it; upstream rejects `--host 0.0.0.0` by design, which the image works with (loopback + proxy) | `contract.sh cli.port` |
-| 5 | `dsh web` accepts `--no-open` | same | `container/dsh-web.sh` appends `--no-open` (the container has no browser) | `contract.sh cli.no-open` |
+| ~~5~~ | ~~`dsh web` accepts `--no-open`~~ — removed upstream at `dsh-v0.1.0-rc.7` | `packages/bundle/web-app/src/startup.ts` | `container/dsh-web.sh` no longer appends `--no-open`; upstream never opens a browser, so no flag is needed. The static check was dropped; the smoke start/readiness assertions cover the resulting startup path | none (was `contract.sh cli.no-open`) |
 
 Notes:
 
