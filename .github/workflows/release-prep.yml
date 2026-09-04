@@ -152,7 +152,7 @@ jobs:
     needs: contract
     if: needs.contract.outputs.verdict == 'drift'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: write # 推 release-prep/<tag> 修复分支
       issues: write
