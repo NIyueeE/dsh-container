@@ -191,12 +191,12 @@ jobs:
 
       - name: Write codex config
         env:
-          # 端点/模型走 secrets(不公开); wire_api 留 variable。注意: 新版
-          # codex(>=0.15x)已移除 chat 模式, 仅支持 OpenAI Responses API,
-          # 因此默认 responses; 端点必须实现 /v1/responses。
+          # 端点/模型走 secrets(不公开); wire_api 留 variable, 默认 chat
+          # (OpenAI chat completions, 中转普遍支持)。chat 需要 codex<=0.90.x
+          # (本 job 安装步骤已钉住); 换用支持 Responses API 的端点后可升级。
           CODEX_BASE_URL: ${{ secrets.CODEX_BASE_URL }}
           CODEX_MODEL: ${{ secrets.CODEX_MODEL }}
-          CODEX_WIRE_API: ${{ vars.CODEX_WIRE_API || 'responses' }}
+          CODEX_WIRE_API: ${{ vars.CODEX_WIRE_API || 'chat' }}
         run: |
           set -euo pipefail
           mkdir -p "$CODEX_HOME"
@@ -220,9 +220,10 @@ jobs:
           fi
           # codex-universal 镜像不预装 CLI(云端由平台运行时注入), 也没有
           # node/npm —— 直接装官方 release 的 musl 静态二进制(glibc 环境可跑)。
-          # 版本钉死防 CLI 行为漂移, 升级时改这里并跑一次演练。prep 跑在
-          # ubuntu-latest (x86_64) 上, 故取 x86_64 资产。
-          codex_version=0.153.2
+          # 钉在 0.90.0: 0.100.0 起移除了 wire_api="chat"(见 codex
+          # discussions/7782), 而自建中转的 glm 系模型只讲 chat completions;
+          # 升级前先确认端点已支持 Responses API。prep 跑在 x86_64 上。
+          codex_version=0.90.0
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           curl -fsSL \
