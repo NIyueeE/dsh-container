@@ -75,8 +75,24 @@ jobs:
           [[ "$new_tag" =~ ^dsh-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
             || { echo "invalid new_tag: $new_tag" >&2; exit 1; }
           # 幂等: 本仓库已有同名 tag(已发版或重复 dispatch)→ 跳过
+          # 幂等: 本仓库已有同名 tag(已发版或重复 dispatch)→ 跳过。
+          # ls-remote 退出码语义: 0 = 匹配到(存在), 2 = 无匹配(不存在),
+          # 其他非零 = 传输错误 —— 必须重试后再放弃, 否则网络抖动会被误判成
+          # "tag 不存在", 白白重跑 verify(甚至重复发版)。
+          tag_exists=0
+          for _ in 1 2 3; do
+            rc=0
+            git ls-remote --exit-code --tags origin "refs/tags/$new_tag" >/dev/null 2>&1 || rc=$?
+            if [ "$rc" = 0 ]; then
+              tag_exists=1
+              break
+            fi
+            [ "$rc" = 2 ] && break
+            echo "ls-remote transport error (rc=$rc); retrying..." >&2
+            sleep 5
+          done
           verdict="ready"
-          if git ls-remote --exit-code --tags origin "refs/tags/$new_tag" >/dev/null 2>&1; then
+          if [ "$tag_exists" = 1 ]; then
             echo "tag $new_tag already exists in this repository; nothing to do"
             verdict="skipped"
           fi
@@ -102,9 +118,15 @@ jobs:
 
       - name: Contract check
         id: contract
-        if: steps.resolve.outputs.verdict != 'skipped'
         run: |
           set -euo pipefail
+          # skip 逻辑放本步内部而非 step if: 被跳过的 step 不产出 output,
+          # job output verdict 会变成空串, 下游的 != 'skipped' 判断就会误放行
+          # (首轮演练踩过的坑)。
+          if [ "${{ steps.resolve.outputs.verdict }}" = "skipped" ]; then
+            echo "verdict=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # 注意不能 -e 吞掉退出码 2(2 = 漂移, 是预期结果之一)
           set +e
           bash tests/contract.sh --tag "${{ steps.resolve.outputs.new_tag }}" \
