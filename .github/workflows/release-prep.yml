@@ -253,13 +253,15 @@ jobs:
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
         run: |
           set -euo pipefail
-          # 诊断: 首轮演练在此步报 "fatal: not in a git directory"(git 128),
-          # 原因未定, 先显式回到工作区并用 -c 内联身份绕开一切 config 写入;
-          # 这些行留作下次失败的定位线索。
-          echo "cwd=$(pwd) workspace=${GITHUB_WORKSPACE:-unset} HOME=${HOME:-unset}"
-          echo "GIT_DIR=${GIT_DIR:-unset} GIT_CONFIG_GLOBAL=${GIT_CONFIG_GLOBAL:-unset} XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-unset}"
+          # 容器 job 经典坑: workspace 文件属主是宿主 runner 的 UID, 容器内
+          # 用户与其不同, git 的 dubious-ownership 检查会拒绝一切操作
+          # (实测报 "detected dubious ownership", 上一轮的 "not in a git
+          # directory" 是同一根因在 config 写入路径上的另一种形态)。
+          # safe.directory 只在 system/global 作用域生效, 故用
+          # GIT_CONFIG_GLOBAL 注入, 不依赖 HOME 可写。
+          export GIT_CONFIG_GLOBAL="$(mktemp)"
+          printf '[safe]\n\tdirectory = %s\n' "$GITHUB_WORKSPACE" > "$GIT_CONFIG_GLOBAL"
           cd "${GITHUB_WORKSPACE:-$PWD}"
-          ls -d .git >/dev/null && echo ".git present" || echo ".git MISSING"
           git rev-parse --is-inside-work-tree
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
