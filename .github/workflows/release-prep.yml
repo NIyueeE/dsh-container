@@ -331,10 +331,41 @@ jobs:
         with:
           ref: ${{ needs.prep.outputs.branch || github.ref }}
 
+      # 降级保护: 新 tag 必须比本仓库现有最新 dsh-v* tag 更新(semver 语义, 与
+      # upstream-tag.yml 的排序键一致)才允许发版 —— 防止误 dispatch 旧 tag 把
+      # latest 拖回旧版本。拒绝时不碰 main、不推 tag, 只在 tracker issue 留言。
+      - name: 'Guard: refuse downgrade releases'
+        id: guard
+        run: |
+          set -euo pipefail
+          tags="$(git ls-remote --tags origin 'refs/tags/dsh-v*' \
+            | sed -E 's#.*refs/tags/##' | grep -v '\^{}' | sed 's/^dsh-v//' | sort -u)"
+          refuse="$(NEW_TAG="${NEW_TAG#dsh-v}" EXISTING="$tags" node -e '
+            const key = (v) => {
+              const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(v);
+              if (!m) return null;
+              const core = [m[1], m[2], m[3]].map((s) => s.padStart(8, "0")).join(".");
+              const pre = m[4]
+                ? m[4].split(".").map((id) => (/^\d+$/.test(id) ? `0${id.padStart(12, "0")}` : `1${id}`)).join(".")
+                : "~";
+              return `${core}|${pre}`;
+            };
+            const nt = key(process.env.NEW_TAG);
+            if (!nt) { console.error("bad new tag: " + process.env.NEW_TAG); process.exit(1); }
+            const max = process.env.EXISTING.split("\n").filter(Boolean).map(key).filter(Boolean).sort().pop();
+            process.stdout.write(max !== undefined && max >= nt ? "yes" : "no");
+          ')"
+          echo "refuse=$refuse" >> "$GITHUB_OUTPUT"
+          if [ "$refuse" = "yes" ]; then
+            echo "refusing to release $NEW_TAG: not newer than the newest existing tag" >&2
+          fi
+        env:
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+
       # 先把修复分支快进到 main, 再在同一个 commit 上打 tag —— image.yml 由
       # tag 触发并 checkout 该 tag, 修复内容随之进入发布构建。
       - name: Fast-forward main with repair branch
-        if: needs.prep.outputs.changed == 'true'
+        if: needs.prep.outputs.changed == 'true' && steps.guard.outputs.refuse == 'false'
         run: git push origin "HEAD:main"
 
       - name: Exchange GitHub App token
@@ -346,7 +377,7 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
       - name: Push release tag via App token
-        if: env.HAS_APP == 'true'
+        if: env.HAS_APP == 'true' && steps.guard.outputs.refuse == 'false'
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
@@ -359,7 +390,7 @@ jobs:
           git push app "refs/tags/$NEW_TAG"
 
       - name: Close tracker issue (auto path)
-        if: env.HAS_APP == 'true' && needs.contract.outputs.issue != ''
+        if: env.HAS_APP == 'true' && steps.guard.outputs.refuse == 'false' && needs.contract.outputs.issue != ''
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.contract.outputs.issue }}
@@ -367,6 +398,17 @@ jobs:
         run: |
           gh issue close "$ISSUE" --comment \
             "Verified and released: tag \`$NEW_TAG\` pushed, image.yml is building and publishing the multi-arch image." \
+            || true
+
+      - name: Note refused downgrade on tracker issue
+        if: steps.guard.outputs.refuse == 'true' && needs.contract.outputs.issue != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.contract.outputs.issue }}
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+        run: |
+          gh issue comment "$ISSUE" --body \
+            "Release of \`$NEW_TAG\` was refused: it is not newer than the newest \`dsh-v*\` tag already in this repository (downgrade guard)." \
             || true
 
       - name: 'Fallback: manual release instructions'
