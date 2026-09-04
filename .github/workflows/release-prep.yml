@@ -191,11 +191,12 @@ jobs:
 
       - name: Write codex config
         env:
-          # 端点/模型走 secrets(不公开); wire_api 留 variable, 默认 chat
-          # (OpenAI 兼容端点; responses 仅 OpenAI 官方)
+          # 端点/模型走 secrets(不公开); wire_api 留 variable。注意: 新版
+          # codex(>=0.15x)已移除 chat 模式, 仅支持 OpenAI Responses API,
+          # 因此默认 responses; 端点必须实现 /v1/responses。
           CODEX_BASE_URL: ${{ secrets.CODEX_BASE_URL }}
           CODEX_MODEL: ${{ secrets.CODEX_MODEL }}
-          CODEX_WIRE_API: ${{ vars.CODEX_WIRE_API || 'chat' }}
+          CODEX_WIRE_API: ${{ vars.CODEX_WIRE_API || 'responses' }}
         run: |
           set -euo pipefail
           mkdir -p "$CODEX_HOME"
