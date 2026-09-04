@@ -301,14 +301,21 @@ jobs:
               echo "The agent judged no repository changes necessary; the verify job will run on the default branch."
             fi
           } > /tmp/issue-comment.md
-          # 容器里没有 gh: curl 发评论, python3 做 JSON 转义(报告是任意 markdown)
-          body_json="$(python3 -c 'import json,sys;print(json.dumps({"body":sys.stdin.read()}))' \
-            < /tmp/issue-comment.md)"
-          curl -fsSL -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE/comments" \
-            -d "$body_json" > /dev/null
+          # 容器里没有 gh: curl 发评论, python3 做 JSON 转义(报告是任意
+          # markdown)。报告是锦上添花 —— 修复分支已推送, 此步失败不应让
+          # 一次成功的 prep 整体失败, 故容错降级。
+          if command -v python3 >/dev/null 2>&1; then
+            body_json="$(python3 -c 'import json,sys;print(json.dumps({"body":sys.stdin.read()}))' \
+              < /tmp/issue-comment.md)"
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE/comments" \
+              -d "$body_json" > /dev/null \
+              || echo "warning: failed to post the agent report to issue #$ISSUE" >&2
+          else
+            echo "warning: python3 unavailable; agent report not posted to issue #$ISSUE" >&2
+          fi
 
   verify:
     name: Build + smoke test (pre-release gate)
