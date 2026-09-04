@@ -4,9 +4,10 @@ name: Upstream dsh tag watch
 # package-ecosystem: github-actions / docker / npm 等), 因此上游 dsh 的
 # dsh-v* tag 由这个定时任务监视: 每天对照 GitHub API, 上游
 # deepseek-ai/deepseek-harness 出现本仓库尚未镜像的新 dsh-v* tag 时, 开一个
-# 提醒 issue(含发布命令); 本仓库推上同名 tag 后(image.yml 会自动构建并
-# 发布镜像), 下次运行自动关闭该 issue。推送 dsh-v* tag 或手动 dispatch 时
-# 也会立即检查。
+# 提醒 issue(含发布命令)并 repository_dispatch 触发 release-prep.yml 的
+# 自动发版准备流水线(契约检查 → agent 修复 → 构建冒烟 → 推 tag); 本仓库推上
+# 同名 tag 后(image.yml 会自动构建并发布镜像), 下次运行自动关闭该 issue。
+# 推送 dsh-v* tag 或手动 dispatch 时也会立即检查。
 #
 # 上游仓库可用仓库变量 DSH_UPSTREAM_REPO 覆盖(与 image.yml 的 vars.DSH_TAG
 # 模式一致), 默认 deepseek-ai/deepseek-harness。
@@ -141,7 +142,24 @@ jobs:
             fi
           done
           if [ -n "$existing" ]; then
-            echo "issue #$existing already tracks $upstream_tag; nothing to do"
+            echo "issue #$existing already tracks $upstream_tag"
+            # 已有提醒时仍要触发 release-prep: 上次运行可能失败, 每日重试,
+            # release-prep 内部幂等(已有同名 tag 即跳过), 重复 dispatch 无副作用
+            dispatch_issue="$existing"
+          else
+            dispatch_issue=""
+          fi
+
+          if [ -n "$dispatch_issue" ]; then
+            if gh api "repos/$SELF_REPO/dispatches" \
+                -f event_type=upstream-dsh-tag \
+                -f "client_payload[new_tag]=$upstream_tag" \
+                -f "client_payload[old_tag]=$self_tag" \
+                -f "client_payload[issue]=$dispatch_issue"; then
+              echo "dispatched release-prep for $upstream_tag (issue: $dispatch_issue)"
+            else
+              echo "warning: dispatch to release-prep failed; tracker issue remains open for manual follow-up" >&2
+            fi
             exit 0
           fi
 
@@ -196,7 +214,22 @@ jobs:
           automatically once the tag exists in this repository.
           EOF
 
-          if ! gh issue create --title "$title" --body-file "$body_file" --label upstream-dsh; then
-            gh issue create --title "$title" --body-file "$body_file"
+          if ! created="$(gh issue create --title "$title" --body-file "$body_file" --label upstream-dsh)"; then
+            created="$(gh issue create --title "$title" --body-file "$body_file")"
           fi
-          echo "opened tracker issue for $upstream_tag"
+          issue_num="$(printf '%s' "$created" | grep -oE '[0-9]+$' || true)"
+          echo "opened tracker issue for $upstream_tag (issue: ${issue_num:-unknown})"
+
+          # 触发 release-prep.yml 自动发版准备(契约 → agent 修复 → 冒烟 → 推 tag)。
+          # repository_dispatch 是 GITHUB_TOKEN 反递归限制的豁免事件, 可直接触发;
+          # release-prep 内部幂等(已有同名 tag 即跳过), 重复 dispatch 无副作用。
+          dispatch_issue="$issue_num"
+          if gh api "repos/$SELF_REPO/dispatches" \
+              -f event_type=upstream-dsh-tag \
+              -f "client_payload[new_tag]=$upstream_tag" \
+              -f "client_payload[old_tag]=$self_tag" \
+              -f "client_payload[issue]=$dispatch_issue"; then
+            echo "dispatched release-prep for $upstream_tag (issue: ${dispatch_issue:-none})"
+          else
+            echo "warning: dispatch to release-prep failed; tracker issue remains open for manual follow-up" >&2
+          fi

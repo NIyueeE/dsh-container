@@ -68,6 +68,40 @@ The upstream repository can be overridden with the `DSH_UPSTREAM_REPO` repositor
 (default `deepseek-ai/deepseek-harness`), mirroring `vars.DSH_TAG` in `image.yml`. To re-check on
 demand, run "Upstream dsh tag watch" → "Run workflow" from the Actions tab.
 
+### Automated release preparation (`.github/workflows/release-prep.yml`)
+
+When the watcher finds a new upstream tag it also dispatches the release-prep pipeline, which
+removes the manual `git tag` step in the common case:
+
+1. **contract** — `tests/contract.sh` statically checks the upstream tag against
+   [upstream-contract.md](upstream-contract.md) (patch anchors, CLI flags, request fence). If this
+   repository already has the tag, the run skips (idempotent dispatches).
+2. **prep** (only on drift) — a headless [codex](https://github.com/openai/codex) agent runs in the
+   `codex-universal` container, reviews the upstream diff against the contract, and applies a
+   minimal repair (typically new candidate strings in `dsh-client-patch.sh`). It pushes a
+   `release-prep/<tag>` branch and posts its report to the tracker issue.
+3. **verify** — builds the image from the new upstream tag (with the repair branch applied if any)
+   and runs `tests/smoke.sh`. The agent's own claims are never trusted; CI decides.
+4. **release** — fast-forwards `main` to the repair branch (if any), then pushes the `dsh-v*` tag
+   with a GitHub App token, which triggers `image.yml` for the real build and publish. Failures
+   are reported to the tracker issue and the issue stays open.
+
+The release was already validated end to end (contract → smoke) before the tag is pushed;
+`image.yml` re-runs the same smoke suite as the final gate.
+
+Configuration for `release-prep.yml`:
+
+| Setting | Kind | Purpose |
+|---|---|---|
+| `CODEX_BASE_URL` | secret | Model endpoint for the codex agent (any OpenAI-compatible URL) |
+| `CODEX_MODEL` | secret | Model name (e.g. `deepseek-chat`) |
+| `CODEX_WIRE_API` | variable | `chat` (default, for OpenAI-compatible endpoints) or `responses` (OpenAI official) |
+| `CODEX_API_KEY` | secret | API key for the model endpoint |
+| `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY` | secrets | Optional GitHub App whose token pushes the release tag (a `GITHUB_TOKEN` push cannot trigger `image.yml`). Without it, the pipeline stops at ready-to-release and posts manual `git tag` instructions to the tracker issue |
+
+The pipeline can also be run on demand: Actions → "Release prep" → "Run workflow" with the
+`new_tag` input.
+
 ### Dependabot (`.github/dependabot.yml`)
 
 Weekly version updates for the dependencies that are pinned in this repository:

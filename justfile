@@ -16,3 +16,12 @@ debug:
 # 在不重启容器的情况下重启容器内的 dsh web(dsh-web 守护会自动重新拉起)
 restart-dsh:
     {{container}} exec dsh dsh-restart
+
+# 对已构建镜像跑冒烟测试(先 just build; DOCKER 已按 podman/docker 自动选择)
+test image="ghcr.io/niyueee/dsh-container:local":
+    DOCKER={{container}} tests/smoke.sh {{image}}
+
+# 对上游 tag 跑契约静态检查(浅克隆上游, 数秒判定兼容漂移;
+# 本地已有 checkout 时直接调 tests/contract.sh --tag X --dir PATH 更快)
+contract tag:
+    tests/contract.sh --tag {{tag}}

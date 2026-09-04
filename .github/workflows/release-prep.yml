@@ -1,0 +1,416 @@
+name: Release prep
+
+# 上游 dsh tag 的自动发版准备流水线(与 docs/releasing.md / AGENTS.md 同步维护):
+#
+#   contract — tests/contract.sh 静态契约检查(docs/upstream-contract.md 的机器形态),
+#              数秒判定上游 tag 是否存在兼容漂移; 本仓库已有同名 tag 时幂等跳过
+#   prep     — (漂移时)在 codex-universal 容器里以 headless codex 运行修复 agent:
+#              读上游 diff + 契约文档, 最小化修复(通常是 dsh-client-patch.sh 的
+#              候选串), 结果推 release-prep/<tag> 分支, 报告贴到 tracker issue
+#   verify   — 用修复后的树以 DSH_TAG=<新 tag> 构建镜像并跑 tests/smoke.sh
+#              (闸门不信任 agent 自验)
+#   release  — verify 通过后把修复分支快进到 main, 用 GitHub App token 推
+#              dsh-v* tag(GITHUB_TOKEN 的 push 不会触发 workflow, App token 会)
+#              → image.yml 完成构建/冒烟/发布/Release; 未配置 App 时降级为在
+#              tracker issue 留手动发版命令
+#   notify   — 任一环节失败时在 tracker issue 留诊断说明
+#
+# 触发: upstream-tag.yml 发现新上游 tag 后 repository_dispatch(事件
+# upstream-dsh-tag, 携带 new_tag/old_tag/issue), 或手动 dispatch 填 new_tag。
+# 配置: secrets CODEX_API_KEY / CODEX_BASE_URL / CODEX_MODEL(agent 模型后端),
+#       可选 secrets RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY(自动推 tag)。
+
+on:
+  repository_dispatch:
+    types: [upstream-dsh-tag]
+  workflow_dispatch:
+    inputs:
+      new_tag:
+        description: 'Upstream dsh-v* tag to prep and release (e.g. dsh-v0.1.2-rc.1)'
+        required: true
+        type: string
+
+# 默认只读 + issue 写; prep/release 需要写 contents 的在各自 job 里声明
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: release-prep
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
+  IMAGE_NAME: ghcr.io/niyueee/dsh-container
+
+jobs:
+  contract:
+    name: Contract check against upstream tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      new_tag: ${{ steps.resolve.outputs.new_tag }}
+      old_tag: ${{ steps.resolve.outputs.old_tag }}
+      issue: ${{ steps.resolve.outputs.issue }}
+      verdict: ${{ steps.contract.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve tags and tracker issue
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            new_tag="${{ github.event.client_payload.new_tag }}"
+            old_tag="${{ github.event.client_payload.old_tag }}"
+            issue="${{ github.event.client_payload.issue }}"
+          else
+            new_tag="${{ inputs.new_tag }}"
+            old_tag=""
+            issue=""
+          fi
+          # tag 形状校验(与 tests/contract.sh、upstream-tag.yml 保持一致)
+          [[ "$new_tag" =~ ^dsh-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "invalid new_tag: $new_tag" >&2; exit 1; }
+          # 幂等: 本仓库已有同名 tag(已发版或重复 dispatch)→ 跳过
+          verdict="ready"
+          if git ls-remote --exit-code --tags origin "refs/tags/$new_tag" >/dev/null 2>&1; then
+            echo "tag $new_tag already exists in this repository; nothing to do"
+            verdict="skipped"
+          fi
+          # old_tag 兜底: dispatch 未携带时取本仓库最新 dsh-v* tag(sort -V 对
+          # 预发布段排序不完美, 但只用于圈定上游 compare 范围, 可接受)
+          if [ -z "$old_tag" ]; then
+            old_tag="$(git ls-remote --tags origin 'refs/tags/dsh-v*' \
+              | sed -E 's#.*refs/tags/(dsh-v[0-9.]+.*)$#\1#' | grep -v '\^{}' \
+              | sort -V | tail -n1 || true)"
+          fi
+          # issue 兜底: 找标题匹配的未关闭 tracker issue
+          if [ -z "$issue" ]; then
+            issue="$(gh issue list --state open --json number,title \
+              --jq ".[] | select(.title == \"New upstream dsh release available: $new_tag\") | .number" \
+              | head -n1 || true)"
+          fi
+          {
+            echo "new_tag=$new_tag"
+            echo "old_tag=$old_tag"
+            echo "issue=$issue"
+            echo "verdict=$verdict"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Contract check
+        id: contract
+        if: steps.resolve.outputs.verdict != 'skipped'
+        run: |
+          set -euo pipefail
+          # 注意不能 -e 吞掉退出码 2(2 = 漂移, 是预期结果之一)
+          set +e
+          bash tests/contract.sh --tag "${{ steps.resolve.outputs.new_tag }}" \
+            --repo "$UPSTREAM_REPO" 2>&1 | tee /tmp/contract-report.txt
+          rc="${PIPESTATUS[0]}"
+          set -e
+          case "$rc" in
+            0) verdict="clean" ;;
+            2) verdict="drift" ;;
+            *) echo "contract.sh infrastructure error (rc=$rc)" >&2; exit 1 ;;
+          esac
+          cat /tmp/contract-report.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+  prep:
+    name: Agent drift repair (codex)
+    needs: contract
+    if: needs.contract.outputs.verdict == 'drift'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # 推 release-prep/<tag> 修复分支
+      issues: write
+    outputs:
+      branch: ${{ steps.commit.outputs.branch }}
+      changed: ${{ steps.commit.outputs.changed }}
+    container:
+      # OpenAI 官方 codex agent 通用镜像(预装 codex CLI 与常用工具链)。
+      # TODO: 首次成功运行后按 digest 钉死, 防止上游镜像漂移。
+      image: ghcr.io/openai/codex-universal:latest
+    env:
+      CODEX_HOME: /tmp/codex-home
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Collect drift context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+          OLD_TAG: ${{ needs.contract.outputs.old_tag }}
+        run: |
+          set -euo pipefail
+          # 上游 compare diff; 无 old_tag(仓库首个发版)时退化为单 commit 视图
+          if ! gh api "repos/$UPSTREAM_REPO/compare/${OLD_TAG}...${NEW_TAG}" \
+              > /tmp/upstream-diff.json 2>/dev/null; then
+            gh api "repos/$UPSTREAM_REPO/commits/$NEW_TAG" > /tmp/upstream-diff.json
+          fi
+          # 上游源码 checkout, 让 agent 完全离线分析(无网络需求)
+          git clone --quiet --depth 1 --branch "$NEW_TAG" \
+            "https://github.com/$UPSTREAM_REPO.git" /tmp/upstream
+          echo "context ready: /tmp/upstream-diff.json, /tmp/upstream"
+
+      - name: Write codex config
+        env:
+          # 端点/模型走 secrets(不公开); wire_api 留 variable, 默认 chat
+          # (OpenAI 兼容端点; responses 仅 OpenAI 官方)
+          CODEX_BASE_URL: ${{ secrets.CODEX_BASE_URL }}
+          CODEX_MODEL: ${{ secrets.CODEX_MODEL }}
+          CODEX_WIRE_API: ${{ vars.CODEX_WIRE_API || 'chat' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_HOME"
+          cat > "$CODEX_HOME/config.toml" <<EOF
+          model = "${CODEX_MODEL}"
+          model_provider = "custom"
+
+          [model_providers.custom]
+          name = "custom"
+          base_url = "${CODEX_BASE_URL}"
+          env_key = "CODEX_API_KEY"
+          wire_api = "${CODEX_WIRE_API}"
+          EOF
+
+      - name: Run codex agent
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+        run: |
+          set -euo pipefail
+          codex exec --json --sandbox workspace-write \
+            --output-last-message /tmp/agent-report.md \
+            "$(cat prompts/release-prep.md)"
+          [ -s /tmp/agent-report.md ] \
+            || { echo "(agent produced no final message; see JSONL log)" > /tmp/agent-report.md; }
+
+      - name: Commit repair branch
+        id: commit
+        env:
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "dsh-container release agent"
+          git config user.email "actions@github.com"
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "branch=" >> "$GITHUB_OUTPUT"
+            echo "agent made no changes; verify will run on the default branch"
+            exit 0
+          fi
+          branch="release-prep/${NEW_TAG}"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "fix: adapt to upstream $NEW_TAG (agent-prepared)"
+          git push origin "$branch"
+          {
+            echo "changed=true"
+            echo "branch=$branch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Report to tracker issue
+        if: needs.contract.outputs.issue != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.contract.outputs.issue }}
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+          BRANCH: ${{ steps.commit.outputs.branch }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Agent drift review — \`$NEW_TAG\`"
+            echo
+            cat /tmp/agent-report.md
+            echo
+            if [ -n "$BRANCH" ]; then
+              echo "Repair branch: \`$BRANCH\` — the verify job will build and smoke-test it before any release."
+            else
+              echo "The agent judged no repository changes necessary; the verify job will run on the default branch."
+            fi
+          } > /tmp/issue-comment.md
+          gh issue comment "$ISSUE" --body-file /tmp/issue-comment.md
+
+  verify:
+    name: Build + smoke test (pre-release gate)
+    needs: [contract, prep]
+    # prep 失败时不跑(等修复重试); prep 被跳过(契约干净)或成功时都跑。
+    # !cancelled() 保证 prep 失败时本 job 显式 skipped 而不是被 needs 连坐。
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.contract.result == 'success' &&
+        needs.contract.outputs.verdict != 'skipped' &&
+        (needs.prep.result == 'success' || needs.prep.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # 有修复分支时验证修复后的树; 干净路径验证默认分支
+          ref: ${{ needs.prep.outputs.branch || github.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # 与 image.yml 的发布构建同一 Containerfile / DSH_TAG 语义:
+      # 镜像从上游 <new_tag> 源码构建, 这里只验证不推送。
+      - name: Build image from new upstream tag
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:prep-${{ github.run_id }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_GIT_SHA=${{ github.sha }}
+            BUILD_GIT_REF=${{ github.ref_name }}
+            BUILD_VERSION=latest
+            DSH_TAG=${{ needs.contract.outputs.new_tag }}
+
+      - name: Smoke test
+        run: |
+          tests/smoke.sh "${IMAGE_NAME}:prep-${{ github.run_id }}" \
+            --expect-dsh-version "${NEW_TAG#dsh-v}"
+        env:
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+
+  release:
+    name: Publish tag (or fall back to manual)
+    needs: [contract, prep, verify]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.verify.result == 'success' &&
+        needs.contract.outputs.verdict != 'skipped'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # 快进 main 与(降级路径)文档提示
+      issues: write
+    env:
+      # secrets 不能直接用于 if, 借 env 间接判断是否配置了 GitHub App
+      HAS_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prep.outputs.branch || github.ref }}
+
+      # 先把修复分支快进到 main, 再在同一个 commit 上打 tag —— image.yml 由
+      # tag 触发并 checkout 该 tag, 修复内容随之进入发布构建。
+      - name: Fast-forward main with repair branch
+        if: needs.prep.outputs.changed == 'true'
+        run: git push origin "HEAD:main"
+
+      - name: Exchange GitHub App token
+        id: app-token
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Push release tag via App token
+        if: env.HAS_APP == 'true'
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+        run: |
+          set -euo pipefail
+          git tag -f "$NEW_TAG"
+          # App token 的 push 事件会触发 image.yml(GITHUB_TOKEN 的不会);
+          # image.yml 从该 tag 构建 + 冒烟 + 发布, 是最后一道闸门。
+          git remote add app "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git"
+          git push app "refs/tags/$NEW_TAG"
+
+      - name: Close tracker issue (auto path)
+        if: env.HAS_APP == 'true' && needs.contract.outputs.issue != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.contract.outputs.issue }}
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+        run: |
+          gh issue close "$ISSUE" --comment \
+            "Verified and released: tag \`$NEW_TAG\` pushed, image.yml is building and publishing the multi-arch image." \
+            || true
+
+      - name: 'Fallback: manual release instructions'
+        if: env.HAS_APP != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.contract.outputs.issue }}
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+          BRANCH: ${{ needs.prep.outputs.branch }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Ready to release \`$NEW_TAG\`"
+            echo
+            echo "All checks passed, but no GitHub App (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY) is"
+            echo "configured, so the tag was not pushed automatically. To release:"
+            echo
+            if [ -n "$BRANCH" ]; then
+              echo "    git fetch origin && git checkout $BRANCH"
+              echo "    git push origin $BRANCH:main"
+            fi
+            echo "    git tag $NEW_TAG origin/${BRANCH:-main}"
+            echo "    git push origin $NEW_TAG"
+          } > /tmp/issue-comment.md
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --body-file /tmp/issue-comment.md
+          else
+            cat /tmp/issue-comment.md
+          fi
+
+  notify:
+    name: Report failure to tracker issue
+    needs: [contract, prep, verify, release]
+    if: >-
+      ${{
+        always() &&
+        (needs.contract.result == 'failure' || needs.prep.result == 'failure' ||
+         needs.verify.result == 'failure' || needs.release.result == 'failure')
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE: ${{ needs.contract.outputs.issue }}
+      NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+    steps:
+      - name: Post failure note
+        run: |
+          set -euo pipefail
+          {
+            echo "## Release prep failed for \`$NEW_TAG\`"
+            echo
+            echo "| job | result |"
+            echo "|---|---|"
+            echo "| contract | ${{ needs.contract.result }} |"
+            echo "| prep (agent) | ${{ needs.prep.result }} |"
+            echo "| verify | ${{ needs.verify.result }} |"
+            echo "| release | ${{ needs.release.result }} |"
+            echo
+            echo "See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for logs."
+            echo "The release was NOT published; the tracker issue stays open."
+          } > /tmp/issue-comment.md
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --body-file /tmp/issue-comment.md || true
+          else
+            cat /tmp/issue-comment.md
+          fi

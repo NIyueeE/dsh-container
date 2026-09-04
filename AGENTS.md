@@ -24,7 +24,12 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, design, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
 | `.github/workflows/image.yml` | CI: build + smoke test always; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags) |
-| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens/closes a tracker issue (Dependabot cannot watch another repo's git tags) |
+| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens/closes a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml` |
+| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → codex agent repair on drift → build + smoke on the repaired tree → push the `dsh-v*` tag via GitHub App token (manual-instruction fallback on the tracker issue when no App is configured) |
+| `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
+| `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for patch anchors, CLI flags, and the request fence before any image is built |
+| `prompts/release-prep.md` | System prompt for the headless codex agent that repairs contract drift in the `release-prep.yml` prep job |
+| `docs/upstream-contract.md` | The upstream contract: what this image depends on, where each item is enforced, and the drift-update protocol the agent follows |
 | `.github/dependabot.yml` | Dependabot version updates: weekly `github-actions` + `docker` ecosystems (action pins, base image) |
 | `justfile` | Local build / debug / restart commands (podman or docker) |
 
@@ -135,6 +140,8 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 just build      # build ghcr.io/niyueee/dsh-container:local (podman or docker)
 just debug      # run in the foreground with port 3081 published
 just restart-dsh # restart dsh web inside the running "dsh" container
+just test       # smoke-test an already built image (tests/smoke.sh)
+just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
 ```
 
 - The justfile passes `--format docker` only for podman (Docker has no such flag). podman needs it
@@ -145,12 +152,15 @@ just restart-dsh # restart dsh web inside the running "dsh" container
   multi-arch image tagged `dsh-v*` + `<sha>` + `latest`, then creates a GitHub Release with the
   same tag name. No QEMU emulation anywhere. Upstream tags are watched automatically: the
   scheduled `.github/workflows/upstream-tag.yml` opens a tracker issue when upstream publishes a
-  new `dsh-v*` tag and closes it once the tag is mirrored here; `.github/dependabot.yml` keeps
-  action pins and the base image updated.
+  new `dsh-v*` tag and closes it once the tag is mirrored here; on a new tag it also dispatches
+  `.github/workflows/release-prep.yml`, which runs the contract check, repairs drift with a
+  headless codex agent (see `prompts/release-prep.md`), re-validates with build + smoke, and pushes
+  the release tag — the manual `git tag` flow above remains the fallback. `.github/dependabot.yml`
+  keeps action pins and the base image updated.
 
 ## Validation checklist before committing
 
-1. `bash -n container/*.sh` (and `shellcheck` if available)
+1. `bash -n container/*.sh tests/*.sh` (and `shellcheck` if available)
 2. Examples parse: `docker compose -f examples/compose.yaml config --quiet` (or podman-compose)
 3. README/README.zh parity: equal heading count, link count, and code-fence count
 4. `just --list` parses with both the podman and docker branches in mind; Docker-only hosts must
