@@ -217,9 +217,20 @@ jobs:
             echo "codex already present: $(codex --version)"
             exit 0
           fi
-          # codex-universal 镜像不预装 CLI(云端由平台运行时注入), Actions 里
-          # 用 npm 自装; 版本钉死防 CLI 行为漂移, 升级时改这里并跑一次演练。
-          npm install -g @openai/codex@0.153.2
+          # codex-universal 镜像不预装 CLI(云端由平台运行时注入), 也没有
+          # node/npm —— 直接装官方 release 的 musl 静态二进制(glibc 环境可跑)。
+          # 版本钉死防 CLI 行为漂移, 升级时改这里并跑一次演练。prep 跑在
+          # ubuntu-latest (x86_64) 上, 故取 x86_64 资产。
+          codex_version=0.153.2
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          curl -fsSL \
+            "https://github.com/openai/codex/releases/download/rust-v${codex_version}/codex-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C "$tmp"
+          # tarball 内文件名带平台后缀, 统一安装为 /usr/local/bin/codex
+          bin="$(find "$tmp" -type f -name 'codex*' | head -n1)"
+          [ -n "$bin" ] || { echo "codex binary not found in release tarball" >&2; exit 1; }
+          install -m 0755 "$bin" /usr/local/bin/codex
           codex --version
 
       - name: Run codex agent
