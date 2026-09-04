@@ -175,10 +175,14 @@ jobs:
           OLD_TAG: ${{ needs.contract.outputs.old_tag }}
         run: |
           set -euo pipefail
-          # 上游 compare diff; 无 old_tag(仓库首个发版)时退化为单 commit 视图
-          if ! gh api "repos/$UPSTREAM_REPO/compare/${OLD_TAG}...${NEW_TAG}" \
-              > /tmp/upstream-diff.json 2>/dev/null; then
-            gh api "repos/$UPSTREAM_REPO/commits/$NEW_TAG" > /tmp/upstream-diff.json
+          # 容器里没有 gh CLI, 直接用 curl 调 REST API(公开仓库, token 提额)
+          if ! curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$UPSTREAM_REPO/compare/${OLD_TAG}...${NEW_TAG}" \
+                > /tmp/upstream-diff.json 2>/dev/null; then
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$UPSTREAM_REPO/commits/$NEW_TAG" \
+              > /tmp/upstream-diff.json
           fi
           # 上游源码 checkout, 让 agent 完全离线分析(无网络需求)
           git clone --quiet --depth 1 --branch "$NEW_TAG" \
@@ -262,7 +266,14 @@ jobs:
               echo "The agent judged no repository changes necessary; the verify job will run on the default branch."
             fi
           } > /tmp/issue-comment.md
-          gh issue comment "$ISSUE" --body-file /tmp/issue-comment.md
+          # 容器里没有 gh: curl 发评论, python3 做 JSON 转义(报告是任意 markdown)
+          body_json="$(python3 -c 'import json,sys;print(json.dumps({"body":sys.stdin.read()}))' \
+            < /tmp/issue-comment.md)"
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE/comments" \
+            -d "$body_json" > /dev/null
 
   verify:
     name: Build + smoke test (pre-release gate)
