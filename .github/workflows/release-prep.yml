@@ -39,6 +39,12 @@ concurrency:
   group: release-prep
   cancel-in-progress: false
 
+# 容器 job(codex-universal)的默认 run shell 是 sh(dash), 不支持 pipefail;
+# 全 workflow 显式用 bash(host runner 上的 job 本来也是 bash, 行为不变)。
+defaults:
+  run:
+    shell: bash
+
 env:
   UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
   IMAGE_NAME: ghcr.io/niyueee/dsh-container
