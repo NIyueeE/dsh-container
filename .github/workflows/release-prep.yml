@@ -253,8 +253,14 @@ jobs:
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
         run: |
           set -euo pipefail
-          git config user.name "dsh-container release agent"
-          git config user.email "actions@github.com"
+          # 诊断: 首轮演练在此步报 "fatal: not in a git directory"(git 128),
+          # 原因未定, 先显式回到工作区并用 -c 内联身份绕开一切 config 写入;
+          # 这些行留作下次失败的定位线索。
+          echo "cwd=$(pwd) workspace=${GITHUB_WORKSPACE:-unset} HOME=${HOME:-unset}"
+          echo "GIT_DIR=${GIT_DIR:-unset} GIT_CONFIG_GLOBAL=${GIT_CONFIG_GLOBAL:-unset} XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-unset}"
+          cd "${GITHUB_WORKSPACE:-$PWD}"
+          ls -d .git >/dev/null && echo ".git present" || echo ".git MISSING"
+          git rev-parse --is-inside-work-tree
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "branch=" >> "$GITHUB_OUTPUT"
@@ -264,7 +270,9 @@ jobs:
           branch="release-prep/${NEW_TAG}"
           git checkout -b "$branch"
           git add -A
-          git commit -m "fix: adapt to upstream $NEW_TAG (agent-prepared)"
+          git -c user.name="dsh-container release agent" \
+              -c user.email="actions@github.com" \
+              commit -m "fix: adapt to upstream $NEW_TAG (agent-prepared)"
           git push origin "$branch"
           {
             echo "changed=true"
