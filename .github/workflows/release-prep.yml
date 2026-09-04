@@ -210,6 +210,18 @@ jobs:
           wire_api = "${CODEX_WIRE_API}"
           EOF
 
+      - name: Install codex CLI
+        run: |
+          set -euo pipefail
+          if command -v codex >/dev/null 2>&1; then
+            echo "codex already present: $(codex --version)"
+            exit 0
+          fi
+          # codex-universal 镜像不预装 CLI(云端由平台运行时注入), Actions 里
+          # 用 npm 自装; 版本钉死防 CLI 行为漂移, 升级时改这里并跑一次演练。
+          npm install -g @openai/codex@0.153.2
+          codex --version
+
       - name: Run codex agent
         env:
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
