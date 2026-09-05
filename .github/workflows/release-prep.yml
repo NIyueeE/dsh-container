@@ -18,7 +18,7 @@ name: Release prep
 # 触发: upstream-tag.yml 发现新上游 tag 后 repository_dispatch(事件
 # upstream-dsh-tag, 携带 new_tag/old_tag/issue), 或手动 dispatch 填 new_tag。
 # 配置: secrets CODEX_API_KEY / CODEX_BASE_URL / CODEX_MODEL(agent 模型后端),
-#       可选 secrets RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY(自动推 tag)。
+#       可选 secret RELEASE_PAT(fine-grained, 用户身份, push 可触发下游)。
 
 on:
   repository_dispatch:
@@ -383,8 +383,8 @@ jobs:
       contents: write # 快进 main 与(降级路径)文档提示
       issues: write
     env:
-      # secrets 不能直接用于 if, 借 env 间接判断是否配置了 GitHub App
-      HAS_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+      # secrets 不能直接用于 if, 借 env 间接判断是否配置了发版 PAT
+      HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -427,29 +427,22 @@ jobs:
         if: needs.prep.outputs.changed == 'true' && steps.guard.outputs.refuse == 'no'
         run: git push origin "HEAD:main"
 
-      - name: Exchange GitHub App token
-        id: app-token
-        if: env.HAS_APP == 'true'
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
-      - name: Push release tag via App token
-        if: env.HAS_APP == 'true' && steps.guard.outputs.refuse == 'no'
+      - name: Push release tag via fine-grained PAT
+        if: env.HAS_PAT == 'true' && steps.guard.outputs.refuse == 'no'
         env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
         run: |
           set -euo pipefail
           git tag -f "$NEW_TAG"
-          # App token 的 push 事件会触发 image.yml(GITHUB_TOKEN 的不会);
-          # image.yml 从该 tag 构建 + 冒烟 + 发布, 是最后一道闸门。
-          git remote add app "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git"
-          git push app "refs/tags/$NEW_TAG"
+          # 注意: 必须用 PAT 推 —— GITHUB_TOKEN 的 push 不触发 workflow,
+          # GitHub App installation token 的 push 同样不触发(实测)。
+          # PAT 属用户身份, push 事件正常触发 image.yml(最后一道闸门)。
+          git remote add release "https://oauth2:${RELEASE_PAT}@github.com/${{ github.repository }}.git"
+          git push release "refs/tags/$NEW_TAG"
 
       - name: Close tracker issue (auto path)
-        if: env.HAS_APP == 'true' && steps.guard.outputs.refuse == 'no' && needs.contract.outputs.issue != ''
+        if: env.HAS_PAT == 'true' && steps.guard.outputs.refuse == 'no' && needs.contract.outputs.issue != ''
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.contract.outputs.issue }}
@@ -471,7 +464,7 @@ jobs:
             || true
 
       - name: 'Fallback: manual release instructions'
-        if: env.HAS_APP != 'true'
+        if: env.HAS_PAT != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.contract.outputs.issue }}
@@ -482,7 +475,7 @@ jobs:
           {
             echo "## Ready to release \`$NEW_TAG\`"
             echo
-            echo "All checks passed, but no GitHub App (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY) is"
+            echo "All checks passed, but no RELEASE_PAT secret is configured, so the"
             echo "configured, so the tag was not pushed automatically. To release:"
             echo
             if [ -n "$BRANCH" ]; then

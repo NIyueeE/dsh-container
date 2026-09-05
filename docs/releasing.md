@@ -83,7 +83,7 @@ removes the manual `git tag` step in the common case:
 3. **verify** — builds the image from the new upstream tag (with the repair branch applied if any)
    and runs `tests/smoke.sh`. The agent's own claims are never trusted; CI decides.
 4. **release** — fast-forwards `main` to the repair branch (if any), then pushes the `dsh-v*` tag
-   with a GitHub App token, which triggers `image.yml` for the real build and publish. Failures
+   with a user PAT (`RELEASE_PAT`), which triggers `image.yml` for the real build and publish. Failures
    are reported to the tracker issue and the issue stays open.
 
 The release was already validated end to end (contract → smoke) before the tag is pushed;
@@ -97,7 +97,7 @@ Configuration for `release-prep.yml`:
 | `CODEX_MODEL` | secret | Model name (e.g. `deepseek-chat`) |
 | `CODEX_WIRE_API` | variable | `chat` (default, for OpenAI-compatible endpoints) or `responses` (OpenAI official) |
 | `CODEX_API_KEY` | secret | API key for the model endpoint |
-| `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY` | secrets | Optional GitHub App whose token pushes the release tag (a `GITHUB_TOKEN` push cannot trigger `image.yml`). Without it, the pipeline stops at ready-to-release and posts manual `git tag` instructions to the tracker issue |
+| `RELEASE_PAT` | secret | Optional fine-grained PAT (Contents: Read and write on this repository) whose push publishes the release tag. Neither a `GITHUB_TOKEN` push nor a GitHub App installation-token push triggers `image.yml` (verified live), so a user PAT is the reliable trigger. Without it, the pipeline stops at ready-to-release and posts manual `git tag` instructions to the tracker issue |
 
 The pipeline can also be run on demand: Actions → "Release prep" → "Run workflow" with the
 `new_tag` input.

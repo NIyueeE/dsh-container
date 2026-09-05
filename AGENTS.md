@@ -25,7 +25,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
 | `.github/workflows/image.yml` | CI: build + smoke test always; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags) |
 | `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens/closes a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml` |
-| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → codex agent repair on drift → build + smoke on the repaired tree → push the `dsh-v*` tag via GitHub App token (manual-instruction fallback on the tracker issue when no App is configured) |
+| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → codex agent repair on drift → build + smoke on the repaired tree → push the `dsh-v*` tag via a user PAT secret (manual-instruction fallback on the tracker issue when no PAT is configured) |
 | `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
 | `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for patch anchors, CLI flags, and the request fence before any image is built |
 | `prompts/release-prep.md` | System prompt for the headless codex agent that repairs contract drift in the `release-prep.yml` prep job |
