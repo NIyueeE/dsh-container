@@ -1,92 +1,19 @@
+<div align="center">
+
 # dsh Container Image
 
-Containerized [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`), built on
-a small `debian:13-slim` base with only the toolchains this project needs: Node.js LTS, pnpm, uv,
-Rust/cargo, Caddy, podman, and GitHub CLI. The image is published to GitHub Container Registry;
-both the `compose.yaml` and the Quadlet `.container` examples pull the image directly — no local
-build needed.
+**[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) as a batteries-included
+container — agent, full toolchain, and a reverse proxy in one image, built from the official source tags.**
 
-dsh itself is built from the official repository
-[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness), the same way the
-official README describes: clone the repository, check out a `dsh-v*` tag, then `pnpm install` and
-`pnpm run build:official`.
+[![Release](https://img.shields.io/github/v/tag/NIyueeE/dsh-container?filter=dsh-v*&label=release&sort=semver)](https://github.com/NIyueeE/dsh-container/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/NIyueeE/dsh-container/image.yml?branch=main&label=CI)](https://github.com/NIyueeE/dsh-container/actions/workflows/image.yml)
+[![GHCR](https://img.shields.io/badge/ghcr.io-niyueee%2Fdsh--container-2088FF?logo=docker&logoColor=white)](https://github.com/NIyueeE/dsh-container/pkgs/container/dsh-container)
+[![Upstream dsh](https://img.shields.io/github/v/tag/deepseek-ai/deepseek-harness?filter=dsh-v*&label=upstream%20dsh&sort=semver)](https://github.com/deepseek-ai/deepseek-harness)
+[![License](https://img.shields.io/github/license/NIyueeE/dsh-container)](LICENSE)
 
-## Features
+English | [中文](README.zh.md)
 
-| Component | Description |
-|---|---|
-| Base image | `debian:13-slim` (small, overridable via the `BASE_IMAGE` build arg) |
-| Built-in toolchain | Node.js 22 LTS, pnpm, uv, Rust/cargo, git, build-essential, Caddy, podman, gh |
-| Toolchain layout | Image-owned read-only tools: uv/pnpm/rustup proxies in `/usr/local/bin`, Rust toolchains in `/opt/rust` — upgraded with the image; writable caches and user-installed tools persist on `/home/dsh` |
-| Container dev tool | podman (apt), with rootless subuid/subgid mapping configured; nested rootless operation depends on the host runtime |
-| dsh | Built from the official source tag (`git clone` + `git checkout dsh-v*` + `pnpm install` + `pnpm run build:official`) into `/opt/deepseek-harness`; pinnable via `DSH_TAG` |
-| Versioning | Image release tags match the upstream dsh tags (`dsh-v*`); `latest` points to the most recent release image |
-| dsh web supervisor | `dsh web` runs under a small supervisor (`dsh-web`) that restarts it automatically if it exits; run `dsh-restart` inside the container to restart dsh web without restarting the container |
-| Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) rewriting `Host`/`Origin` to loopback, gzip-compressing UI assets (≈1.3 MB → ≈360 KB), with optional basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) |
-| Remote settings compatibility | Idempotent client-side patch applied before every `dsh web` start: remote browsers through the proxy can use settings/credentials, and a `crypto.randomUUID` polyfill keeps the UI working over plain-HTTP LAN access |
-| Observability | OCI labels (`org.opencontainers.image.*`, incl. git revision), `HEALTHCHECK` (curl 3080 + 3081) |
-| Runtime user | uid 1000 (`dsh`); `/home/dsh` is the persisted user layer and `dsh` has passwordless sudo |
-
-The base image is pinned by default; the dsh source tag, Rust toolchain, and uv version can be
-pinned with `--build-arg`. pnpm is installed at the version required by the checked-out dsh tag, and
-Caddy/podman/gh come from apt — see [build.md](docs/build.md).
-
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(empty)* | Enable basic auth on the exposed proxy (recommended): without it, anyone who can reach port `3081` can drive the agent **and** read/write all settings & credentials (see [security.md](docs/security.md) "Security boundary"). Set both or neither — the entrypoint refuses to start if only one is set |
-
-Everything else uses built-in defaults:
-
-- dsh data: `~/.dsh` (`/home/dsh/.dsh`) — upstream default, no `DSH_HOME` override
-- working directory: `$HOME` (`/home/dsh`); dsh creates folders under it as needed
-- Rust toolchain: `/opt/rust/rustup` (image-owned, read-only); cargo caches and `cargo install`
-  binaries in `~/.cargo`
-- uv: binary in `/usr/local/bin`; managed Python/tool data in `~/.local/share/uv`
-- pnpm: binary in `/usr/local/bin`; store and user global packages in `~/.local/share/pnpm`
-
-The whole `/home/dsh` directory is the persistence boundary: mount it as one volume so data (user
-files, caches, self-installed tools) survives while the system layer — including the entire
-toolchain: uv/pnpm/rustup proxies in `/usr/local/bin`, Rust toolchains in `/opt/rust`, dsh in
-`/opt/deepseek-harness` — is replaced with each image upgrade. Tools are real image-owned binaries,
-never seeded into the volume, so an image upgrade always upgrades the tools and a volume can never
-shadow them; PATH is image-first and user directories sit last. Data volumes created by older
-images get their legacy npm-installed dsh removed automatically on first boot (`dsh-migrate-legacy`);
-seeded toolchain copies from even older images are inert (PATH prefers the image-owned binaries)
-and can be removed manually to reclaim space (commands ship in the release notes), so the
-image-provided tools can never be shadowed by the volume.
-System packages installed later
-with `sudo apt` live in the container/system layer and are not part of the persistent home volume.
-
-The exposed port is `3081`: a **Caddy reverse proxy** inside the container listens on
-`0.0.0.0:3081` and forwards to `dsh web` on `127.0.0.1:3080`, rewriting `Host`/`Origin` to loopback.
-UI assets are gzip-compressed by the proxy (≈1.3 MB → ≈360 KB), which matters most for remote
-access; SSE/WebSocket streams pass through unbuffered (verified against Caddy 2.6), so agent
-output is not delayed by the proxy. For WAN access, terminate TLS with an external reverse proxy in
-front of `3081`; it must forward the WebSocket upgrade headers (`proxy_set_header Upgrade
-$http_upgrade` / `proxy_set_header Connection "upgrade"` with nginx) and must not buffer or time
-out quiet streams — see [deployment.md](docs/deployment.md) for a working example. dsh's `/api`
-browser-trust fence checks HTTP headers only, so remote browsers pass every endpoint —
-including settings/credentials methods that are otherwise loopback-only. **The proxy is therefore
-the security boundary**: anyone who can reach `3081` gets full control, so enable
-`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` and keep the port firewalled. Upstream dsh's browser code
-still gates the settings/credentials pages on `window.location.hostname`, so this image also
-applies a small idempotent client-side patch before every `dsh web` start: it treats proxied
-remote browsers as loopback and injects a `crypto.randomUUID` polyfill for plain-HTTP LAN use. If
-an upstream dsh version changes the bundle strings the patch warns and skips instead of blocking
-startup. The proxy bootstraps the dsh browser session automatically — the supervisor exchanges
-dsh's one-time login token at startup and injects the session cookie into every proxied request —
-so just open `http://host:3081/`; there is no token step (authentication is Caddy's job, see
-[security.md](docs/security.md)). Extra `dsh web` arguments can be passed through the container `command`, e.g.
-`["--port", "8080"]` (changes only dsh's internal port; the exposed port stays `3081`).
-
-Inside the container, `dsh web` is supervised by `dsh-web`: if it exits or crashes it is restarted
-automatically. To restart it manually without restarting the container, run:
-
-```sh
-docker exec dsh dsh-restart
-```
+</div>
 
 ## Quick start
 
@@ -107,25 +34,66 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 ```
 
-> **Persistence** — both examples mount one volume at `/home/dsh`. This is the user layer:
-> `~/.dsh`, `~/.cargo`, pnpm store/cache/config files, dsh-created working folders, and
-> user-installed tools survive image upgrades; the system layer (`/usr/local`, `/opt`, apt
-> packages) comes from the new image.
+Both examples publish `127.0.0.1:3081` and mount one volume at `/home/dsh` — the user layer
+(`~/.dsh`, caches, user-installed tools) survives image upgrades while the system layer comes from
+the image. There is no login step: the proxy bootstraps the dsh session automatically.
 
-> **Networking** — `dsh web` listens on `127.0.0.1` (upstream dsh rejects `--host 0.0.0.0`); the
-> entrypoint runs a Caddy reverse proxy on `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback
-> (→ dsh's `127.0.0.1:3080`), so the examples can use plain bridge networking with port `3081`
-> published. See [security.md](docs/security.md) and the
-> [deployment guide](docs/deployment.md) for details.
+## What's inside
+
+| Component | Description |
+|---|---|
+| Base image | `debian:13-slim` (pinned; overridable via the `BASE_IMAGE` build arg) |
+| Toolchain | Node.js 22 LTS, pnpm, uv, Rust/cargo, git, build-essential, Caddy, podman, gh — image-owned real binaries, upgraded with the image |
+| dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable); no runtime auto-update |
+| Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) with optional basic auth |
+| Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |
+| Remote compatibility | Idempotent client-side patch: settings/credentials work through the proxy; `crypto.randomUUID` polyfill for plain-HTTP LAN |
+| Observability | OCI labels, `HEALTHCHECK` (curl 3080 + 3081) |
+| Runtime user | uid 1000 (`dsh`), passwordless sudo; `/home/dsh` is the persisted user layer |
+
+## Networking & security
+
+- **Port model** — `dsh web` listens on `127.0.0.1:3080` (upstream rejects `--host 0.0.0.0`); the
+  exposed port is `3081`, published on host loopback by the examples.
+- **The proxy is the security boundary** — Caddy rewrites `Host`/`Origin` to loopback, so remote
+  browsers pass dsh's `/api` trust fence, including settings/credentials methods that are otherwise
+  loopback-only. Anyone who can reach `3081` gets full control: enable basic auth
+  (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`, set together or the entrypoint refuses to start) and keep
+  the port firewalled.
+- **Session bootstrapped** — the supervisor exchanges dsh's one-time login token at startup and
+  injects the session cookie into every proxied request; browsers never see a token.
+- **Streams & compression** — SSE/WebSocket pass through unbuffered (verified against Caddy 2.6);
+  UI assets are gzip-compressed (≈1.3 MB → ≈360 KB).
+- **Client patch** — applied before every `dsh web` start; if upstream changes the bundle strings
+  it warns and skips instead of blocking startup.
+- **Extra args** — pass `dsh web` arguments through the container command, e.g.
+  `["--port", "8080"]` (internal port only; exposed port stays `3081`).
+
+For WAN access, terminate TLS in front of `3081` (the docs include a working nginx config with
+WebSocket headers and raised timeouts) — see [docs/deployment.md](docs/deployment.md) and
+[docs/security.md](docs/security.md).
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(empty)* | Basic auth on the exposed proxy (recommended for any non-loopback deployment); set both or neither |
+
+Everything else uses built-in defaults — dsh data at `~/.dsh`, cwd `$HOME`, writable caches under
+`~/.cargo` / `~/.local/share`, image-owned tools in `/usr/local/bin` and `/opt/rust`. The whole
+`/home/dsh` is the persistence boundary: mount it as one volume; image upgrades replace the
+toolchain, never the data. Details in [docs/build.md](docs/build.md) and
+[docs/deployment.md](docs/deployment.md).
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [docs/deployment.md](docs/deployment.md) | Deployment & maintenance: prerequisites, Compose, Quadlet, remote access, offline use, FAQ |
+| [docs/deployment.md](docs/deployment.md) | Deployment & maintenance: Compose, Quadlet, remote access, offline use, FAQ |
 | [docs/security.md](docs/security.md) | Security notes: network exposure tradeoff, credentials, trusted workloads |
 | [docs/build.md](docs/build.md) | Build configuration: build args, source tag pinning, reproducible builds |
-| [docs/releasing.md](docs/releasing.md) | Image tags, release workflow (GitHub Releases + upstream tag alignment), image cleanup |
+| [docs/releasing.md](docs/releasing.md) | Release automation: upstream tag watcher, contract check, agent repair, auto-publish |
+| [docs/upstream-contract.md](docs/upstream-contract.md) | The upstream behaviors this image depends on, and how drift is detected |
 | [docs/design.md](docs/design.md) | Design references and related projects |
 | [docs/development.md](docs/development.md) | Directory structure and local development |
 

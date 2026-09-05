@@ -1,79 +1,18 @@
-# dsh 容器镜像
+<div align="center">
 
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(`dsh`)的容器化镜像,基于精简的
-`debian:13-slim` 基础镜像,只保留本项目需要的工具链:Node.js LTS、pnpm、uv、Rust/cargo、Caddy、
-podman、GitHub CLI。镜像发布在 GitHub Container Registry,`compose.yaml` 与 Quadlet `.container`
-示例均直接拉取镜像,不本地构建。
+# dsh Container Image
 
-DSH 本体来自官方仓库 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness),
-构建方式与官方 README 的源码运行方式一致:克隆仓库、检出 `dsh-v*` tag,然后执行
-`pnpm install` 与 `pnpm run build:official`。
+**[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(`dsh`)的开箱即用容器——agent、完整工具链与反向代理集成于一个镜像,基于官方源码 tag 构建。**
 
-## 特性
+[![Release](https://img.shields.io/github/v/tag/NIyueeE/dsh-container?filter=dsh-v*&label=release&sort=semver)](https://github.com/NIyueeE/dsh-container/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/NIyueeE/dsh-container/image.yml?branch=main&label=CI)](https://github.com/NIyueeE/dsh-container/actions/workflows/image.yml)
+[![GHCR](https://img.shields.io/badge/ghcr.io-niyueee%2Fdsh--container-2088FF?logo=docker&logoColor=white)](https://github.com/NIyueeE/dsh-container/pkgs/container/dsh-container)
+[![Upstream dsh](https://img.shields.io/github/v/tag/deepseek-ai/deepseek-harness?filter=dsh-v*&label=upstream%20dsh&sort=semver)](https://github.com/deepseek-ai/deepseek-harness)
+[![License](https://img.shields.io/github/license/NIyueeE/dsh-container)](LICENSE)
 
-| 组件 | 说明 |
-|---|---|
-| 基础镜像 | `debian:13-slim`(精简,可用 `BASE_IMAGE` 构建参数覆盖) |
-| 自带工具链 | Node.js 22 LTS、pnpm、uv、Rust/cargo、git、build-essential、Caddy、podman、gh |
-| 工具链布局 | 镜像所有的只读工具:uv/pnpm/rustup 代理在 `/usr/local/bin`、Rust 工具链在 `/opt/rust`——随镜像升级;可写缓存与自装工具随 `/home/dsh` 持久化 |
-| 容器开发工具 | podman(apt),已配置 rootless subuid/subgid 映射;嵌套 rootless 是否可用取决于宿主运行时 |
-| dsh | 从官方源码 tag 构建(`git clone` + `git checkout dsh-v*` + `pnpm install` + `pnpm run build:official`)到 `/opt/deepseek-harness`;`DSH_TAG` 可固定 |
-| 版本对齐 | 镜像发布 tag 与上游 dsh tag 一致(`dsh-v*`);`latest` 指向最新发布的镜像 |
-| dsh web 守护 | `dsh web` 由 `dsh-web` 守护脚本托管,退出/崩溃后自动重启;容器内执行 `dsh-restart` 可在不重启容器的情况下手动重启 dsh web |
-| 对外暴露 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),把 `Host`/`Origin` 改写为回环并对 UI 资源做 gzip 压缩(约 1.3MB → 约 360KB);可用 `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` 启用 basic auth |
-| 远程设置兼容 | 每次 `dsh web` 启动前应用幂等的前端补丁:远程浏览器经代理可使用设置/凭据,并注入 `crypto.randomUUID` polyfill,纯 HTTP 内网也能工作 |
-| 可观测性 | OCI labels(`org.opencontainers.image.*` 含 git revision)、`HEALTHCHECK`(curl 3080 + 3081) |
-| 运行时用户 | uid 1000(`dsh`);`/home/dsh` 是持久化用户层,`dsh` 拥有免密 sudo |
+[English](README.md) | 中文
 
-基础镜像默认固定;dsh 源码 tag、Rust 工具链与 uv 版本可用 `--build-arg` 固定。pnpm 按所检出 dsh tag
-要求的版本安装,Caddy/podman/gh 来自 apt —— 详见 [build.md](docs/build.md)。
-
-## 环境变量
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(空)* | 启用对外代理的 basic auth(建议启用):不启用时,能访问 3081 端口的任何人都可以驱动代理**并**读取/修改全部设置与凭据(见 [security.md](docs/security.md) 安全边界一节)。两个变量必须同时设置或同时为空,只设置一个时入口脚本会拒绝启动 |
-
-其余全部使用内置默认值:
-
-- dsh 数据:`~/.dsh`(`/home/dsh/.dsh`)——上游默认,不设置 `DSH_HOME`
-- 工作目录:`$HOME`(`/home/dsh`);dsh 按需在其中创建目录
-- Rust 工具链:`/opt/rust/rustup`(镜像所有,只读);cargo 缓存与 `cargo install` 自装二进制在 `~/.cargo`
-- uv:二进制在 `/usr/local/bin`;托管的 Python/tool 数据在 `~/.local/share/uv`
-- pnpm:二进制在 `/usr/local/bin`;store 与自装全局包在 `~/.local/share/pnpm`
-
-持久化边界是**整个 `/home/dsh`**:把它挂载为一个卷,数据(用户文件、缓存、自装工具)在镜像升级后
-保留,而系统层——包括整套工具链:`/usr/local/bin` 中的 uv/pnpm/rustup 代理、`/opt/rust` 的 Rust
-工具链、`/opt/deepseek-harness` 的 dsh——随镜像升级整体替换。工具是镜像所有的真二进制,不会复制
-进卷,因此镜像升级必然升级工具、卷也永远遮蔽不了它们;PATH 以镜像优先,用户目录垫底。旧版镜像
-创建的数据卷中遗留的 npm 版 dsh 会在首次启动时自动清理(`dsh-migrate-legacy`);更早镜像种进卷的
-工具副本是惰性的(PATH 镜像优先),可手动删除回收空间(命令见 release notes),镜像内的工具永远
-不会被卷遮蔽。之后通过
-`sudo apt` 安装的系统包位于容器/系统层,不属于持久化 home 卷。
-
-对外端口为 `3081`:容器内 **Caddy 反向代理**监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为
-回环后转发到 `dsh web` 的 `127.0.0.1:3080`。代理对 UI 资源做 gzip 压缩(约 1.3MB → 约
-360KB),远端访问时尤其明显;SSE/WebSocket 流式响应不缓冲、即时转发(已在 Caddy 2.6 上验证),
-agent 输出不会被代理延迟。如需跨公网访问,建议在 3081 前用外置反向代理终止 TLS;该代理必须
-转发 WebSocket 升级头(nginx 为 `proxy_set_header Upgrade $http_upgrade` /
-`proxy_set_header Connection "upgrade"`),且不要缓冲或超时掐断空闲流 —— 完整示例见
-[deployment.md](docs/deployment.md)。dsh 的 `/api` 浏览器信任围栏只检查 HTTP 头,因此
-远程浏览器能通过全部接口 —— 包括设置/凭据等原本仅回环放行的方法。**代理因此成为安全边界**:
-能访问 3081 的人即拥有完全控制权,请启用 `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` 并用防火墙
-收口端口。上游 dsh 的浏览器代码仍按 `window.location.hostname` 限制设置/凭据页面,因此本镜像
-会在每次 `dsh web` 启动前应用一个幂等的前端补丁:把经代理的远程浏览器视为回环,并注入
-`crypto.randomUUID` polyfill 以兼容纯 HTTP 内网。若上游 dsh 版本改变了 bundle 字符串,补丁会
-警告并跳过,而不是阻止启动。代理会在容器启动时自动自举 dsh 浏览器会话——守护脚本换取
-dsh 的一次性登录 token 并把会话 cookie 注入所有代理请求——直接打开 `http://host:3081/` 即可,
-无需任何 token 步骤(鉴权由 Caddy 承担,见 [security.md](docs/security.md))。`dsh web` 的附加参数可通过容器 `command` 透传,例如
-`["--port", "8080"]`(只改 dsh 内部端口,对外端口仍是 3081)。
-
-容器内 `dsh web` 由 `dsh-web` 守护:如果退出或崩溃会自动重新拉起。需要在不重启容器的情况下
-手动重启 dsh web,可执行:
-
-```sh
-docker exec dsh dsh-restart
-```
+</div>
 
 ## 快速开始
 
@@ -82,7 +21,7 @@ docker exec dsh dsh-restart
 ```bash
 docker compose -f examples/compose.yaml up -d
 docker compose logs dsh | grep 'dsh web:'
-# 在本地浏览器直接打开 http://127.0.0.1:3081/(代理会自动完成登录自举)
+# 在本地浏览器打开 http://127.0.0.1:3081/(代理自动完成登录)
 ```
 
 ### Podman Quadlet(Linux,推荐)
@@ -94,26 +33,52 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dsh.service
 ```
 
-> **持久化** — 两个示例都把同一个卷挂载到 `/home/dsh`。这是用户层:
-> `~/.dsh`、`~/.cargo`、pnpm store/缓存/配置文件、dsh 按需创建的工作目录以及用户安装的工具在
-> 镜像升级后保留;系统层(`/usr/local`、`/opt`、apt 包)来自新镜像。
+两个示例都发布 `127.0.0.1:3081`,并把一个卷挂载到 `/home/dsh`——用户层(`~/.dsh`、缓存、自装工具)在镜像升级后保持不变,系统层随镜像更新。没有登录步骤:代理会自动完成 dsh 会话引导。
 
-> **网络** — `dsh web` 监听 `127.0.0.1`(上游 dsh 拒绝 `--host 0.0.0.0`);入口脚本用 Caddy
-> 反向代理监听 `0.0.0.0:3081`,把 `Host`/`Origin` 改写为回环后转发到 dsh 的 `127.0.0.1:3080`,
-> 因此两个编排示例都可以用普通桥接网络并发布端口 `3081`。详见 [security.md](docs/security.md)
-> 与[部署指南](docs/deployment.md)。
+## 镜像内容
+
+| 组件 | 说明 |
+|---|---|
+| 基础镜像 | `debian:13-slim`(已钉版本,可用 `BASE_IMAGE` 构建参数覆盖) |
+| 工具链 | Node.js 22 LTS、pnpm、uv、Rust/cargo、git、build-essential、Caddy、podman、gh——镜像持有的真实二进制,随镜像升级 |
+| dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本);运行期无自动更新 |
+| 暴露方式 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),可选 basic auth |
+| 守护 | `dsh web` 退出自动重启;`docker exec dsh dsh-restart` 手动重启 |
+| 远程兼容 | 幂等客户端补丁:设置/凭据页可经代理使用;`crypto.randomUUID` polyfill 支持纯 HTTP 内网 |
+| 可观测性 | OCI labels、`HEALTHCHECK`(curl 3080 + 3081) |
+| 运行用户 | uid 1000(`dsh`),免密 sudo;`/home/dsh` 为持久化用户层 |
+
+## 网络与安全
+
+- **端口模型**——`dsh web` 监听 `127.0.0.1:3080`(上游拒绝 `--host 0.0.0.0`);对外端口是 `3081`,示例默认发布在宿主回环地址。
+- **代理即安全边界**——Caddy 把 `Host`/`Origin` 改写为回环,远程浏览器因此通过 dsh 的 `/api` 信任围栏,包括原本仅限回环的设置/凭据接口。任何能访问 `3081` 的人都获得完全控制:请启用 basic auth(`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`,成对设置,否则 entrypoint 拒绝启动)并保持端口防火墙关闭。
+- **会话自动引导**——supervisor 在启动时兑换 dsh 的一次性登录 token,并把会话 cookie 注入每个代理请求;浏览器不会接触 token。
+- **流与压缩**——SSE/WebSocket 无缓冲直通(已对 Caddy 2.6 验证);UI 资源 gzip 压缩(约 1.3 MB → 360 KB)。
+- **客户端补丁**——每次 `dsh web` 启动前应用;若上游改变 bundle 字符串则告警跳过,不阻塞启动。
+- **附加参数**——通过容器 command 透传 `dsh web` 参数,例如 `["--port", "8080"]`(仅改内部端口;对外端口仍为 `3081`)。
+
+广域网访问请在前置代理上终结 TLS(文档含可用的 nginx 配置,含 WebSocket 头与超时设置)——详见 [docs/deployment.md](docs/deployment.md) 与 [docs/security.md](docs/security.md)。
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(空)* | 对外代理的 basic auth(任何非回环部署都建议启用);成对设置或都不设 |
+
+其余全部使用内置默认值——dsh 数据在 `~/.dsh`,工作目录 `$HOME`,可写缓存在 `~/.cargo` / `~/.local/share`,镜像持有的工具在 `/usr/local/bin` 与 `/opt/rust`。整个 `/home/dsh` 是持久化边界:把它作为单一卷挂载;镜像升级替换工具链,从不动数据。细节见 [docs/build.md](docs/build.md) 与 [docs/deployment.md](docs/deployment.md)。
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/deployment.md](docs/deployment.md) | 部署与维护:前置条件、Compose、Quadlet、远程访问、离线使用、常见问题 |
-| [docs/security.md](docs/security.md) | 安全注意事项:网络暴露权衡、凭据安全、可信工作负载 |
-| [docs/build.md](docs/build.md) | 构建配置:构建参数、源码 tag 固定、可复现构建 |
-| [docs/releasing.md](docs/releasing.md) | 镜像标签、发布流程(GitHub Release + 上游 tag 对齐)、镜像清理 |
+| [docs/deployment.md](docs/deployment.md) | 部署与维护:Compose、Quadlet、远程访问、离线使用、FAQ |
+| [docs/security.md](docs/security.md) | 安全说明:网络暴露取舍、凭据、可信工作负载 |
+| [docs/build.md](docs/build.md) | 构建配置:构建参数、源码版本钉定、可复现构建 |
+| [docs/releasing.md](docs/releasing.md) | 发布自动化:上游 tag 监视、契约检查、agent 修复、自动发布 |
+| [docs/upstream-contract.md](docs/upstream-contract.md) | 本镜像依赖的上游行为,以及漂移的检测方式 |
 | [docs/design.md](docs/design.md) | 设计参考与相关项目 |
 | [docs/development.md](docs/development.md) | 目录结构与本地开发 |
 
-## License
+## 许可证
 
 [MIT](LICENSE)
