@@ -58,6 +58,39 @@ Notes:
 4. Data lives at upstream's default `~/.dsh`; the agent workspace is the process cwd
    (`$HOME` in the container).
 
+## Anticipated tightening scenarios
+
+The remote-access model depends on one invariant: **dsh's server-side trust can be satisfied by
+header rewriting from a loopback proxy.** If upstream evolves its security design in ways that
+attack that invariant, the response is a design negotiation (an upstream issue/PR or an image-side
+redesign), never a patch. The matrix below records how each anticipated tightening is detected and
+who owns the response — review it whenever upstream ships a breaking release.
+
+| Upstream tightening | Detection layer | Automated response | Resolution owner |
+|---|---|---|---|
+| New explicit trust switch / deployment-mode env | `contract.sh` (new form of item 3) | agent aligns entrypoint/contract once the contract is updated | agent + contract update |
+| CLI flags / ports / login-flow changes | `contract.sh` items 4–5 → MISS | agent reports HOLD (security posture, no workaround) | human |
+| Fence moves to transport-level trust (unix socket, `SO_PEERCRED`, shared secret) | `contract.sh` item 3 → MISS; behaviorally the smoke 200/401 assertions fail | verify fails → release refused → diagnostics on the tracker issue | human (redesign: Caddy mTLS / unix socket, or an upstream trusted-proxy proposal) |
+| Client bundle integrity checks (SRI / startup checksum) | smoke bundle assertions (static checks may pass — the source form is unchanged) | verify fails → release refused | human (patch script must maintain checksums) |
+| Session cookie bound to client fingerprint | smoke session assertions | verify fails → release refused | human |
+| Bundling/minification makes anchor strings unstable | `contract.sh` MISS (existing mechanism) | agent derives the new built form | agent |
+
+Notes:
+
+- A fence that moves to **TCP source-address checking** does *not* break this image: Caddy and dsh
+  share the container network namespace, so Caddy's connection to `127.0.0.1:3080` originates from
+  loopback and passes source-address checks unchanged. The class that header rewriting cannot
+  satisfy is **cryptographic binding** (signed cookies tied to non-forwardable state, mTLS,
+  per-request HMAC).
+- Tightening of this kind is upstream's security intent evolving — the mode this image relies on (a
+  same-host proxy rewriting headers to loopback) is exactly what such a design defends against.
+  Patching around it would be a security anti-pattern; the correct paths are an upstream
+  trusted-proxy proposal or an image-side redesign.
+- Detection coverage: every behavioral assertion the smoke suite makes today (proxied 200 / direct
+  401, bundle patch, session survival, `no-store`) maps to a row above. If a future tightening
+  affects behavior outside these assertions, neither detection layer sees it — that is what the
+  human review of this matrix is for.
+
 ## Update protocol
 
 When `contract.sh` reports drift for a new upstream tag:
