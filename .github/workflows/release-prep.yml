@@ -187,7 +187,13 @@ jobs:
           # 上游源码 checkout, 让 agent 完全离线分析(无网络需求)
           git clone --quiet --depth 1 --branch "$NEW_TAG" \
             "https://github.com/$UPSTREAM_REPO.git" /tmp/upstream
-          echo "context ready: /tmp/upstream-diff.json, /tmp/upstream"
+          # 祖先信号: compare status=behind 表示 NEW_TAG 落后于已有发布
+          # (误派发旧版本), 传给 agent 作为早退指引
+          status="$(jq -r '.status // empty' /tmp/upstream-diff.json 2>/dev/null || true)"
+          {
+            echo "is_ancestor=$([ "$status" = behind ] && echo yes || echo no)"
+          } >> "$GITHUB_ENV"
+          echo "context ready: /tmp/upstream-diff.json, /tmp/upstream (is_ancestor=${is_ancestor:-no})"
 
       - name: Write codex config
         env:

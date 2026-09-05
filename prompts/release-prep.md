@@ -19,24 +19,37 @@ New upstream tag: **$NEW_TAG** (also exported as environment variable `NEW_TAG`)
 | `container/dsh-client-patch.sh` | The most likely repair target: idempotent browser-side compatibility patch |
 | `tests/smoke.sh` | Behavioral gate (read-only for you — docker is not available in your environment) |
 
+Environment: `IS_ANCESTOR=yes` when the compare payload shows `$NEW_TAG` is *behind* the previously
+released tag (i.e. a mis-dispatch of an older version) — check it before investing effort.
+
 ## Rules
 
 1. **Minimal repair.** Change only what the drift requires. The typical fix is updating the
    candidate strings in `container/dsh-client-patch.sh` (and the comment block documenting the
    verified upstream revision).
 2. **Follow the update protocol** in `docs/upstream-contract.md` § Update protocol. Items 3–5
-   (request fence, `--port`, `--no-open`) define the image's security posture: if those changed,
-   do NOT improvise workarounds — leave the tree untouched and explain in your report.
-3. **Patch candidates are built-form strings.** Upstream sources use TypeScript
+   (request fence, `--port`, `--no-open`) define the image's security posture: if those drifted,
+   make **no changes at all** — even if a workaround seems straightforward — and end your report
+   with a HOLD recommendation explaining the drift for a human.
+3. **Modifiable paths are restricted** and mechanically enforced: you may only change files under
+   `container/`, `docs/`, `tests/`, `prompts/`, or `Containerfile`. Changes anywhere else
+   (especially `.github/` — the pipeline's own gates) are rejected and fail the run. Never touch
+   `.git`.
+4. **Patch candidates are built-form strings.** Upstream sources use TypeScript
    (`pageLocation === undefined`); the served bundle is esbuild output (`pageLocation === void 0`).
    Derive the built form from the source carefully. Keep existing candidates as fallbacks and add
    the new one first unless it replaces them.
-4. **Keep docs consistent.** If you change behavior or anchors, update `docs/upstream-contract.md`
+5. **Keep docs consistent.** If you change behavior or anchors, update `docs/upstream-contract.md`
    and `tests/contract.sh` so all three describe the same reality.
-5. Do not run docker (unavailable), do not run the full dsh build, do not touch anything unrelated
+6. Do not run docker (unavailable), do not run the full dsh build, do not touch anything unrelated
    (no CI changes, no version bumps, no reformatting).
-6. If the diff shows the drift report was a false alarm (contract anchors are actually intact),
+7. **Ancestor tags**: if `IS_ANCESTOR=yes` (or the compare payload shows `$NEW_TAG` behind the
+   previously released tag), this is a mis-dispatch of an older version. Lead the report with a
+   prominent note, keep the analysis short, and recommend HOLD — do not invest in a full repair.
+8. If the diff shows the drift report was a false alarm (contract anchors are actually intact),
    change nothing and say so in the report.
+9. **Be efficient**: the job has a hard timeout (~60 minutes). Read the contract, check the diff,
+   decide, make minimal edits, report — in that order, without exploratory detours.
 
 ## Report (your final message — posted verbatim to the tracker issue)
 
@@ -60,4 +73,6 @@ End with a markdown report with exactly these sections:
 ```
 
 Be concrete and honest: the verify job (build + smoke) makes the final decision, and your report
-is the human-readable audit trail.
+is the human-readable audit trail. **Your report is posted verbatim to a public issue on a public
+repository — never include secrets, credentials, or internal endpoint URLs in it** (the pipeline
+redacts known secret values as a safety net; do not rely on that).
