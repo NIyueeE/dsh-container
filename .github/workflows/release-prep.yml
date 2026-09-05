@@ -424,7 +424,7 @@ jobs:
       # 先把修复分支快进到 main, 再在同一个 commit 上打 tag —— image.yml 由
       # tag 触发并 checkout 该 tag, 修复内容随之进入发布构建。
       - name: Fast-forward main with repair branch
-        if: needs.prep.outputs.changed == 'true' && steps.guard.outputs.refuse == 'false'
+        if: needs.prep.outputs.changed == 'true' && steps.guard.outputs.refuse == 'no'
         run: git push origin "HEAD:main"
 
       - name: Exchange GitHub App token
@@ -436,7 +436,7 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
       - name: Push release tag via App token
-        if: env.HAS_APP == 'true' && steps.guard.outputs.refuse == 'false'
+        if: env.HAS_APP == 'true' && steps.guard.outputs.refuse == 'no'
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
@@ -449,7 +449,7 @@ jobs:
           git push app "refs/tags/$NEW_TAG"
 
       - name: Close tracker issue (auto path)
-        if: env.HAS_APP == 'true' && steps.guard.outputs.refuse == 'false' && needs.contract.outputs.issue != ''
+        if: env.HAS_APP == 'true' && steps.guard.outputs.refuse == 'no' && needs.contract.outputs.issue != ''
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.contract.outputs.issue }}
@@ -460,7 +460,7 @@ jobs:
             || true
 
       - name: Note refused downgrade on tracker issue
-        if: steps.guard.outputs.refuse == 'true' && needs.contract.outputs.issue != ''
+        if: steps.guard.outputs.refuse == 'yes' && needs.contract.outputs.issue != ''
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.contract.outputs.issue }}
