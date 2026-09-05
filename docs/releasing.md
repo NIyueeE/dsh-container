@@ -37,7 +37,9 @@ For a tag build, one version string flows through the whole release:
 - OCI label `org.opencontainers.image.version` = `dsh-v0.1.2-alpha.4`, via the `BUILD_VERSION`
   build arg (`latest` for non-release builds, which are never published)
 
-Releases are created by pushing the matching tag to this repository:
+Releases are created by pushing the matching tag to this repository (the automated
+release-preparation pipeline below does this automatically; the commands remain the manual
+fallback):
 
 ```bash
 git tag dsh-v0.1.2-alpha.4
@@ -60,8 +62,9 @@ Running daily (plus on every `dsh-v*` tag push and on manual dispatch), it compa
 (semver-aware, so a stable tag outranks its pre-releases: `dsh-v0.1.2-alpha.5` < `dsh-v0.1.2`):
 
 - **upstream ahead** → opens one issue ("New upstream dsh release available: …") with the release
-  notes link, the upstream diff, and the `git tag` / `git push` commands that trigger the release
-  build; an older tracker issue is closed first so at most one stays open;
+  notes link, the upstream diff, and the manual `git tag` / `git push` commands (kept as the
+  fallback path); an older tracker issue is closed first so at most one stays open. It then fires a
+  `repository_dispatch` that starts the automated release-preparation pipeline below;
 - **tags equal** → any open tracker issue is closed automatically.
 
 The upstream repository can be overridden with the `DSH_UPSTREAM_REPO` repository variable
@@ -70,24 +73,72 @@ demand, run "Upstream dsh tag watch" → "Run workflow" from the Actions tab.
 
 ### Automated release preparation (`.github/workflows/release-prep.yml`)
 
-When the watcher finds a new upstream tag it also dispatches the release-prep pipeline, which
-removes the manual `git tag` step in the common case:
+When the watcher finds a new upstream tag it dispatches the release-prep pipeline, which removes
+the manual `git tag` step in the common case:
+
+```text
+upstream tag ─▶ watcher ─▶ contract ─┬─ clean ──▶ verify ───────────────┐
+                                     └─ drift ──▶ prep (codex agent) ──┤
+                                                  pushes repair branch │ green
+                                                                       ▼
+                             release: downgrade guard ─▶ PAT tag push ─▶ close issue
+                                                                       │ push event
+                                                                       ▼
+                             image.yml: multi-arch build ─▶ GHCR + GitHub Release
+```
 
 1. **contract** — `tests/contract.sh` statically checks the upstream tag against
-   [upstream-contract.md](upstream-contract.md) (patch anchors, CLI flags, request fence). If this
-   repository already has the tag, the run skips (idempotent dispatches).
-2. **prep** (only on drift) — a headless [codex](https://github.com/openai/codex) agent runs in the
-   `codex-universal` container, reviews the upstream diff against the contract, and applies a
-   minimal repair (typically new candidate strings in `dsh-client-patch.sh`). It pushes a
-   `release-prep/<tag>` branch and posts its report to the tracker issue.
-3. **verify** — builds the image from the new upstream tag (with the repair branch applied if any)
-   and runs `tests/smoke.sh`. The agent's own claims are never trusted; CI decides.
-4. **release** — fast-forwards `main` to the repair branch (if any), then pushes the `dsh-v*` tag
-   with a user PAT (`RELEASE_PAT`), which triggers `image.yml` for the real build and publish. Failures
-   are reported to the tracker issue and the issue stays open.
+   [upstream-contract.md](upstream-contract.md) (patch anchors, CLI flags, request fence) in
+   seconds, before any image is built. If this repository already has the tag, the run skips
+   (repeated and manual dispatches are idempotent).
+2. **prep** (only on drift) — a headless [codex](https://github.com/openai/codex) agent (version
+   pinned in the workflow) runs in the `codex-universal` container, reviews the pre-fetched
+   upstream diff and checkout against the contract, and applies a minimal repair (typically new
+   candidate strings in `dsh-client-patch.sh`); drift in security-defining contract items is
+   reported, never worked around. It pushes a `release-prep/<tag>` branch and posts its report to
+   the tracker issue. The agent works fully offline (network is not part of its sandbox).
+3. **verify** — checks out the repair branch (if any), builds the image from the new upstream tag
+   (`DSH_TAG=<tag>`, same Containerfile as the release) and runs `tests/smoke.sh`. The agent's own
+   claims are never trusted; CI decides.
+4. **release** — a downgrade guard first refuses any tag that is not semver-newer than the newest
+   `dsh-v*` tag already in this repository (so mis-dispatched old tags cannot pull `latest`
+   backwards). Then the repair branch is fast-forwarded to `main` (if any) and the `dsh-v*` tag is
+   pushed with the `RELEASE_PAT` secret, closing the tracker issue.
+5. **publish** — the PAT push triggers `image.yml` (described above), which re-runs the same smoke
+   suite as the final gate before publishing the multi-arch image and creating the GitHub Release.
+6. **notify** — if any stage fails, a failure note with per-job results and a link to the run is
+   posted to the tracker issue, which stays open for manual follow-up. A failed pipeline never
+   publishes anything.
 
-The release was already validated end to end (contract → smoke) before the tag is pushed;
-`image.yml` re-runs the same smoke suite as the final gate.
+The release is validated end to end (contract → smoke) before the tag is pushed; `image.yml`
+re-runs the same smoke suite as the final gate.
+
+#### Why the final tag push needs a user PAT
+
+Push-event workflows do not run for every credential — this was verified live during the first
+automated release:
+
+- `GITHUB_TOKEN` — events it creates never trigger workflows (GitHub's anti-recursion rule);
+- a GitHub App installation token — its pushes also do not trigger push-event workflows (the tag
+  landed, zero runs started);
+- `repository_dispatch` / `workflow_dispatch` created by `GITHUB_TOKEN` **are** explicitly exempt —
+  that is how the watcher starts this pipeline with no extra credentials.
+
+So the one step that must trigger a downstream workflow uses `RELEASE_PAT`, a fine-grained PAT
+acting as the repository owner — the credential class that reliably triggers `image.yml`.
+
+#### Operating the pipeline
+
+- **On demand**: Actions → "Release prep" → "Run workflow" with the `new_tag` input. Re-runs are
+  safe: an already-released tag skips the whole pipeline, the downgrade guard blocks backwards
+  releases, and every failure lands on the tracker issue.
+- **Audit trail**: agent reports, contract reports and failure notes all land on the tracker issue;
+  full logs live in the workflow runs.
+- **PAT expiry**: when `RELEASE_PAT` expires, every stage still runs and the pipeline stops at
+  ready-to-release with manual `git tag` instructions on the tracker issue — expiry degrades to the
+  manual path instead of breaking anything.
+- **Agent repair branches** (`release-prep/<tag>`) are pushed even when a later stage fails, so
+  proposed repairs stay inspectable; only a fully green `verify` lets the release job touch `main`.
 
 Configuration for `release-prep.yml`:
 
@@ -95,7 +146,7 @@ Configuration for `release-prep.yml`:
 |---|---|---|
 | `CODEX_BASE_URL` | secret | Model endpoint for the codex agent (any OpenAI-compatible URL) |
 | `CODEX_MODEL` | secret | Model name (e.g. `deepseek-chat`) |
-| `CODEX_WIRE_API` | variable | `chat` (default, for OpenAI-compatible endpoints) or `responses` (OpenAI official) |
+| `CODEX_WIRE_API` | variable | `chat` (default, for OpenAI-compatible endpoints; requires the pinned codex ≤ 0.90.x) or `responses` (OpenAI official; enables newer codex) |
 | `CODEX_API_KEY` | secret | API key for the model endpoint |
 | `RELEASE_PAT` | secret | Optional fine-grained PAT (Contents: Read and write on this repository) whose push publishes the release tag. Neither a `GITHUB_TOKEN` push nor a GitHub App installation-token push triggers `image.yml` (verified live), so a user PAT is the reliable trigger. Without it, the pipeline stops at ready-to-release and posts manual `git tag` instructions to the tracker issue |
 
