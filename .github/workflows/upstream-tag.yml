@@ -19,9 +19,10 @@ on:
   push:
     tags: ['dsh-v*']
 
-# 默认只读; 仅 issue/label 管理需要写权限
+# issue/label 管理与 repository_dispatch 需要写权限(创建 dispatch 事件需要
+# contents:write; 该事件是 GITHUB_TOKEN 反递归限制的豁免项, 可直接触发下游)
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 concurrency:
