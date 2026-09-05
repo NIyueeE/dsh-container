@@ -269,6 +269,15 @@ jobs:
             echo "agent made no changes; verify will run on the default branch"
             exit 0
           fi
+          # 安全: agent 修改路径白名单 —— .github/workflows 是本流水线的闸门
+          # 本体, agent(受提示注入影响的 LLM)永远不得改动; 白名单之外的
+          # 路径一律 fail loudly 而不是默默提交进 main。
+          bad="$(git diff --name-only | grep -vE '^(container/|docs/|tests/|prompts/|Containerfile)' || true)"
+          if [ -n "$bad" ]; then
+            echo "agent modified files outside the allowlist:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
           branch="release-prep/${NEW_TAG}"
           git checkout -b "$branch"
           git add -A
@@ -288,6 +297,8 @@ jobs:
           ISSUE: ${{ needs.contract.outputs.issue }}
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
           BRANCH: ${{ steps.commit.outputs.branch }}
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          CODEX_BASE_URL: ${{ secrets.CODEX_BASE_URL }}
         run: |
           set -euo pipefail
           {
@@ -301,6 +312,26 @@ jobs:
               echo "The agent judged no repository changes necessary; the verify job will run on the default branch."
             fi
           } > /tmp/issue-comment.md
+          # 密钥防泄漏: 报告由 LLM 生成并会发到公开仓库的 issue 上。发布前
+          # 先把本 job 已知的密钥值与常见 token 形态脱敏; 命中即告警。
+          # (GITHUB_TOKEN 与 RELEASE_PAT 不在本 job 的 env 里, agent 接触不到。)
+          leak=0
+          for v in "$CODEX_API_KEY" "$CODEX_BASE_URL"; do
+            [ -n "$v" ] || continue
+            if grep -qF -- "$v" /tmp/issue-comment.md; then
+              esc="$(printf '%s' "$v" | sed 's/[^[:alnum:]]/\\&/g')"
+              sed -i "s/$esc/[REDACTED]/g" /tmp/issue-comment.md
+              leak=1
+            fi
+          done
+          if grep -qE 'github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{36}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{16,}' \
+              /tmp/issue-comment.md; then
+            sed -i -E 's/(github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{36}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{16,})/[REDACTED-TOKEN]/g' \
+              /tmp/issue-comment.md
+            leak=1
+          fi
+          [ "$leak" = 1 ] \
+            && echo "warning: secret-like patterns were redacted from the agent report" >&2 || true
           # 容器里没有 gh: curl 发评论, python3 做 JSON 转义(报告是任意
           # markdown)。报告是锦上添花 —— 修复分支已推送, 此步失败不应让
           # 一次成功的 prep 整体失败, 故容错降级。
