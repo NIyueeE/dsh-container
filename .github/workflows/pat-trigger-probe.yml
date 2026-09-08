@@ -13,6 +13,11 @@ name: PAT trigger probe
 #     → 被触发的 run 自删探针 tag 并成功(证明闭环, 也是自清理)
 #     → dispatch run 等它完结: PASS = 触发链路通; FAIL = 未触发或自清理失败
 #
+# FAIL 时会追加一步 Workflows 权限自测: 用 RELEASE_PAT 向一次性分支推送一个
+# .github/workflows/ 下的文件 —— git 服务端对 workflow 文件改动有硬性权限
+# 闸门, 不带 Workflows 权限的 PAT 会被显式拒收(报错直接说明缺什么权限),
+# 带权限则接受。这一步能把"token 缺权限"和"别的怪异问题"区分开, 不用猜。
+#
 # FAIL 时探针 tag 留在仓库里便于排查(修好 PAT 后删除即可); 成功时零残留。
 # tag 名带 run_id, 重复 dispatch 互不干扰, 也不会命中 image.yml/upstream-tag.yml
 # 的 dsh-v* 过滤器。
@@ -67,7 +72,29 @@ jobs:
           done
           if [ -z "$run_id" ]; then
             echo "FAIL: no push-triggered run appeared for $tag (polled ~300s)." >&2
-            echo "RELEASE_PAT is likely a fine-grained PAT without 'Workflows: read and write'." >&2
+            echo "Self-testing whether RELEASE_PAT carries the Workflows permission..." >&2
+            # Workflows 权限自测: 向一次性分支推 .github/workflows/ 下新文件,
+            # git 服务端对 workflow 文件改动强制校验该权限, 缺则拒收。
+            wf_branch="_pat-probe-wf-${{ github.run_id }}"
+            probe_file=".github/workflows/_pat-probe-${{ github.run_id }}.yml"
+            git checkout -q -b "$wf_branch"
+            printf 'name: probe\non: workflow_dispatch\njobs:\n  p:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$probe_file"
+            git add "$probe_file"
+            git -c user.name="PAT trigger probe" -c user.email="actions@github.com" \
+              commit -q -m "pat probe workflow file"
+            if git push probe "refs/heads/$wf_branch" 2>/tmp/wf-push-err.txt; then
+              echo "WORKFLOWS-PERMISSION: PRESENT (workflow-file push accepted)" >&2
+              echo "=> But the tag push still created no run: consider using a CLASSIC PAT" >&2
+              echo "   (with repo+workflow scopes) instead of a fine-grained one." >&2
+            else
+              echo "WORKFLOWS-PERMISSION: MISSING (workflow-file push rejected):" >&2
+              tail -3 /tmp/wf-push-err.txt >&2
+              echo "=> Grant the PAT the 'Workflows: read and write' repository permission," >&2
+              echo "   or switch to a CLASSIC PAT with repo+workflow scopes." >&2
+            fi
+            # 无论结果都删掉一次性分支(delete 事件不触发 workflow)
+            gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$wf_branch" \
+              >/dev/null 2>&1 || true
             echo "The probe tag was left in the repository for inspection; delete it once the PAT is fixed." >&2
             exit 1
           fi
