@@ -497,9 +497,9 @@ jobs:
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
         run: |
           set -euo pipefail
-          since="$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+          since="$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
           run_id=""
-          for _ in $(seq 1 16); do
+          for _ in $(seq 1 30); do
             run_id="$(
               gh api "repos/${{ github.repository }}/actions/runs?event=push&created=>$since&per_page=10" \
                 --jq -r --arg tag "$NEW_TAG" \
@@ -514,7 +514,7 @@ jobs:
             echo "image.yml run $run_id was triggered by the $NEW_TAG push: $url"
             echo "run_url=$url" >> "$GITHUB_OUTPUT"
           else
-            echo "ERROR: no image.yml run appeared within ~2 minutes of pushing $NEW_TAG." >&2
+            echo "ERROR: no image.yml run appeared within ~4 minutes of pushing $NEW_TAG." >&2
             echo "The push credential (RELEASE_PAT) likely lacks 'Workflows: read and write'." >&2
             echo "The tag exists in the repository. Once the PAT is fixed: delete and re-push" >&2
             echo "the tag, or run image.yml manually on refs/tags/$NEW_TAG." >&2

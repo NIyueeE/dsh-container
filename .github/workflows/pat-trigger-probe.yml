@@ -29,7 +29,7 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
         with:
@@ -53,8 +53,9 @@ jobs:
           git push probe "refs/tags/$tag"
           echo "pushed probe tag $tag"
           # 轮询: 本 workflow 应出现 event=push 且 head_branch=$tag 的新 run
+          # (实测 push 事件到 run 创建可能有 1-2 分钟延迟, 轮询放宽到 5 分钟)
           run_id=""
-          for _ in $(seq 1 40); do
+          for _ in $(seq 1 60); do
             run_id="$(
               gh api "repos/${{ github.repository }}/actions/runs?event=push&per_page=10" \
                 --jq -r --arg tag "$tag" \
@@ -65,14 +66,14 @@ jobs:
             sleep 5
           done
           if [ -z "$run_id" ]; then
-            echo "FAIL: no push-triggered run appeared for $tag (polled ~200s)." >&2
+            echo "FAIL: no push-triggered run appeared for $tag (polled ~300s)." >&2
             echo "RELEASE_PAT is likely a fine-grained PAT without 'Workflows: read and write'." >&2
             echo "The probe tag was left in the repository for inspection; delete it once the PAT is fixed." >&2
             exit 1
           fi
           echo "push-triggered run $run_id created; waiting for it to complete..."
           state="queued"
-          for _ in $(seq 1 48); do
+          for _ in $(seq 1 60); do
             state="$(gh api "repos/${{ github.repository }}/actions/runs/$run_id" --jq -r '.status' 2>/dev/null || true)"
             [ "$state" = "completed" ] && break
             sleep 5
