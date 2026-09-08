@@ -479,11 +479,14 @@ jobs:
           git tag -f "$NEW_TAG"
           # 注意: 必须用 PAT 推 —— GITHUB_TOKEN 的 push 不触发 workflow,
           # GitHub App installation token 的 push 同样不触发(实测)。
-          # fine-grained PAT 还必须带 "Workflows: read and write" 仓库权限,
-          # 否则 push 的 tag 不会产生 push event —— 不像 classic PAT 自带
-          # workflow scope。此权限缺失时 tag 会"成功"推上去但下游毫无动静。
+          # fine-grained PAT 需带 "Workflows: read and write" 仓库权限。
+          # 关键坑: actions/checkout 会配置 http.https://github.com/.extraheader
+          # 为 GITHUB_TOKEN 的 Authorization 头, 该头对同一 host 的所有请求
+          # 生效, 会覆盖 remote URL 里嵌的 PAT —— 不显式清掉的话, 这步"PAT
+          # 推送"实际是 GITHUB_TOKEN 在推, 永远不触发 image.yml(2026-09-08
+          # dsh-v0.1.3-alpha.2 事故的根因, 指纹诊断确认)。
           git remote add release "https://oauth2:${RELEASE_PAT}@github.com/${{ github.repository }}.git"
-          git push release "refs/tags/$NEW_TAG"
+          git -c "http.https://github.com/.extraheader=" push release "refs/tags/$NEW_TAG"
 
       # 最后一道闸门的触发确认: "tag 推上去了"不等于"发布开始了"。轮询
       # Actions API, image.yml 必须出现 event=push 且 head_branch 等于新 tag

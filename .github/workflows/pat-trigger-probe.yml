@@ -1,9 +1,12 @@
 name: PAT trigger probe
 
 # 验证 RELEASE_PAT 推送的 tag 能否触发 push-event workflow。GitHub 规则:
-# fine-grained PAT 必须带 "Workflows: read and write" 仓库权限, 否则 git push
-# 的 tag 不会产生任何 push event —— release-prep 的"推 tag 后确认 image.yml
-# 已触发"步骤会因此失败(2026-09-08 dsh-v0.1.3-alpha.2 事故)。
+# GITHUB_TOKEN / GitHub App token 的 push 不会产生 push event, 只有用户 PAT
+# (classic 带 workflow scope, 或 fine-grained 带 "Workflows: read and write"
+# 仓库权限)可以。2026-09-08 dsh-v0.1.3-alpha.2 事故的根因是: actions/checkout
+# 注入的 http.https://github.com/.extraheader(GITHUB_TOKEN 的 Authorization)
+# 覆盖了 remote URL 里的 PAT, 导致"PAT 推送"实际是 GITHUB_TOKEN 在推 —— 永远
+# 不触发 image.yml。本探针(以及 release-prep 的确认步骤)把这一能力显式测出来。
 #
 # 用法: Actions → "PAT trigger probe" → "Run workflow"(手动 dispatch)。
 # 流程:
@@ -55,7 +58,10 @@ jobs:
           tag="_pat-probe-${{ github.run_id }}"
           git tag "$tag"
           git remote add probe "https://oauth2:${RELEASE_PAT}@github.com/${{ github.repository }}.git"
-          git push probe "refs/tags/$tag"
+          # 必须清掉 checkout 注入的 GITHUB_TOKEN extraheader, 否则 push 实际
+          # 由 GITHUB_TOKEN 完成, 探针测的就不是 RELEASE_PAT 了(见 release-prep
+          # 同款注释; 2026-09-08 事故根因)。
+          git -c "http.https://github.com/.extraheader=" push probe "refs/tags/$tag"
           echo "pushed probe tag $tag"
           # 轮询: 本 workflow 应出现 event=push 且 head_branch=$tag 的新 run
           # (实测 push 事件到 run 创建延迟 2-6 分钟不等, 轮询放宽到 8 分钟)
@@ -82,7 +88,7 @@ jobs:
             git add "$probe_file"
             git -c user.name="PAT trigger probe" -c user.email="actions@github.com" \
               commit -q -m "pat probe workflow file"
-            if git push probe "refs/heads/$wf_branch" 2>/tmp/wf-push-err.txt; then
+            if git -c "http.https://github.com/.extraheader=" push probe "refs/heads/$wf_branch" 2>/tmp/wf-push-err.txt; then
               echo "WORKFLOWS-PERMISSION: PRESENT (workflow-file push accepted)" >&2
               echo "=> But the tag push still created no run: consider using a CLASSIC PAT" >&2
               echo "   (with repo+workflow scopes) instead of a fine-grained one." >&2
