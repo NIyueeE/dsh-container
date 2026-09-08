@@ -9,16 +9,20 @@ name: Release prep
 #              候选串), 结果推 release-prep/<tag> 分支, 报告贴到 tracker issue
 #   verify   — 用修复后的树以 DSH_TAG=<新 tag> 构建镜像并跑 tests/smoke.sh
 #              (闸门不信任 agent 自验)
-#   release  — verify 通过后把修复分支快进到 main, 用 GitHub App token 推
-#              dsh-v* tag(GITHUB_TOKEN 的 push 不会触发 workflow, App token 会)
-#              → image.yml 完成构建/冒烟/发布/Release; 未配置 App 时降级为在
+#   release  — verify 通过后把修复分支快进到 main, 用 RELEASE_PAT(fine-grained
+#              PAT, 必须带 "Workflows: read and write" 仓库权限)推 dsh-v* tag,
+#              随后轮询 Actions API 确认 image.yml 已被该 push 触发 —— 未触发则
+#              job 失败、issue 保持打开(2026-09-08 dsh-v0.1.3-alpha.2 事故:
+#              tag 推上去了但 image.yml 从未被触发, issue 却被直接关闭);
+#              → image.yml 完成构建/冒烟/发布/Release; 未配置 PAT 时降级为在
 #              tracker issue 留手动发版命令
 #   notify   — 任一环节失败时在 tracker issue 留诊断说明
 #
 # 触发: upstream-tag.yml 发现新上游 tag 后 repository_dispatch(事件
 # upstream-dsh-tag, 携带 new_tag/old_tag/issue), 或手动 dispatch 填 new_tag。
 # 配置: secrets CODEX_API_KEY / CODEX_BASE_URL / CODEX_MODEL(agent 模型后端),
-#       可选 secret RELEASE_PAT(fine-grained, 用户身份, push 可触发下游)。
+#       可选 secret RELEASE_PAT(fine-grained, 需勾选 "Workflows: read and write"
+#       仓库权限, 否则 push 的 tag 不产生 push event, 不会触发下游)。
 
 on:
   repository_dispatch:
@@ -80,7 +84,6 @@ jobs:
           # tag 形状校验(与 tests/contract.sh、upstream-tag.yml 保持一致)
           [[ "$new_tag" =~ ^dsh-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
             || { echo "invalid new_tag: $new_tag" >&2; exit 1; }
-          # 幂等: 本仓库已有同名 tag(已发版或重复 dispatch)→ 跳过
           # 幂等: 本仓库已有同名 tag(已发版或重复 dispatch)→ 跳过。
           # ls-remote 退出码语义: 0 = 匹配到(存在), 2 = 无匹配(不存在),
           # 其他非零 = 传输错误 —— 必须重试后再放弃, 否则网络抖动会被误判成
@@ -419,6 +422,7 @@ jobs:
     permissions:
       contents: write # 快进 main 与(降级路径)文档提示
       issues: write
+      actions: read   # 推 tag 后轮询确认 image.yml 是否真的被触发
     env:
       # secrets 不能直接用于 if, 借 env 间接判断是否配置了发版 PAT
       HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
@@ -465,6 +469,7 @@ jobs:
         run: git push origin "HEAD:main"
 
       - name: Push release tag via fine-grained PAT
+        id: push-tag
         if: env.HAS_PAT == 'true' && steps.guard.outputs.refuse == 'no'
         env:
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
@@ -474,9 +479,47 @@ jobs:
           git tag -f "$NEW_TAG"
           # 注意: 必须用 PAT 推 —— GITHUB_TOKEN 的 push 不触发 workflow,
           # GitHub App installation token 的 push 同样不触发(实测)。
-          # PAT 属用户身份, push 事件正常触发 image.yml(最后一道闸门)。
+          # fine-grained PAT 还必须带 "Workflows: read and write" 仓库权限,
+          # 否则 push 的 tag 不会产生 push event —— 不像 classic PAT 自带
+          # workflow scope。此权限缺失时 tag 会"成功"推上去但下游毫无动静。
           git remote add release "https://oauth2:${RELEASE_PAT}@github.com/${{ github.repository }}.git"
           git push release "refs/tags/$NEW_TAG"
+
+      # 最后一道闸门的触发确认: "tag 推上去了"不等于"发布开始了"。轮询
+      # Actions API, image.yml 必须出现 event=push 且 head_branch 等于新 tag
+      # 的 run; 超时未出现则本 job 失败 → 后续 close 步骤不会执行, notify
+      # 会把诊断贴到 tracker issue, issue 保持打开, 不会静默断链。
+      - name: Confirm image.yml was triggered by the tag push
+        if: env.HAS_PAT == 'true' && steps.guard.outputs.refuse == 'no'
+        id: trigger
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+        run: |
+          set -euo pipefail
+          since="$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+          run_id=""
+          for _ in $(seq 1 16); do
+            run_id="$(
+              gh api "repos/${{ github.repository }}/actions/runs?event=push&created=>$since&per_page=10" \
+                --jq -r --arg tag "$NEW_TAG" \
+                  '.workflow_runs[] | select(.path == ".github/workflows/image.yml" and .head_branch == $tag) | .id' \
+                2>/dev/null | head -n1
+            )" || true
+            [ -n "$run_id" ] && break
+            sleep 8
+          done
+          if [ -n "$run_id" ]; then
+            url="${{ github.server_url }}/${{ github.repository }}/actions/runs/$run_id"
+            echo "image.yml run $run_id was triggered by the $NEW_TAG push: $url"
+            echo "run_url=$url" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: no image.yml run appeared within ~2 minutes of pushing $NEW_TAG." >&2
+            echo "The push credential (RELEASE_PAT) likely lacks 'Workflows: read and write'." >&2
+            echo "The tag exists in the repository. Once the PAT is fixed: delete and re-push" >&2
+            echo "the tag, or run image.yml manually on refs/tags/$NEW_TAG." >&2
+            exit 1
+          fi
 
       - name: Close tracker issue (auto path)
         if: env.HAS_PAT == 'true' && steps.guard.outputs.refuse == 'no' && needs.contract.outputs.issue != ''
@@ -484,9 +527,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.contract.outputs.issue }}
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+          RUN_URL: ${{ steps.trigger.outputs.run_url }}
         run: |
           gh issue close "$ISSUE" --comment \
-            "Verified and released: tag \`$NEW_TAG\` pushed, image.yml is building and publishing the multi-arch image." \
+            "Verified and released: tag \`$NEW_TAG\` pushed and image.yml was confirmed triggered ([run]($RUN_URL)) — it is building and publishing the multi-arch image." \
             || true
 
       - name: Note refused downgrade on tracker issue
@@ -513,7 +557,7 @@ jobs:
             echo "## Ready to release \`$NEW_TAG\`"
             echo
             echo "All checks passed, but no RELEASE_PAT secret is configured, so the"
-            echo "configured, so the tag was not pushed automatically. To release:"
+            echo "tag was not pushed automatically. To release:"
             echo
             if [ -n "$BRANCH" ]; then
               echo "    git fetch origin && git checkout $BRANCH"
@@ -559,6 +603,13 @@ jobs:
             echo "| verify | ${{ needs.verify.result }} |"
             echo "| release | ${{ needs.release.result }} |"
             echo
+            if [ "${{ needs.release.result }}" = "failure" ]; then
+              echo "The tag may already exist while image.yml never started (failed trigger"
+              echo "confirmation): the push credential (RELEASE_PAT) needs the"
+              echo "\`Workflows: read and write\` repository permission. Fix the PAT, then"
+              echo "delete and re-push the tag, or run image.yml manually on the tag ref."
+              echo
+            fi
             echo "See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for logs."
             echo "The release was NOT published; the tracker issue stays open."
           } > /tmp/issue-comment.md

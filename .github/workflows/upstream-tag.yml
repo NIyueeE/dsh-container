@@ -6,7 +6,8 @@ name: Upstream dsh tag watch
 # deepseek-ai/deepseek-harness 出现本仓库尚未镜像的新 dsh-v* tag 时, 开一个
 # 提醒 issue(含发布命令)并 repository_dispatch 触发 release-prep.yml 的
 # 自动发版准备流水线(契约检查 → agent 修复 → 构建冒烟 → 推 tag); 本仓库推上
-# 同名 tag 后(image.yml 会自动构建并发布镜像), 下次运行自动关闭该 issue。
+# 同名 tag 且该 push 确实触发了 image.yml 后(tag push 事件存在), 下次运行
+# 自动关闭该 issue。
 # 推送 dsh-v* tag 或手动 dispatch 时也会立即检查。
 #
 # 上游仓库可用仓库变量 DSH_UPSTREAM_REPO 覆盖(与 image.yml 的 vars.DSH_TAG
@@ -20,10 +21,12 @@ on:
     tags: ['dsh-v*']
 
 # issue/label 管理与 repository_dispatch 需要写权限(创建 dispatch 事件需要
-# contents:write; 该事件是 GITHUB_TOKEN 反递归限制的豁免项, 可直接触发下游)
+# contents:write; 该事件是 GITHUB_TOKEN 反递归限制的豁免项, 可直接触发下游);
+# actions:read 用于关闭 issue 前确认该 tag 确实触发过 image.yml(push 事件存在)
 permissions:
   contents: write
   issues: write
+  actions: read
 
 concurrency:
   group: upstream-tag-watch
@@ -110,22 +113,46 @@ jobs:
           title="$ISSUE_TITLE_PREFIX $upstream_tag"
 
           if [ "$upstream_newer" != "true" ]; then
-            # 已跟上上游: 关闭遗留的提醒 issue
+            # 已跟上上游: 关闭遗留的提醒 issue。但关闭前必须确认该 tag 真的触发过
+            # image.yml(tag push 事件存在)。若 tag 在、run 却一个都没有, 说明推送
+            # 凭证有问题(RELEASE_PAT 缺 "Workflows: read and write" 权限等), 此时
+            # 关 issue 会把"发布流水线从未启动"的信号静默抹掉 —— 保留 issue 并提示,
+            # 等补跑后(下次运行看到 run)再自动关。
             closed=0
+            kept=0
             for line in "${issues[@]}"; do
               num="${line%%$'\t'*}"
               ititle="${line#*$'\t'}"
               case "$ititle" in
                 "$ISSUE_TITLE_PREFIX"*)
-                  gh issue close "$num" --comment \
-                    "Caught up: the newest \`dsh-v*\` tag in this repository is ${self_tag:-none}; no upstream release is pending." \
-                    >/dev/null || true
-                  closed=$((closed + 1))
+                  tag="${ititle#"$ISSUE_TITLE_PREFIX "}"
+                  [ -n "$tag" ] || continue
+                  run_id="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" \
+                    --jq -r --arg tag "$tag" \
+                      '.workflow_runs[] | select(.path == ".github/workflows/image.yml" and .head_branch == $tag) | .id' \
+                    2>/dev/null | head -n1 || true)"
+                  if [ -n "$run_id" ]; then
+                    gh issue close "$num" --comment \
+                      "Caught up: \`$tag\` was pushed and triggered image.yml run $run_id; no upstream release is pending." \
+                      >/dev/null || true
+                    closed=$((closed + 1))
+                  else
+                    # 不关闭; 只在还没有"push-trigger check"提示时补一条, 避免每日刷屏
+                    kept=$((kept + 1))
+                    hinted="$(gh api "repos/$SELF_REPO/issues/$num/comments?per_page=100" \
+                      --jq '[.[] | select(.body | contains("push-trigger check"))] | length' \
+                      2>/dev/null || echo 0)"
+                    if [ "$hinted" = "0" ]; then
+                      gh issue comment "$num" --body \
+                        "The tag \`$tag\` exists here but image.yml has never run on it (push-trigger check). The push credential (RELEASE_PAT) likely lacks the \`Workflows: read and write\` repository permission — fix it, then delete and re-push the tag, or run image.yml manually on \`refs/tags/$tag\`. This issue stays open as a reminder." \
+                        >/dev/null 2>&1 || true
+                    fi
+                  fi
                   ;;
               esac
             done
-            if [ "$closed" -gt 0 ]; then
-              echo "closed $closed tracker issue(s)"
+            if [ "$closed" -gt 0 ] || [ "$kept" -gt 0 ]; then
+              echo "closed $closed tracker issue(s), kept $kept open (tag never triggered image.yml)"
             else
               echo "this repository is up to date with upstream; nothing to do"
             fi

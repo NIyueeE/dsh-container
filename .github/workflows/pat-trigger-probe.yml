@@ -1,0 +1,103 @@
+name: PAT trigger probe
+
+# 验证 RELEASE_PAT 推送的 tag 能否触发 push-event workflow。GitHub 规则:
+# fine-grained PAT 必须带 "Workflows: read and write" 仓库权限, 否则 git push
+# 的 tag 不会产生任何 push event —— release-prep 的"推 tag 后确认 image.yml
+# 已触发"步骤会因此失败(2026-09-08 dsh-v0.1.3-alpha.2 事故)。
+#
+# 用法: Actions → "PAT trigger probe" → "Run workflow"(手动 dispatch)。
+# 流程:
+#
+#   dispatch run → 用 RELEASE_PAT 推 _pat-probe-<run_id> tag
+#     → 轮询本 workflow 是否被该 push 触发(push 事件 run)
+#     → 被触发的 run 自删探针 tag 并成功(证明闭环, 也是自清理)
+#     → dispatch run 等它完结: PASS = 触发链路通; FAIL = 未触发或自清理失败
+#
+# FAIL 时探针 tag 留在仓库里便于排查(修好 PAT 后删除即可); 成功时零残留。
+# tag 名带 run_id, 重复 dispatch 互不干扰, 也不会命中 image.yml/upstream-tag.yml
+# 的 dsh-v* 过滤器。
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['_pat-probe-*']
+
+permissions:
+  contents: write # 删除探针 tag(GITHUB_TOKEN; delete 事件不触发 workflow)
+  actions: read   # 轮询 Actions API
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Dispatch path — push probe tag and verify the trigger
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELEASE_PAT" ]; then
+            echo "RELEASE_PAT secret is not configured; nothing to verify" >&2
+            exit 1
+          fi
+          tag="_pat-probe-${{ github.run_id }}"
+          git tag "$tag"
+          git remote add probe "https://oauth2:${RELEASE_PAT}@github.com/${{ github.repository }}.git"
+          git push probe "refs/tags/$tag"
+          echo "pushed probe tag $tag"
+          # 轮询: 本 workflow 应出现 event=push 且 head_branch=$tag 的新 run
+          run_id=""
+          for _ in $(seq 1 40); do
+            run_id="$(
+              gh api "repos/${{ github.repository }}/actions/runs?event=push&per_page=10" \
+                --jq -r --arg tag "$tag" \
+                  '.workflow_runs[] | select(.path == ".github/workflows/pat-trigger-probe.yml" and .head_branch == $tag) | .id' \
+                2>/dev/null | head -n1
+            )" || true
+            [ -n "$run_id" ] && break
+            sleep 5
+          done
+          if [ -z "$run_id" ]; then
+            echo "FAIL: no push-triggered run appeared for $tag (polled ~200s)." >&2
+            echo "RELEASE_PAT is likely a fine-grained PAT without 'Workflows: read and write'." >&2
+            echo "The probe tag was left in the repository for inspection; delete it once the PAT is fixed." >&2
+            exit 1
+          fi
+          echo "push-triggered run $run_id created; waiting for it to complete..."
+          state="queued"
+          for _ in $(seq 1 48); do
+            state="$(gh api "repos/${{ github.repository }}/actions/runs/$run_id" --jq -r '.status' 2>/dev/null || true)"
+            [ "$state" = "completed" ] && break
+            sleep 5
+          done
+          if [ "$state" != "completed" ]; then
+            echo "FAIL: triggered run $run_id did not complete in time" >&2
+            exit 1
+          fi
+          conclusion="$(gh api "repos/${{ github.repository }}/actions/runs/$run_id" --jq -r '.conclusion')"
+          if [ "$conclusion" = "success" ]; then
+            echo "PROBE PASS: the $tag push created run $run_id, which cleaned up and succeeded — RELEASE_PAT can trigger push-event workflows."
+          else
+            echo "FAIL: triggered run $run_id concluded '$conclusion'" >&2
+            exit 1
+          fi
+
+      - name: Push path — prove the trigger by removing the probe tag
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 能走到这里, 本身就证明 PAT 推送的 tag 触发了本 workflow。
+          # 自清理: 删除自己的探针 tag(GITHUB_TOKEN 即可; 删除不触发 workflow)。
+          tag="${{ github.ref_name }}"
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$tag" \
+            || { echo "FAIL: could not delete probe tag $tag; remove it manually" >&2; exit 1; }
+          echo "PROBE PASS: push-event run for $tag reached the worker; probe tag deleted."
