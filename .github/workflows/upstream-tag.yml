@@ -127,10 +127,10 @@ jobs:
                 "$ISSUE_TITLE_PREFIX"*)
                   tag="${ititle#"$ISSUE_TITLE_PREFIX "}"
                   [ -n "$tag" ] || continue
-                  run_id="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" \
-                    --jq -r --arg tag "$tag" \
-                      '.workflow_runs[] | select(.path == ".github/workflows/image.yml" and .head_branch == $tag) | .id' \
-                    2>/dev/null | head -n1 || true)"
+                  run_id="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" 2>/dev/null \
+                    | jq -r --arg tag "$tag" \
+                        '.workflow_runs[] | select(.path == ".github/workflows/image.yml" and .head_branch == $tag) | .id' \
+                    | head -n1 || true)"
                   if [ -n "$run_id" ]; then
                     gh issue close "$num" --comment \
                       "Caught up: \`$tag\` was pushed and triggered image.yml run $run_id; no upstream release is pending." \
