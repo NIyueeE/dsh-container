@@ -65,7 +65,10 @@ Running daily (plus on every `dsh-v*` tag push and on manual dispatch), it compa
   notes link, the upstream diff, and the manual `git tag` / `git push` commands (kept as the
   fallback path); an older tracker issue is closed first so at most one stays open. It then fires a
   `repository_dispatch` that starts the automated release-preparation pipeline below;
-- **tags equal** → any open tracker issue is closed automatically.
+- **tags equal** → any open tracker issue is closed automatically — but only once the tag's push
+  has actually produced an `image.yml` run. If the tag exists yet no run ever started (a broken
+  push credential, e.g. a fine-grained `RELEASE_PAT` without the Workflows permission), the issue
+  stays open with a push-trigger hint instead of silently losing the signal.
 
 The upstream repository can be overridden with the `DSH_UPSTREAM_REPO` repository variable
 (default `deepseek-ai/deepseek-harness`), mirroring `vars.DSH_TAG` in `image.yml`. To re-check on
@@ -81,9 +84,9 @@ upstream tag ─▶ watcher ─▶ contract ─┬─ clean ──▶ verify ─
                                      └─ drift ──▶ prep (codex agent) ──┤
                                                   pushes repair branch │ green
                                                                        ▼
-                             release: downgrade guard ─▶ PAT tag push ─▶ close issue
-                                                                       │ push event
-                                                                       ▼
+                             release: downgrade guard ─▶ PAT tag push ─▶ confirm image.yml run ─▶ close issue
+                                                                                                  │ push event
+                                                                                                  ▼
                              image.yml: multi-arch build ─▶ GHCR + GitHub Release
 ```
 
@@ -103,7 +106,10 @@ upstream tag ─▶ watcher ─▶ contract ─┬─ clean ──▶ verify ─
 4. **release** — a downgrade guard first refuses any tag that is not semver-newer than the newest
    `dsh-v*` tag already in this repository (so mis-dispatched old tags cannot pull `latest`
    backwards). Then the repair branch is fast-forwarded to `main` (if any) and the `dsh-v*` tag is
-   pushed with the `RELEASE_PAT` secret, closing the tracker issue.
+   pushed with the `RELEASE_PAT` secret. Immediately after the push the pipeline polls the Actions
+   API until an `image.yml` run appears for the tag; if no run shows up within ~2 minutes the
+   release job fails, the tracker issue stays open and the failure note explains the credential
+   fix. Only after that confirmation is the tracker issue closed.
 5. **publish** — the PAT push triggers `image.yml` (described above), which re-runs the same smoke
    suite as the final gate before publishing the multi-arch image and creating the GitHub Release.
 6. **notify** — if any stage fails, a failure note with per-job results and a link to the run is
@@ -126,6 +132,19 @@ automated release:
 
 So the one step that must trigger a downstream workflow uses `RELEASE_PAT`, a fine-grained PAT
 acting as the repository owner — the credential class that reliably triggers `image.yml`.
+Two caveats, both now guarded:
+
+- a fine-grained PAT triggers push-event workflows **only with the `Workflows: read and write`
+  repository permission** (unlike a classic PAT, the workflow scope is not bundled in). Without
+  it the push is accepted but no run is ever created — the exact failure observed for
+  `dsh-v0.1.3-alpha.2` on 2026-09-08;
+- the pipeline therefore never trusts a bare `git push`: it polls the Actions API for the
+  `image.yml` run and fails the release job if none appears, keeping the tracker issue open.
+  `.github/workflows/pat-trigger-probe.yml` can verify the credential end to end on demand:
+  Actions → "PAT trigger probe" → "Run workflow". It pushes a `_pat-probe-<run_id>` tag with
+  `RELEASE_PAT`, waits for the push event to start a run of the same workflow, and that run
+  deletes the probe tag again — PASS means the trigger chain works, FAIL means the PAT lacks the
+  Workflows permission (a leftover probe tag marks it for inspection).
 
 #### Operating the pipeline
 
@@ -137,6 +156,11 @@ acting as the repository owner — the credential class that reliably triggers `
 - **PAT expiry**: when `RELEASE_PAT` expires, every stage still runs and the pipeline stops at
   ready-to-release with manual `git tag` instructions on the tracker issue — expiry degrades to the
   manual path instead of breaking anything.
+- **Trigger permission**: if `RELEASE_PAT` is a fine-grained PAT without `Workflows: read and
+  write`, the tag push succeeds but no `image.yml` run is created; the release job's trigger
+  confirmation fails, the tracker issue stays open with the diagnosis, and the watcher keeps it
+  open until a run actually appears. Fix the permission, then either delete and re-push the tag or
+  run `image.yml` manually on the tag ref (Actions → Image → Run workflow → ref = the tag).
 - **Agent repair branches** (`release-prep/<tag>`) are pushed even when a later stage fails, so
   proposed repairs stay inspectable; only a fully green `verify` lets the release job touch `main`.
 
@@ -148,7 +172,7 @@ Configuration for `release-prep.yml`:
 | `CODEX_MODEL` | secret | Model name (e.g. `deepseek-chat`) |
 | `CODEX_WIRE_API` | variable | `chat` (default, for OpenAI-compatible endpoints; requires the pinned codex ≤ 0.90.x) or `responses` (OpenAI official; enables newer codex) |
 | `CODEX_API_KEY` | secret | API key for the model endpoint |
-| `RELEASE_PAT` | secret | Optional fine-grained PAT (Contents: Read and write on this repository) whose push publishes the release tag. Neither a `GITHUB_TOKEN` push nor a GitHub App installation-token push triggers `image.yml` (verified live), so a user PAT is the reliable trigger. Without it, the pipeline stops at ready-to-release and posts manual `git tag` instructions to the tracker issue |
+| `RELEASE_PAT` | secret | Optional fine-grained PAT whose push publishes the release tag. Needs **Contents: Read and write** (to push) **and Workflows: Read and write** (to make the tag push create `image.yml` runs) on this repository. Neither a `GITHUB_TOKEN` push nor a GitHub App installation-token push triggers `image.yml` (verified live), so a user PAT is the reliable trigger — the pipeline additionally confirms the run exists after pushing, and `.github/workflows/pat-trigger-probe.yml` can pre-verify the credential. Without it, the pipeline stops at ready-to-release and posts manual `git tag` instructions to the tracker issue |
 
 The pipeline can also be run on demand: Actions → "Release prep" → "Run workflow" with the
 `new_tag` input.

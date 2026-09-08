@@ -24,8 +24,8 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, design, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
 | `.github/workflows/image.yml` | CI: build + smoke test always; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags) |
-| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens/closes a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml` |
-| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → codex agent repair on drift → build + smoke on the repaired tree → push the `dsh-v*` tag via a user PAT secret (manual-instruction fallback on the tracker issue when no PAT is configured) |
+| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`. It closes a tracker issue only once that tag's push has actually produced an `image.yml` run (a tag that never triggered the pipeline keeps the issue open with a hint) |
+| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → codex agent repair on drift → build + smoke on the repaired tree → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
 | `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
 | `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for patch anchors, CLI flags, and the request fence before any image is built |
 | `prompts/release-prep.md` | System prompt for the headless codex agent that repairs contract drift in the `release-prep.yml` prep job |
@@ -152,10 +152,14 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
   multi-arch image tagged `dsh-v*` + `<sha>` + `latest`, then creates a GitHub Release with the
   same tag name. No QEMU emulation anywhere. Upstream tags are watched automatically: the
   scheduled `.github/workflows/upstream-tag.yml` opens a tracker issue when upstream publishes a
-  new `dsh-v*` tag and closes it once the tag is mirrored here; on a new tag it also dispatches
+  new `dsh-v*` tag and closes it once the tag is mirrored here and its push actually triggered
+  `image.yml`; on a new tag it also dispatches
   `.github/workflows/release-prep.yml`, which runs the contract check, repairs drift with a
-  headless codex agent (see `prompts/release-prep.md`), re-validates with build + smoke, and pushes
-  the release tag — the manual `git tag` flow above remains the fallback. `.github/dependabot.yml`
+  headless codex agent (see `prompts/release-prep.md`), re-validates with build + smoke, pushes
+  the release tag, and confirms the push actually triggered `image.yml` (a fine-grained
+  `RELEASE_PAT` needs the Workflows: read and write permission for that) — the manual `git tag`
+  flow above remains the fallback. `.github/workflows/pat-trigger-probe.yml` can pre-verify the
+  PAT's push-trigger capability on demand. `.github/dependabot.yml`
   keeps action pins and the base image updated.
 
 ## Validation checklist before committing
