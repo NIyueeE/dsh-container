@@ -94,12 +94,21 @@ upstream tag ─▶ watcher ─▶ contract ─┬─ clean ──▶ verify ─
    [upstream-contract.md](upstream-contract.md) (patch anchors, CLI flags, request fence) in
    seconds, before any image is built. If this repository already has the tag, the run skips
    (repeated and manual dispatches are idempotent).
-2. **prep** (only on drift) — a headless [codex](https://github.com/openai/codex) agent (version
+2. **prep** (on drift, and always an adaptation review) — a headless
+   [codex](https://github.com/openai/codex) agent (version
    pinned in the workflow) runs in the `codex-universal` container, reviews the pre-fetched
    upstream diff and checkout against the contract, and applies a minimal repair (typically new
-   candidate strings in `dsh-client-patch.sh`); drift in security-defining contract items is
-   reported, never worked around. It pushes a `release-prep/<tag>` branch and posts its report to
-   the tracker issue. The agent works fully offline (network is not part of its sandbox).
+   candidate strings in `container/plugin/scripts/patch-client.js`); drift in security-defining
+   contract items is reported, never worked around. On **every** run — drift or not — it also
+   checks the § Simplification triggers table in
+   [upstream-contract.md](upstream-contract.md) against the upstream diff: when an upstream
+   change makes one of this image's hacks redundant (browser-side loopback gate, cookie
+   bootstrap, settings-document download endpoint, ...), it deletes the hack instead of keeping
+   it, and reports the outcome in an "Adaptation review" section. It pushes a `release-prep/<tag>`
+   branch and posts its report to the tracker issue — that report is the adaptation decision
+   record for the tag; the changes themselves appear in the release note's commit list, and the
+   release body points readers at the adaptation surface. The agent works fully offline (network
+   is not part of its sandbox).
 3. **verify** — checks out the repair branch (if any), builds the image from the new upstream tag
    (`DSH_TAG=<tag>`, same Containerfile as the release) and runs `tests/smoke.sh`. The agent's own
    claims are never trusted; CI decides.

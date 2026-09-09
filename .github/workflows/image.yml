@@ -57,31 +57,21 @@ jobs:
           print('README parity OK')
           PY
 
-      - name: dsh-client-patch is idempotent and warns on drift
+      - name: browser-side patch (patch-client.js) is idempotent and warns on drift
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           mkdir -p \
-            "$tmp/dsh/packages/client/connection/lib" \
-            "$tmp/dsh/apps/web/dist"
+            "$tmp/dsh/packages/client/connection/lib"
           cat > "$tmp/dsh/packages/client/connection/lib/client.js" <<'EOF'
           const handle = {
             api,
             isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
           };
           EOF
-          cat > "$tmp/dsh/apps/web/dist/index.html" <<'EOF'
-          <!doctype html>
-          <html>
-          <head>
-          <script type="module" crossorigin src="/assets/index.js"></script>
-          </head>
-          <body></body>
-          </html>
-          EOF
-          HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null
-          HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null
+          node container/plugin/scripts/patch-client.js --dsh-root "$tmp/dsh" >/dev/null
+          node container/plugin/scripts/patch-client.js --dsh-root "$tmp/dsh" >/dev/null
           grep -q 'isLoopback: true, // dsh-container remote-proxy patch' \
             "$tmp/dsh/packages/client/connection/lib/client.js"
           if grep -q 'isLoopback: pageLocation === void 0' \
@@ -94,15 +84,11 @@ jobs:
             echo "old isLoopback gate still present after patch" >&2
             exit 1
           fi
-          test "$(grep -c 'dsh-container randomUUID polyfill' "$tmp/dsh/apps/web/dist/index.html")" -eq 1
           # Version drift must not fail the supervisor: warn and skip with exit 0.
           cat > "$tmp/dsh/packages/client/connection/lib/client.js" <<'EOF'
           const handle = { api, isLoopback: somethingElse };
           EOF
-          cat > "$tmp/dsh/apps/web/dist/index.html" <<'EOF'
-          <html><head><script defer src="/x.js"></script></head></html>
-          EOF
-          HOME="$tmp" DSH_CLIENT_PATCH_ROOT="$tmp/dsh" bash container/dsh-client-patch.sh >/dev/null 2>&1
+          node container/plugin/scripts/patch-client.js --dsh-root "$tmp/dsh" >/dev/null 2>&1
 
       - name: legacy npm dsh migration is idempotent and preserves unrelated packages
         run: |
@@ -369,5 +355,11 @@ jobs:
             > on the volume unchanged. Logging in no longer needs the token URL: the proxy
             > bootstraps the dsh session automatically, and authentication is Caddy's job — enable
             > `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` for any non-loopback exposure.
+            >
+            > **Container adaptation:** this image keeps its hack surface (browser-side `isLoopback`
+            > patch, session-cookie bootstrap plugin, settings-document download endpoint — see
+            > `docs/upstream-contract.md` § Simplification triggers) as small as upstream allows.
+            > Adaptation changes for this tag are visible in the commits below; the decision record
+            > (Adaptation review) lives in the release-prep tracker issue for this tag.
           generate_release_notes: true
           make_latest: true

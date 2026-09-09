@@ -5,8 +5,12 @@ name: Release prep
 #   contract — tests/contract.sh 静态契约检查(docs/upstream-contract.md 的机器形态),
 #              数秒判定上游 tag 是否存在兼容漂移; 本仓库已有同名 tag 时幂等跳过
 #   prep     — (漂移时)在 codex-universal 容器里以 headless codex 运行修复 agent:
-#              读上游 diff + 契约文档, 最小化修复(通常是 dsh-client-patch.sh 的
-#              候选串), 结果推 release-prep/<tag> 分支, 报告贴到 tracker issue
+#              读上游 diff + 契约文档, 最小化修复(通常是 container/plugin/scripts/
+#              patch-client.js 的候选串); 每次发布(含无漂移)都对照契约文档
+#              § Simplification triggers 审视上游新能力, 能干掉 hack 就删掉
+#              (适配层随上游演进保持最小); 结果推 release-prep/<tag> 分支,
+#              报告(含 Adaptation review 段)贴到 tracker issue —— 该报告即
+#              本 tag 适配层决策记录, 改动本身随 release commits 进入 release note
 #   verify   — 用修复后的树以 DSH_TAG=<新 tag> 构建镜像并跑 tests/smoke.sh
 #              (闸门不信任 agent 自验)
 #   release  — verify 通过后把修复分支快进到 main, 用 RELEASE_PAT(fine-grained
@@ -151,9 +155,11 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
 
   prep:
-    name: Agent drift repair (codex)
+    name: Agent drift repair + adaptation review (codex)
     needs: contract
-    if: needs.contract.outputs.verdict == 'drift'
+    # 每次发布都跑 agent: 漂移时修复; 干净时仍对照 § Simplification triggers
+    # 审视上游 diff(能干掉 hack 就删)。仅当本仓库已有该 tag(幂等跳过)时不跑。
+    if: needs.contract.outputs.verdict != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
