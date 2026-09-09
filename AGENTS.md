@@ -113,6 +113,16 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 - dsh's agent workspace is the process cwd — the entrypoint must `cd "$HOME"` (or, for tests,
   whichever directory it is configured to use).
 
+## Push & release discipline
+
+- **Never push.** The agent works in the local working tree only. Pushing branches, tags, or
+  main to the remote is **not allowed** without an explicit user instruction for that push.
+- **Never tag or release on your own.** Creating/moving git tags and triggering release
+  pipeline runs (image.yml publish builds, GitHub Releases) are user-only actions. A finished
+  change is reported as local commit(s); the user decides when and how to push and release.
+- Before implementing a user-facing change, **present the approach first** (what will change,
+  why, and its cost) and wait for approval — do not research-and-build-and-ship in one pass.
+
 ## Conventions
 
 - **Runtime user is fixed** to `dsh` (uid 1000) on the Debian slim base. Build steps may use
