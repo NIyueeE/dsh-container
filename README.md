@@ -51,6 +51,23 @@ the image. There is no login step: the proxy bootstraps the dsh session automati
 | Observability | OCI labels, `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`), passwordless sudo; `/home/dsh` is the persisted user layer |
 
+## Container-adapt plugin
+
+All container-side adaptation of upstream dsh lives in **one Cordis plugin**, shipped with the
+image at `/opt/dsh-container-plugin` and mounted into the web profile via `dsh --patch`:
+
+- **Session-cookie bootstrap** — the plugin exchanges dsh's one-time login token inside the dsh
+  process and writes the cookie for the proxy to inject; browsers never see a token.
+- **Settings document download** — "Open config file" cannot open a desktop editor in a headless
+  container; the plugin degrades it to a hint pointing at `/download/settings.yaml`, which serves
+  `~/.dsh/settings.yaml` as a download (same Host/Origin + session checks as the `/api` fence).
+- **Browser-side `isLoopback` patch** — `scripts/patch-client.js` makes settings/credentials work
+  through the proxy (applied at image build and before every `dsh web` start).
+
+This plugin is the single adaptation maintenance point. When upstream ships an API that makes part
+of it redundant, the release pipeline deletes that part automatically and says so in the release
+notes (see [docs/upstream-contract.md](docs/upstream-contract.md) § Simplification triggers).
+
 ## Networking & security
 
 - **Port model** — `dsh web` listens on `127.0.0.1:3080` (upstream rejects `--host 0.0.0.0`); the
@@ -99,7 +116,6 @@ toolchain, never the data. Details in [docs/build.md](docs/build.md) and
 | [docs/build.md](docs/build.md) | Build configuration: build args, source tag pinning, reproducible builds |
 | [docs/releasing.md](docs/releasing.md) | Release automation: upstream tag watcher, contract check, agent repair, auto-publish |
 | [docs/upstream-contract.md](docs/upstream-contract.md) | The upstream behaviors this image depends on, and how drift is detected |
-| [docs/design.md](docs/design.md) | Design references and related projects |
 | [docs/development.md](docs/development.md) | Directory structure and local development |
 
 ## License

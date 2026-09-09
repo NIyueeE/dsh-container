@@ -48,6 +48,17 @@ sudo systemctl enable --now dsh.service
 | 可观测性 | OCI labels、`HEALTHCHECK`(curl 3080 + 3081) |
 | 运行用户 | uid 1000(`dsh`),免密 sudo;`/home/dsh` 为持久化用户层 |
 
+## 容器适配插件
+
+对上游 dsh 的全部容器侧适配收敛在**一个 Cordis 插件**里,随镜像装在
+`/opt/dsh-container-plugin`,经 `dsh --patch` 挂载进 web profile:
+
+- **会话 cookie 自举** —— 插件在 dsh 进程内兑换一次性登录 token,写出 cookie 供代理注入;浏览器不会接触 token。
+- **配置文件下载** —— "打开配置文件"在无桌面容器里无法拉起桌面编辑器;插件将其降级为指向 `/download/settings.yaml` 的提示,该端点以附件形式提供 `~/.dsh/settings.yaml`(与 `/api` 围栏相同的 Host/Origin 与会话校验)。
+- **浏览器侧 `isLoopback` 补丁** —— `scripts/patch-client.js` 让设置/凭据页可经代理使用(镜像构建时与每次 `dsh web` 启动前应用)。
+
+插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分并在 release note 中说明(见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。
+
 ## 网络与安全
 
 - **端口模型**——`dsh web` 监听 `127.0.0.1:3080`(上游拒绝 `--host 0.0.0.0`);对外端口是 `3081`,示例默认发布在宿主回环地址。
@@ -78,7 +89,6 @@ sudo systemctl enable --now dsh.service
 | [docs/build.md](docs/build.md) | 构建配置:构建参数、源码版本钉定、可复现构建 |
 | [docs/releasing.md](docs/releasing.md) | 发布自动化:上游 tag 监视、契约检查、agent 修复、自动发布 |
 | [docs/upstream-contract.md](docs/upstream-contract.md) | 本镜像依赖的上游行为,以及漂移的检测方式 |
-| [docs/design.md](docs/design.md) | 设计参考与相关项目 |
 | [docs/development.md](docs/development.md) | 目录结构与本地开发 |
 
 ## 许可证
