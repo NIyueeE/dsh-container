@@ -28,8 +28,10 @@
 #     挂载容器适配插件(container/plugin/, 镜像所有, 随镜像升级):
 #     会话 cookie 自举在 dsh 进程内完成(token → cookie, 复用仍有效的旧
 #     cookie), 写出 /tmp/dsh-caddy/session-cookie 供 Caddyfile 注入;
-#     设置 > 打开配置文件降级为 /download/settings.yaml 下载端点(容器无
-#     桌面, 不 spawn xdg-open; 端点经 requestRejection 鉴权);
+#     设置 > 打开配置文件按钮隐藏: 无桌面容器里上游该操作没有 headless
+#     兜底(会 spawn xdg-open 扑空), 插件把 settings provider 实例的
+#     documentPath 置为 undefined, describe 即返回 hasDocument:false,
+#     按钮按上游自身逻辑不渲染(不引入浏览器侧代码, 也不提供下载端点);
 #     浏览器端 isLoopback 门(location.hostname 限制设置/凭据页)由插件包
 #     内的构建期脚本 scripts/patch-client.js 在镜像构建与每次启动前修补
 #     (上游 trustedHosts 只作用于服务端围栏, 浏览器侧仍需此补丁);

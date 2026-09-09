@@ -44,7 +44,7 @@ sudo systemctl enable --now dsh.service
 | dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本);运行期无自动更新 |
 | 暴露方式 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),可选 basic auth |
 | 守护 | `dsh web` 退出自动重启;`docker exec dsh dsh-restart` 手动重启 |
-| 远程兼容 | 一个容器适配插件(`container/plugin/`,经 `dsh --patch` 挂载):dsh 进程内会话 cookie 自举、"打开配置文件"降级为 `/download/settings.yaml` 下载端点、浏览器侧 `isLoopback` 补丁脚本 |
+| 远程兼容 | 一个容器适配插件(`container/plugin/`,经 `dsh --patch` 挂载):dsh 进程内会话 cookie 自举、无桌面环境下隐藏"打开配置文件"按钮(`describe` 报告无本地文档)、浏览器侧 `isLoopback` 补丁脚本 |
 | 可观测性 | OCI labels、`HEALTHCHECK`(curl 3080 + 3081) |
 | 运行用户 | uid 1000(`dsh`),免密 sudo;`/home/dsh` 为持久化用户层 |
 
@@ -54,7 +54,7 @@ sudo systemctl enable --now dsh.service
 `/opt/dsh-container-plugin`,经 `dsh --patch` 挂载进 web profile:
 
 - **会话 cookie 自举** —— 插件在 dsh 进程内兑换一次性登录 token,写出 cookie 供代理注入;浏览器不会接触 token。
-- **配置文件下载** —— "打开配置文件"在无桌面容器里无法拉起桌面编辑器;插件将其降级为指向 `/download/settings.yaml` 的提示,该端点以附件形式提供 `~/.dsh/settings.yaml`(与 `/api` 围栏相同的 Host/Origin 与会话校验)。
+- **隐藏"打开配置文件"按钮** —— 上游该操作没有无桌面兜底,在容器里会 spawn `xdg-open` 扑空;插件让 `settings/describe` 报告 `hasDocument: false`,按钮按上游自身 UI 逻辑不再渲染。文档本体仍在挂载卷的 `~/.dsh/settings.yaml`。
 - **浏览器侧 `isLoopback` 补丁** —— `scripts/patch-client.js` 让设置/凭据页可经代理使用(镜像构建时与每次 `dsh web` 启动前应用)。
 
 插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分并在 release note 中说明(见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。

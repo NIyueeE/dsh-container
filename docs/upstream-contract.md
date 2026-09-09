@@ -28,7 +28,7 @@ affected enforcement point in `container/*.sh`.
 | 4 | `dsh web` accepts `--no-open` | same | `container/dsh-web.sh` appends `--no-open` (the container has no browser) | `contract.sh cli.no-open` |
 | 5 | `dsh` launcher accepts root `--patch <file>` (used as `--patch <overlay> --profile web`; the `web` alias rejects parent flags by design) | `apps/cli/src/args.ts` | `container/dsh-web.sh` mounts the plugin overlay with the root flag combination — the `web` alias would be rejected by `rejectParentOptions` | `contract.sh cli.patch` |
 | 6 | `Connection.authenticatedUrl()` (process launch token) | `packages/client/connection/src/rpc.ts` | The container-adapt plugin (`container/plugin/`) exchanges the token for the session cookie inside the dsh process; `ctx.webServer.port` is the other dependency | `contract.sh plugin.authenticated_url` + smoke cookie-bootstrap assertions |
-| 7 | `SettingsController` constructor `internals` (`openPath`/`openTextFile`/`canOpenPath`) + `webServer.register(route)` | `packages/api/settings-controller/src/index.ts` + `packages/host/webserver/src/index.ts` | The plugin replaces the `settings-controller` row (overlay `disabled`): internals injection degrades "open settings document" (no `xdg-open` in a headless container) and `webServer.register` serves the `/download/settings.yaml` endpoint | `contract.sh plugin.settings_internals` + `plugin.web_route` + smoke degrade/download assertions |
+| 7 | `settings/describe` derives `hasDocument` from the provider's `documentPath`; the browser `SettingsDocumentAction` renders nothing unless its describe mirror reports `hasDocument: true` | `packages/api/settings-controller/src/index.ts` + `packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx` | The container-adapt plugin sets the settings-file provider instance's `documentPath` to `undefined`, so describe reports `hasDocument: false` and the headless-hostile "Open settings document" button (no upstream fallback; would spawn `xdg-open` into nothing) never renders — no client code, no download endpoint | `contract.sh plugin.settings_document_hidden` + `plugin.settings_action_gate` + smoke describe/gone-endpoint assertions |
 
 Notes:
 
@@ -60,10 +60,10 @@ Notes:
 3. The served connection bundle contains the `isLoopback: true` patch and no longer contains the
    original gate — including after `dsh-restart`. `index.html` is served untouched (upstream ships
    its own insecure-context `randomUuid()`; no polyfill is injected).
-4. "Open settings document" (`settings/openSettingsDocument`) never spawns `xdg-open`: the
-   plugin's `SettingsController` degrades it to a message pointing at `/download/settings.yaml`,
-   which serves the document as an attachment through `:3081` (session injected by Caddy) and
-   rejects direct `:3080` access without a cookie.
+4. `settings/describe` reports `hasDocument: false` (the plugin hides the provider's
+   `documentPath`), so the browser never renders the "Open settings document" button;
+   `/download/settings.yaml` is served by nothing — the path falls through to the SPA fallback
+   (HTML, never an attachment).
 5. Data lives at upstream's default `~/.dsh`; the agent workspace is the process cwd
    (`$HOME` in the container).
 
@@ -111,7 +111,7 @@ in the release note (the commits themselves) and the tracker issue (the Adaptati
 |---|---|---|---|
 | `patch-client.js` (browser `isLoopback` gate patch) | Browser-side code starts honoring `trustedHosts`/a configurable loopback list (e.g. trust authorities flow into `window.__DSH_BOOT__` or the connection bundle) | grep upstream `packages/client/connection/src/client/index.ts` for `trustedHosts`/config inputs next to `isLoopback` | Delete the patch script, contract item 1, and the smoke bundle assertions |
 | Plugin session-cookie bootstrap | Upstream ships a headless session mechanism (static cookie file / `--session-cookie`-style flag / pre-seeded signing secret) | grep upstream CLI flags and connection startup for non-browser auth entry points | Drop the bootstrap half of the plugin; align `dsh-web.sh` waiting with the official protocol |
-| `openSettingsDocument` degrade + `/download/settings.yaml` | Upstream adds a headless fallback (`{opened:false, path}` like `openAgentPresetDirectory`) or moves the document into the right-sidebar preview (`dsh-resource://file/absolute/...` infrastructure already exists) | read upstream `settings-controller` return types and `SettingsDocumentAction` client code | Delete the degrade/download parts of the plugin; adjust contract item 6 and the smoke degrade/download assertions |
+| Hidden settings-document button (`documentPath` flip in the plugin) | Upstream adds a headless fallback for `openSettingsDocument` (`{opened:false, path}` like `openAgentPresetDirectory`), a config knob to hide the action, or moves the document into the right-sidebar preview (`dsh-resource://file/...` infrastructure already exists) | read upstream `settings-controller` return types and `SettingsDocumentAction` client code | Delete the flip from the plugin; adjust contract item 7 and the smoke describe assertions |
 | Caddy `Host`/`Origin` rewrite + cookie injection | Upstream allows `--host 0.0.0.0` **and** ships its own auth/TLS — not expected (CLI explicitly rejects it by design) | `contract.sh` CLI checks | No action (expected to stay) |
 | `DSH_TELEMETRY_MODE=DISABLED` default in entrypoint | Upstream defaults telemetry to `DISABLED` | read `packages/bundle/base/cordis.patch.yml` telemetry row default | Drop the env default from `container/entrypoint.sh` |
 

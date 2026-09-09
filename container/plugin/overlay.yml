@@ -2,13 +2,11 @@
 # (/opt/dsh-container-plugin, 镜像所有, 随镜像升级; 绝对路径 name 由
 # launcher 转成 file:// URL 加载, 不依赖用户区 node_modules)。
 # 插件的运行期职责:
-#   - 会话 cookie 自举(替代 dsh-web.sh 的 token 交换);
-#   - 设置 > 打开配置文件(settings/openSettingsDocument)降级: 容器无桌面,
-#     上游会 spawn xdg-open 报 ENOENT —— 禁用上游 settings-controller 行,
-#     由插件注入 internals 提供友好降级(错误消息带下载链接);
-#   - /download/settings.yaml 下载端点(requestRejection 鉴权)。
-- id: settings-controller
-  disabled: true
+#   - 会话 cookie 自举(Caddy 的会话注入依赖它);
+#   - 隐藏"打开配置文件"按钮(describe 的 hasDocument 翻转, 见 index.js 头注)。
+# 上游的 settings-controller 行保持挂载: 按钮隐藏后 openSettingsDocument
+# 没有 UI 入口, agent-preset 的打开路径上游自带 headless 回退, 不再需要
+# internals 接管, 因此 overlay 只有这一行插件 include。
 - insert:
     - id: dsh-container-adapt
       name: /opt/dsh-container-plugin/index.js

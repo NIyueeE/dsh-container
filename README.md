@@ -47,7 +47,7 @@ the image. There is no login step: the proxy bootstraps the dsh session automati
 | dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable); no runtime auto-update |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) with optional basic auth |
 | Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |
-| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): session-cookie bootstrap inside dsh, "open settings document" degraded to a `/download/settings.yaml` download endpoint, browser-side `isLoopback` patch script |
+| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): session-cookie bootstrap inside dsh, headless-hostile "Open config file" button hidden (`describe` reports no local document), browser-side `isLoopback` patch script |
 | Observability | OCI labels, `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`), passwordless sudo; `/home/dsh` is the persisted user layer |
 
@@ -58,9 +58,10 @@ image at `/opt/dsh-container-plugin` and mounted into the web profile via `dsh -
 
 - **Session-cookie bootstrap** — the plugin exchanges dsh's one-time login token inside the dsh
   process and writes the cookie for the proxy to inject; browsers never see a token.
-- **Settings document download** — "Open config file" cannot open a desktop editor in a headless
-  container; the plugin degrades it to a hint pointing at `/download/settings.yaml`, which serves
-  `~/.dsh/settings.yaml` as a download (same Host/Origin + session checks as the `/api` fence).
+- **Hidden settings-document button** — "Open config file" has no headless fallback upstream and
+  would spawn `xdg-open` into nothing in a container. The plugin makes `settings/describe`
+  report `hasDocument: false`, so the button never renders (upstream's own UI logic). The
+  document itself stays at `~/.dsh/settings.yaml` on the mounted volume.
 - **Browser-side `isLoopback` patch** — `scripts/patch-client.js` makes settings/credentials work
   through the proxy (applied at image build and before every `dsh web` start).
 

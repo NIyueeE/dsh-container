@@ -203,26 +203,22 @@ direct_api="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' -X PO
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [ "$direct_api" = "401" ] || die "direct dsh (3080) /api without cookie returned $direct_api, expected 401"
 
-# 设置 > 打开配置文件(settings/openSettingsDocument)降级: 容器无桌面,
-# 不得再报 spawn xdg-open ENOENT —— 插件把"原生打开"降级为带下载链接的
-# 友好提示(消息出现在 UI toast)。经 3081 的请求由 Caddy 注入会话 cookie。
-open_doc="$(curl -s -X POST http://127.0.0.1:3081/api/settings/openSettingsDocument \
+# 设置 > 打开配置文件按钮隐藏: 容器无桌面, 上游 openSettingsDocument 无
+# headless 兜底(会 spawn xdg-open 报 ENOENT)—— 插件把 settings provider
+# 实例的 documentPath 置为 undefined, 上游 describe 即返回 hasDocument:false,
+# 浏览器侧 SettingsDocumentAction 按上游自身逻辑(status !== 'ready' → 不
+# 渲染)让按钮消失, 不引入任何浏览器侧代码。经 3081 的请求由 Caddy 注入
+# 会话 cookie。
+settings_body="$(curl -s -X POST http://127.0.0.1:3081/api/settings/describe \
   -H 'content-type: application/json' \
-  --data '{"type":"client-request","rpcId":"1","method":"settings/openSettingsDocument","payload":{"args":{}}}')"
-[[ "$open_doc" == *'/download/settings.yaml'* ]] \
-  || die "settings/openSettingsDocument did not degrade to the download endpoint: $open_doc"
-[[ "$open_doc" != *'xdg-open'* ]] \
-  || die "settings/openSettingsDocument still attempts xdg-open: $open_doc"
-# 下载端点: 经代理 200 + attachment; 3080 直连无 cookie 必须被拒(插件
-# 路由套用了上游 requestRejection 鉴权)。
-dl_headers="$(curl -s -D - -o /dev/null http://127.0.0.1:3081/download/settings.yaml)"
-printf '%s' "$dl_headers" | grep -qi 'content-disposition: attachment' \
-  || die "download endpoint lacks Content-Disposition: attachment"
-printf '%s' "$dl_headers" | grep -qi '^HTTP/1.1 200' \
-  || die "download endpoint did not return 200"
-dl_direct="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' \
-  http://127.0.0.1:3080/download/settings.yaml)"
-[ "$dl_direct" != "200" ] || die "download endpoint served on 3080 without a session cookie"
+  --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
+[[ "$settings_body" == *'"hasDocument":false'* ]] \
+  || die "settings describe did not report hasDocument:false (button-hide fuse broken): $settings_body"
+# 旧下载入口已删除: /download/settings.yaml 只应落到前端 SPA fallback
+# (HTML 页面), 任何 content-disposition: attachment 响应都意味着端点回归。
+dl_gone="$(curl -s -D - -o /dev/null http://127.0.0.1:3081/download/settings.yaml)"
+printf '%s' "$dl_gone" | grep -qi 'content-disposition: attachment' \
+  && die "removed download endpoint still serves /download/settings.yaml"
 
 # 前端兼容补丁: 新 upstream dsh 以 /plugins/??<id>/client.js&rev=...
 # 形式在首页注入 bundle URL, 提取 connection 的单包 URL 后验证补丁。

@@ -50,12 +50,13 @@ changes the bundle strings. No `index.html` modification is needed: upstream shi
 insecure-context `randomUuid()` (`@deepseek-ai/dsh-util-crypto`, lint-enforced), so plain-HTTP
 LAN works without a polyfill.
 
-The same plugin handles the settings document: "Open config file" (which upstream would spawn as
-`xdg-open` into nothing) degrades to a message pointing at `/download/settings.yaml`. That
-endpoint applies `ctx.connection.requestRejection` — the same Host/Origin and browser-session
-checks as the `/api` fence — so it is reachable through the authenticated proxy (`3081`) but
-rejected on direct `3080` access without a cookie, and it serves only `~/.dsh/settings.yaml`
-(never arbitrary paths).
+The same plugin keeps the headless-hostile settings-document affordance out of the UI:
+upstream's "Open config file" would spawn `xdg-open` into nothing in a container. The plugin
+sets the settings provider instance's `documentPath` to `undefined`, so `settings/describe`
+reports `hasDocument: false` and the browser never renders the button (upstream renders the
+action only when describe reports a local document). No download endpoint exists — the document
+lives on the mounted volume at `~/.dsh/settings.yaml` (a volume cannot be shadowed by the image;
+only the user who mounts the volume and uid 1000 can read it).
 
 Consequences:
 

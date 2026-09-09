@@ -151,8 +151,9 @@ fi
 
 # critical: 容器适配插件(container/plugin/)依赖的上游 API 锚点 —— 会话
 # cookie 自举用 ctx.connection.authenticatedUrl() 取进程 token、webServer.port
-# 定位内部端口; open 降级用 SettingsController 构造器 internals 注入;
-# 下载端点用 webServer.register 注册命名路由。
+# 定位内部端口; "打开配置文件"按钮隐藏依赖两条上游行为: describe 的
+# hasDocument 直接取 provider.documentPath(插件把实例的 documentPath 置为
+# undefined 即翻转), 以及 SettingsDocumentAction 在状态非 ready 时不渲染。
 if grep -qF 'authenticatedUrl' "$ROOT/packages/client/connection/src/rpc.ts"; then
   echo "PASS plugin.authenticated_url"
   pass=$((pass + 1))
@@ -160,20 +161,19 @@ else
   echo "MISS plugin.authenticated_url (Connection.authenticatedUrl missing or renamed)"
   MISSED+=("plugin.authenticated_url"); miss=$((miss + 1))
 fi
-if grep -qF 'internals.openPath' "$ROOT/packages/api/settings-controller/src/index.ts" \
-    && grep -qF 'openTextFile' "$ROOT/packages/api/settings-controller/src/index.ts"; then
-  echo "PASS plugin.settings_internals"
+if grep -qF 'hasDocument: settings.documentPath !== undefined' "$ROOT/packages/api/settings-controller/src/index.ts"; then
+  echo "PASS plugin.settings_document_hidden"
   pass=$((pass + 1))
 else
-  echo "MISS plugin.settings_internals (SettingsController constructor internals missing or renamed)"
-  MISSED+=("plugin.settings_internals"); miss=$((miss + 1))
+  echo "MISS plugin.settings_document_hidden (describe no longer derives hasDocument from provider.documentPath)"
+  MISSED+=("plugin.settings_document_hidden"); miss=$((miss + 1))
 fi
-if grep -qF 'register(route: WebRoute)' "$ROOT/packages/host/webserver/src/index.ts"; then
-  echo "PASS plugin.web_route"
+if grep -qF "state.status !== 'ready'" "$ROOT/packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx"; then
+  echo "PASS plugin.settings_action_gate"
   pass=$((pass + 1))
 else
-  echo "MISS plugin.web_route (webServer.register signature missing or renamed)"
-  MISSED+=("plugin.web_route"); miss=$((miss + 1))
+  echo "MISS plugin.settings_action_gate (SettingsDocumentAction no longer skips rendering when not ready)"
+  MISSED+=("plugin.settings_action_gate"); miss=$((miss + 1))
 fi
 
 # warn: 上游新增的 trustedHosts 只作用于服务端请求围栏(见

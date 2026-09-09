@@ -142,12 +142,11 @@ changes the bundle strings, it warns and skips instead of blocking startup. The 
 bootstraps the session cookie inside the dsh process (token → cookie, reusing a still-valid
 cookie), replacing the old supervisor-side exchange.
 
-**Opening the settings document** — the "Open config file" button (Settings) has no headless
-fallback upstream and would spawn `xdg-open` into nothing. The plugin replaces the
-`settings-controller` row: clicking the button shows a message pointing at
-`http://<host>:3081/download/settings.yaml`, which downloads the document
-(`~/.dsh/settings.yaml`) as an attachment. The endpoint applies the same Host/Origin + browser
-session checks as the `/api` fence (direct `3080` access without a cookie is rejected).
+**The settings-document button is hidden** — "Open config file" (Settings) has no headless
+fallback upstream and would spawn `xdg-open` into nothing in a container. The plugin makes
+`settings/describe` report `hasDocument: false`, so upstream's own UI never renders the button.
+The document itself stays at `~/.dsh/settings.yaml` on the mounted volume — edit it from the
+host, or read it inside the container (`docker exec dsh cat ~/.dsh/settings.yaml`).
 
 ### External reverse proxy with TLS (WAN)
 

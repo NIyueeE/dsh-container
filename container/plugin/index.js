@@ -1,14 +1,20 @@
 // dsh-container 容器适配插件(运行期)。职责:
 //   1. 会话 cookie 自举(替代旧 dsh-web.sh 的 token 交换);
-//   2. 设置 > 打开配置文件(settings/openSettingsDocument)降级: 容器无桌面,
-//      上游会 spawn xdg-open 报 ENOENT —— 用 SettingsController 构造器
-//      internals 注入把"原生打开"降级为带下载链接的友好提示;
-//   3. /download/settings.yaml 下载端点(经 ctx.connection.requestRejection
-//      套用上游的 Host/Origin + 浏览器会话鉴权)。
+//   2. 隐藏"打开配置文件"按钮: 容器无桌面, 上游 openSettingsDocument 无
+//      headless 兜底(会 spawn xdg-open 报 ENOENT)—— 把 settings provider
+//      实例的 documentPath 置为 undefined, 上游 settings/describe 即返回
+//      hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身逻辑
+//      (status !== 'ready' → 不渲染)让按钮整个消失, 不引入任何浏览器侧代码。
 //
-// 上游核对(dsh-v0.1.5-alpha.1): 产物打开已在 0.1.3+ 迁移到右侧栏预览
-// (openFile → sidebarRight.openResource), 不再碰 xdg-open; 本插件只覆盖
-// openSettingsDocument 这一条上游遗留的无门控原生打开路径。
+// 上游核对(dsh-v0.1.5-alpha.1):
+//   - describe(): hasDocument = settings.documentPath !== undefined
+//     (packages/api/settings-controller/src/index.ts), provider 即
+//     ctx.get('settings') —— 本插件注入的 settings 服务;
+//   - SettingsDocumentAction 仅在 describe 镜像报 hasDocument:true 时渲染
+//     (packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx);
+//   - prepareDocument 用 spec.filename(spec 是实例字段), 不受实例属性
+//     遮蔽影响; agent-preset 的打开路径上游自带 {opened:false,path}
+//     headless 回退(canOpenNativePath 在无桌面容器返回 false), 无需接管。
 //
 // 幂等与稳健性:
 // - 每次 dsh web 启动(含崩溃重启、dsh-restart)都会执行一次自举, 复用优先;
@@ -19,7 +25,6 @@
 // cookie 文件而 fail-fast, 与旧行为等价。
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { SettingsController } from '/opt/deepseek-harness/packages/api/settings-controller/lib/index.js'
 
 export const name = 'dsh-container-adapt'
 export const inject = ['webServer', 'connection', 'settings']
@@ -31,9 +36,6 @@ const COOKIE_FILENAME = 'session-cookie'
 /** 自举重试次数与间隔(覆盖端口就绪窗口与瞬时网络/写盘失败)。 */
 const BOOTSTRAP_RETRIES = 5
 const BOOTSTRAP_RETRY_DELAY_MS = 500
-
-/** 设置文档下载端点(固定路径, 与文档/日志保持一致)。 */
-const DOWNLOAD_PATH = '/download/settings.yaml'
 
 /** 从 Set-Cookie 头提取第一个 cookie 的 name=value(分号截断, 与旧 awk 一致)。 */
 function firstCookieValue(setCookies) {
@@ -107,49 +109,6 @@ async function bootstrap(ctx) {
   throw lastError ?? new Error('session bootstrap failed')
 }
 
-/**
- * "原生打开"降级: 容器无桌面, 任何打开操作都指向下载端点。
- * 抛出的错误经上游 SettingsController 包装后显示在 UI toast,
- * 用户直接看到下载链接。
- */
-function degradedOpen(path) {
-  throw new Error(`no desktop in this container; the file was not opened. ` +
-    `Download it at ${DOWNLOAD_PATH} (or edit it on the mounted volume at ${path})`)
-}
-
-/** 下载端点 handler: 套用上游鉴权后以 attachment 返回设置文档。 */
-function downloadSettingsHandler(ctx) {
-  return async (req, res) => {
-    const rejection = ctx.connection.requestRejection(req)
-    if (rejection !== undefined) {
-      res.writeHead(rejection.status)
-      res.end()
-      return
-    }
-    const doc = ctx.settings?.documentPath
-    if (doc === undefined) {
-      res.writeHead(404)
-      res.end('no settings document')
-      return
-    }
-    let body
-    try {
-      body = await readFile(doc)
-    } catch {
-      res.writeHead(404)
-      res.end('settings document not materialized yet; open Settings and save once, then retry')
-      return
-    }
-    res.writeHead(200, {
-      'content-type': 'application/yaml; charset=utf-8',
-      'content-disposition': 'attachment; filename="settings.yaml"',
-      'content-length': String(body.length),
-      'cache-control': 'no-store',
-    })
-    res.end(body)
-  }
-}
-
 /** 挂载: 自举不阻塞插件激活(失败由 dsh-web 的等待超时兜底)。 */
 export function apply(ctx) {
   // 1) 会话 cookie 自举。
@@ -157,19 +116,10 @@ export function apply(ctx) {
     console.error(`[dsh-container-adapt] session bootstrap failed: ${error instanceof Error ? error.message : String(error)}`)
   })
 
-  // 2) 设置文档下载端点。
-  ctx.webServer.register({
-    kind: 'exact',
-    path: DOWNLOAD_PATH,
-    handler: downloadSettingsHandler(ctx),
-  })
-
-  // 3) 覆盖 settingsController(Cordis Service 构造时自动注册同名服务, 上游
-  //    settings-controller 行已在 overlay 中 disabled, 本实例接管)。
-  //    无桌面时"打开配置文件"不再 spawn xdg-open。
-  new SettingsController(ctx, { nativeOpen: false }, {
-    openPath: degradedOpen,
-    openTextFile: degradedOpen,
-    canOpenPath: () => false,
-  })
+  // 2) 隐藏"打开配置文件"按钮: 上游把 hasDocument 当作"本地文档可用"信号,
+  //    只有它为真时 SettingsDocumentAction 才渲染。容器无桌面且该操作无
+  //    headless 兜底, 直接以数据属性遮蔽 provider 原型上的 documentPath
+  //    getter(spec.filename 不受影响, prepareDocument 照常), 按钮按上游
+  //    自身逻辑消失, 不留下载端点。
+  Object.defineProperty(ctx.settings, 'documentPath', { value: undefined })
 }
