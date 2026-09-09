@@ -20,9 +20,9 @@ docker compose logs dsh | grep 'dsh web:'
 
 Open `http://127.0.0.1:3081/` and follow the Web UI wizard to configure a model (API key) and pick
 a working directory under `/home/dsh` (dsh creates folders there as needed). There is no login
-step: the proxy bootstraps the dsh browser session automatically (the supervisor exchanges dsh's
-one-time login token at startup and injects the session cookie into every proxied request —
-authentication is Caddy's job, see [security.md](security.md)).
+step: the container-adapt plugin bootstraps the dsh browser session inside the dsh process (it
+exchanges the one-time login token and the proxy injects the session cookie into every proxied
+request — authentication is Caddy's job, see [security.md](security.md)).
 
 Images are published by `dsh-v*` release tags that match upstream dsh tags; `:latest` points to
 the most recent release.
@@ -134,10 +134,20 @@ reach port `3081` gets a fully authenticated session (see [security.md](security
 
 Upstream dsh's browser code still gates the settings/credentials pages on
 `window.location.hostname`, so the Caddy rewrite alone would not make those pages usable in a
-remote browser. This image runs `dsh-client-patch` before every `dsh web` start: it treats proxied
-remote browsers as loopback and injects a `crypto.randomUUID` polyfill for plain-HTTP LAN use. The
-patch is idempotent and best-effort — if an upstream dsh version changes the bundle strings, it
-warns and skips instead of blocking startup.
+remote browser. The image's container-adapt plugin (`/opt/dsh-container-plugin`, mounted via
+`dsh --patch`) applies the browser-side `isLoopback` patch through its build-time script
+(`scripts/patch-client.js`, also re-run before every `dsh web` start): it treats proxied
+remote browsers as loopback. The patch is idempotent and best-effort — if an upstream dsh version
+changes the bundle strings, it warns and skips instead of blocking startup. The same plugin
+bootstraps the session cookie inside the dsh process (token → cookie, reusing a still-valid
+cookie), replacing the old supervisor-side exchange.
+
+**Opening the settings document** — the "Open config file" button (Settings) has no headless
+fallback upstream and would spawn `xdg-open` into nothing. The plugin replaces the
+`settings-controller` row: clicking the button shows a message pointing at
+`http://<host>:3081/download/settings.yaml`, which downloads the document
+(`~/.dsh/settings.yaml`) as an attachment. The endpoint applies the same Host/Origin + browser
+session checks as the `/api` fence (direct `3080` access without a cookie is rejected).
 
 ### External reverse proxy with TLS (WAN)
 
@@ -274,8 +284,9 @@ methods are additionally hard-pinned to loopback by upstream dsh). The in-contai
 (which rewrites `Host`/`Origin` to loopback) fixes this: remote browsers pass every endpoint. If
 you still see 403, verify you are running an image that contains the Caddy proxy and that the
 browser reaches the published port `3081`. If the settings page instead shows `settings are
-unavailable in this browser`, verify the image also contains the `dsh-client-patch` client-side
-compatibility patch (and that `dsh web` was restarted after an update).
+unavailable in this browser`, verify the image contains the container-adapt plugin with its
+browser-side patch script (`/opt/dsh-container-plugin/scripts/patch-client.js`, and that `dsh web`
+was restarted after an update).
 
 **Podman rootless + bind mounts**
 If you bind-mount a host directory at `/home/dsh`, make sure it is owned by your uid and
@@ -302,7 +313,7 @@ volume is never modified behind your back.
 **Remote access feels slow**
 The proxy itself does not buffer: SSE responses are flushed immediately and WebSocket streams pass
 through unchanged (verified against Caddy 2.6). The dominant remote-side factor is transfer size —
-UI assets are ~1.3 MB uncompressed, and the in-container proxy gzip-compresses them (≈360 KB).
+UI assets are ~1.3 MB uncompressed, gzip-compressed by dsh's own webserver (≈360 KB).
 Remaining factors are inherent to the setup: `3081` is plain HTTP (no HTTP/2 multiplexing), every
 request costs one TCP round trip, and with basic auth enabled each request also pays one bcrypt
 check (~50–100 ms). For anything beyond the LAN, put an authenticated TLS reverse proxy in front.

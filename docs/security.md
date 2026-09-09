@@ -10,9 +10,9 @@ day job — so follow this baseline when running it:
 remote code execution to the network). This image exposes the UI through a **Caddy reverse proxy**
 (`0.0.0.0:3081` → `127.0.0.1:3080`), and the orchestration examples publish the proxy on host
 loopback (`127.0.0.1:3081`) — LAN/public exposure is an explicit step (change the publish line, or
-put a host-side proxy in front). The proxy gzip-compresses UI assets, passes SSE/WebSocket streams
-through unbuffered, and restarts itself if it crashes (the container HEALTHCHECK marks it unhealthy
-while the proxy stays down).
+put a host-side proxy in front). The proxy passes SSE/WebSocket streams through unbuffered and
+restarts itself if it crashes (the container HEALTHCHECK marks it unhealthy while the proxy stays
+down; UI assets are gzip-compressed by dsh's own webserver, not the proxy).
 
 ### The proxy is the security boundary
 
@@ -25,9 +25,10 @@ loopback** (`settings/describe`, `settings/update`, `credentials.*`, `agentPrese
 
 Upstream also requires a browser session: `dsh web` prints a one-time `?token=...` login URL and
 mints a signed session cookie from it (30 days by default, backed by a signing secret persisted in
-`~/.dsh`). This image absorbs that flow entirely at the proxy: on every container start the
-supervisor (`dsh-web`) exchanges the printed token against `127.0.0.1:3080` itself and configures
-Caddy to inject the resulting session cookie into every proxied request. Browsers never see a
+`~/.dsh`). This image absorbs that flow entirely: the container-adapt plugin exchanges the token
+against the local server inside the dsh process itself on every start (reusing a still-valid
+cookie) and writes the cookie to `/tmp/dsh-caddy/session-cookie`; the supervisor then configures
+Caddy to inject that cookie into every proxied request. Browsers never see a
 token — opening `3081` is enough and there is no 401/login step left on the proxy path.
 Authentication therefore lives **only** in Caddy (basic auth, or the network exposure you choose):
 
@@ -41,11 +42,20 @@ Authentication therefore lives **only** in Caddy (basic auth, or the network exp
 
 Upstream dsh's browser code still gates the settings/credentials pages on `window.location.hostname`,
 so the header rewrite and session injection alone would not make those pages usable in a remote
-browser. This image therefore runs `dsh-client-patch` before every `dsh web` start: it treats
-proxied remote browsers as loopback and injects a `crypto.randomUUID` polyfill for plain-HTTP LAN
-use (upstream now ships its own insecure-context `randomUuid()`; the polyfill stays as insurance
-for other bundle code). The patch is best-effort and skips with a warning if upstream changes the
-bundle strings.
+browser. The container-adapt plugin (`/opt/dsh-container-plugin`, mounted via `dsh --patch`)
+handles this: its `scripts/patch-client.js` treats proxied remote browsers as loopback
+(upstream's `trustedHosts` covers only the server-side fence) and is applied at image build and
+before every `dsh web` start. The patch is best-effort and skips with a warning if upstream
+changes the bundle strings. No `index.html` modification is needed: upstream ships its own
+insecure-context `randomUuid()` (`@deepseek-ai/dsh-util-crypto`, lint-enforced), so plain-HTTP
+LAN works without a polyfill.
+
+The same plugin handles the settings document: "Open config file" (which upstream would spawn as
+`xdg-open` into nothing) degrades to a message pointing at `/download/settings.yaml`. That
+endpoint applies `ctx.connection.requestRejection` — the same Host/Origin and browser-session
+checks as the `/api` fence — so it is reachable through the authenticated proxy (`3081`) but
+rejected on direct `3080` access without a cookie, and it serves only `~/.dsh/settings.yaml`
+(never arbitrary paths).
 
 Consequences:
 
@@ -59,6 +69,21 @@ Consequences:
   SSH tunnel in front — don't rely on the raw port; there is still no TLS on `3081` itself.
 - Keep the host-side exposure minimal: the examples already bind to host loopback
   (`127.0.0.1:3081:3081`) — don't loosen that unless you mean to expose the port.
+
+## Telemetry is off by default
+
+dsh ships an OTel-based feedback uploader. With the upstream default
+(`DSH_TELEMETRY_MODE=FEEDBACK_ONLY`), clicking 👍/👎 on a message exports the complete canonical
+session prefix up to that feedback — message text, tool arguments and results, and workspace paths
+included — to `https://harness-telemetry.deepseeksvc.com/v1/logs`, regardless of the model
+provider.
+
+This image defaults to **`DSH_TELEMETRY_MODE=DISABLED`** (set by the entrypoint): nothing leaves
+the container, and clicking feedback records it in the session log while printing a one-line
+"not uploaded through OpenTelemetry" warning. To opt back in, pass `DSH_TELEMETRY_MODE=FEEDBACK_ONLY`
+(or point `DSH_TELEMETRY_OTLP_URL` at your own collector); a non-empty `DSH_TELEMETRY_DISABLED`
+disables the row entirely. The separate DeepSeek session-log contributor (`session-log-deepseek`)
+is opt-in and off by default either way.
 
 ## Don't mount host credentials
 

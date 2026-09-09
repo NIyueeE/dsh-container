@@ -47,7 +47,7 @@ the image. There is no login step: the proxy bootstraps the dsh session automati
 | dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable); no runtime auto-update |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) with optional basic auth |
 | Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |
-| Remote compatibility | Idempotent client-side patch: settings/credentials work through the proxy; `crypto.randomUUID` polyfill for plain-HTTP LAN |
+| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): session-cookie bootstrap inside dsh, "open settings document" degraded to a `/download/settings.yaml` download endpoint, browser-side `isLoopback` patch script |
 | Observability | OCI labels, `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`), passwordless sudo; `/home/dsh` is the persisted user layer |
 
@@ -60,12 +60,16 @@ the image. There is no login step: the proxy bootstraps the dsh session automati
   loopback-only. Anyone who can reach `3081` gets full control: enable basic auth
   (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`, set together or the entrypoint refuses to start) and keep
   the port firewalled.
-- **Session bootstrapped** — the supervisor exchanges dsh's one-time login token at startup and
-  injects the session cookie into every proxied request; browsers never see a token.
+- **Session bootstrapped** — the container-adapt plugin exchanges dsh's one-time login token
+  inside the dsh process at startup and the proxy injects the session cookie into every proxied
+  request; browsers never see a token.
 - **Streams & compression** — SSE/WebSocket pass through unbuffered (verified against Caddy 2.6);
-  UI assets are gzip-compressed (≈1.3 MB → ≈360 KB).
-- **Client patch** — applied before every `dsh web` start; if upstream changes the bundle strings
-  it warns and skips instead of blocking startup.
+  UI assets are gzip-compressed by dsh's own webserver (≈1.3 MB → ≈360 KB).
+- **Telemetry off by default** — `DSH_TELEMETRY_MODE=DISABLED` is set by the entrypoint; no
+  feedback/telemetry data leaves the container unless you opt back in.
+- **Client patch** — the container-adapt plugin's `patch-client.js` makes settings/credentials
+  usable through the proxy (applied at build time and before every `dsh web` start; if upstream
+  changes the bundle strings it warns and skips instead of blocking startup).
 - **Extra args** — pass `dsh web` arguments through the container command, e.g.
   `["--port", "8080"]` (internal port only; exposed port stays `3081`).
 
@@ -78,6 +82,7 @@ WebSocket headers and raised timeouts) — see [docs/deployment.md](docs/deploym
 | Variable | Default | Description |
 |---|---|---|
 | `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(empty)* | Basic auth on the exposed proxy (recommended for any non-loopback deployment); set both or neither |
+| `DSH_TELEMETRY_MODE` | `DISABLED` | dsh feedback/telemetry upload policy; `FEEDBACK_ONLY` restores the upstream default (uploads on explicit feedback), `DISABLED` keeps everything local |
 
 Everything else uses built-in defaults — dsh data at `~/.dsh`, cwd `$HOME`, writable caches under
 `~/.cargo` / `~/.local/share`, image-owned tools in `/usr/local/bin` and `/opt/rust`. The whole

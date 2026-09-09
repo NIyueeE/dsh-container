@@ -23,10 +23,17 @@
 #     进程 cwd 直接使用 $HOME, 不预创建固定工作区子目录
 #   - dsh web 由 dsh-web 守护脚本托管, 崩溃/退出后自动重启;
 #     容器内可用 dsh-restart 手动重启 dsh web(无需重启整个容器)
-#   - dsh-web 每次启动 dsh web 前会运行 dsh-client-patch: 上游浏览器端仍按
-#     location.hostname 限制设置/凭据, 该补丁把经代理的远程浏览器视为回环并
-#     注入 crypto.randomUUID polyfill(纯 HTTP 内网兼容); 幂等且版本漂移时
-#     警告跳过
+#   - dsh-web 以 `dsh --patch /opt/dsh-container-plugin/overlay.yml web ...`
+#     启动 dsh, 挂载容器适配插件(container/plugin/, 镜像所有, 随镜像升级):
+#     会话 cookie 自举在 dsh 进程内完成(token → cookie, 复用仍有效的旧
+#     cookie), 写出 /tmp/dsh-caddy/session-cookie 供 Caddyfile 注入;
+#     设置 > 打开配置文件降级为 /download/settings.yaml 下载端点(容器无
+#     桌面, 不 spawn xdg-open; 端点经 requestRejection 鉴权);
+#     浏览器端 isLoopback 门(location.hostname 限制设置/凭据页)由插件包
+#     内的构建期脚本 scripts/patch-client.js 在镜像构建与每次启动前修补
+#     (上游 trustedHosts 只作用于服务端围栏, 浏览器侧仍需此补丁);
+#     幂等且版本漂移时警告跳过。不再注入 randomUUID polyfill: 上游自带
+#     不依赖 secure context 的 randomUuid()(util-crypto)
 #   - 分层(hermes-agent 模式): 工具链全部是镜像所有的系统层真二进制 —— uv/pnpm
 #     与 rustup 代理在 /usr/local/bin、rust 工具链树在 /opt/rust、dsh 在
 #     /opt/deepseek-harness, 随镜像更新整体重置; /home/dsh 整体挂载为数据卷,
@@ -36,8 +43,12 @@
 #     release notes
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
 #     (上游 tag 与 main 均拒绝 --host 0.0.0.0: 上游有意为之的安全设计)
+#   - 遥测默认关闭: entrypoint 导出 DSH_TELEMETRY_MODE=DISABLED(可覆盖),
+#     dsh 的 OTel 反馈上传(上游默认 FEEDBACK_ONLY)不把会话数据发往
+#     harness-telemetry.deepseeksvc.com
 #   - Caddy 反向代理监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后转发到 dsh 的
-#     127.0.0.1:3080, 并对 UI 资源做 gzip 压缩(远端访问更快); 运行期崩溃自动重启。
+#     127.0.0.1:3080(UI 资源压缩由 dsh 自带 webserver 的 gzip 承担);
+#     运行期崩溃自动重启。
 #     dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
 #     也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理。
 #     DSH_PROXY_USER + DSH_PROXY_PASSWORD 必须成对设置以启用 basic auth,
@@ -185,14 +196,15 @@ RUN set -eux; \
     rustup --version
 
 # ---------------------------------------------------------------------------
-# 7. 入口、dsh web 守护/重启与前端兼容补丁脚本
+# 7. 入口、dsh web 守护/重启、历史数据迁移与容器适配插件
+#    (插件 = 全部进程内适配逻辑的唯一维护点, 见 container/plugin/)
 # ---------------------------------------------------------------------------
 COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-web.sh /usr/local/bin/dsh-web
 COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
-COPY container/dsh-client-patch.sh /usr/local/bin/dsh-client-patch
 COPY container/dsh-migrate-legacy.sh /usr/local/bin/dsh-migrate-legacy
-RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/dsh-client-patch /usr/local/bin/dsh-migrate-legacy
+COPY container/plugin /opt/dsh-container-plugin
+RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/dsh-migrate-legacy
 
 # ---------------------------------------------------------------------------
 # 8. 拉取 dsh 官方源码并切换到指定 tag(默认 latest = 官方最新 tag)
@@ -229,7 +241,7 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     pnpm install --frozen-lockfile --store-dir /root/.pnpm-store; \
     pnpm run build:official; \
     ln -sfn /opt/deepseek-harness/apps/cli/lib/bin.js /usr/local/bin/dsh; \
-    DSH_CLIENT_PATCH_ROOT=/opt/deepseek-harness dsh-client-patch; \
+    node /opt/dsh-container-plugin/scripts/patch-client.js; \
     chown -R dsh:dsh /opt/deepseek-harness; \
     mkdir -p /etc/dsh-container; \
     # -c 紧凑输出: 冒烟测试按 '"image":"ghcr.io/niyueee/dsh-container"' 精确 grep

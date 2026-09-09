@@ -11,9 +11,14 @@
 #   3. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081), 经
 #      DSH_WEB_PORT 传给 dsh-web(内部管道变量, 非用户配置面)。
 #   4. 幂等清理旧版(v0.2.x)镜像遗留在卷中的 npm 版 dsh 后, exec dsh-web ——
-#      dsh web、会话 cookie 自举与 Caddy 反代的启动/监督全部由 dsh-web
-#      托管, 详见 container/dsh-web.sh。
+#      dsh web 的启动/监督、会话 cookie 的就绪等待与 Caddy 反代全部由
+#      dsh-web 托管(会话 cookie 自举由容器适配插件在 dsh 进程内完成,
+#      见 container/plugin/ 与 container/dsh-web.sh)。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
+# 遥测默认关闭: dsh 的反馈 OTel 上报(默认 FEEDBACK_ONLY 时, 用户点反馈会把
+# 完整会话上下文发往 harness-telemetry.deepseeksvc.com)在本镜像中默认
+# DISABLED; 用户可用 DSH_TELEMETRY_MODE / DSH_TELEMETRY_OTLP_URL 显式开启
+# 或改端点(见 docs/security.md)。
 set -euo pipefail
 
 # 数值 USER 不自动设置 HOME; 从 passwd 还原, 供 npm/uv/cargo 等使用。
@@ -38,6 +43,10 @@ export HOME
 export RUSTUP_HOME="${RUSTUP_HOME:-/opt/rust/rustup}"
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+# 遥测默认关闭(镜像层默认, 用户可覆盖): 点反馈等显式交互也不会上报
+# OTel; 显式设置 DSH_TELEMETRY_MODE=FEEDBACK_ONLY 或 DSH_TELEMETRY_OTLP_URL
+# 可恢复上游默认行为。
+export DSH_TELEMETRY_MODE="${DSH_TELEMETRY_MODE:-DISABLED}"
 mkdir -p "$HOME/.cargo/bin" "$HOME/.local/bin" "$PNPM_HOME"
 # PATH 镜像优先 (hermes-agent 模式): /usr/local/bin 里是镜像的真二进制
 # (dsh/uv/pnpm/cargo), 必须压过用户层目录; 用户自装工具垫底。
@@ -77,7 +86,8 @@ if [ "$PORT" = "3081" ]; then
   exit 1
 fi
 
-# 内部端口经环境传给 dsh-web(它负责会话自举、Caddy 反代与整个服务栈)。
+# 内部端口经环境传给 dsh-web(它挂载容器适配插件启动 dsh web —— 插件完成
+# 会话 cookie 自举 —— 并托管 Caddy 反代与整个服务栈)。
 export DSH_WEB_PORT="$PORT"
 
 exec dsh-web "$@"

@@ -77,7 +77,8 @@ found_in() { # <rel-root> <fixed-string> -> 0/1
     -e "$2" "$ROOT/$1" >/dev/null 2>&1
 }
 
-# critical: 前端补丁锚点的源形态 —— dsh-client-patch.sh 的候选串由它编译而来。
+# critical: 前端补丁锚点的源形态 —— container/plugin/scripts/patch-client.js
+# 的候选串由它编译而来。
 # 源码里两个特征同时成立才认为补丁锚点未漂移(connection/src/client/index.ts)。
 if [ -f "$ROOT/packages/client/connection/src/client/index.ts" ]; then
   f="$ROOT/packages/client/connection/src/client/index.ts"
@@ -107,21 +108,6 @@ if [ -f "$ROOT/packages/client/connection/lib/client.js" ]; then
   fi
 else
   echo "SKIP connection.isLoopback.built (lib/ not committed; verified behaviorally by smoke)"
-fi
-
-# critical: index.html 注入锚点 —— randomUUID polyfill 插在
-# '<script type="module"' 之前, 源模板应在 apps/web 下。
-anchor_file="$(find "$ROOT/apps/web" -maxdepth 3 -name index.html \
-  -not -path '*/node_modules/*' 2>/dev/null | head -n1 || true)"
-if [ -n "$anchor_file" ] && grep -qF '<script type="module"' "$anchor_file"; then
-  echo "PASS web.index.anchor"
-  pass=$((pass + 1))
-elif [ -n "$anchor_file" ]; then
-  echo "MISS web.index.anchor (index.html found at ${anchor_file#$ROOT/} but module-script anchor absent)"
-  MISSED+=("web.index.anchor"); miss=$((miss + 1))
-else
-  echo "MISS web.index.anchor (no index.html under apps/web)"
-  MISSED+=("web.index.anchor"); miss=$((miss + 1))
 fi
 
 # critical: /api 信任围栏 —— Caddy 头改写放行的前提是围栏仍按 HTTP 头
@@ -161,8 +147,36 @@ else
   warn=$((warn + 1))
 fi
 
-# warn: 上游新增的 trustedHosts 只作用于服务端请求围栏(见 dsh-client-patch.sh
-# 头注), 出现不算漂移, 但提醒审阅者确认浏览器侧补丁仍然必需。
+# critical: 容器适配插件(container/plugin/)依赖的上游 API 锚点 —— 会话
+# cookie 自举用 ctx.connection.authenticatedUrl() 取进程 token、webServer.port
+# 定位内部端口; open 降级用 SettingsController 构造器 internals 注入;
+# 下载端点用 webServer.register 注册命名路由。
+if grep -qF 'authenticatedUrl' "$ROOT/packages/client/connection/src/rpc.ts"; then
+  echo "PASS plugin.authenticated_url"
+  pass=$((pass + 1))
+else
+  echo "MISS plugin.authenticated_url (Connection.authenticatedUrl missing or renamed)"
+  MISSED+=("plugin.authenticated_url"); miss=$((miss + 1))
+fi
+if grep -qF 'internals.openPath' "$ROOT/packages/api/settings-controller/src/index.ts" \
+    && grep -qF 'openTextFile' "$ROOT/packages/api/settings-controller/src/index.ts"; then
+  echo "PASS plugin.settings_internals"
+  pass=$((pass + 1))
+else
+  echo "MISS plugin.settings_internals (SettingsController constructor internals missing or renamed)"
+  MISSED+=("plugin.settings_internals"); miss=$((miss + 1))
+fi
+if grep -qF 'register(route: WebRoute)' "$ROOT/packages/host/webserver/src/index.ts"; then
+  echo "PASS plugin.web_route"
+  pass=$((pass + 1))
+else
+  echo "MISS plugin.web_route (webServer.register signature missing or renamed)"
+  MISSED+=("plugin.web_route"); miss=$((miss + 1))
+fi
+
+# warn: 上游新增的 trustedHosts 只作用于服务端请求围栏(见
+# container/plugin/scripts/patch-client.js 头注), 出现不算漂移, 但提醒
+# 审阅者确认浏览器侧补丁仍然必需。
 if found_in "." "trustedHosts"; then
   echo "WARN web.trusted_hosts (trustedHosts present upstream; confirm client-side patch still required)"
   warn=$((warn + 1))

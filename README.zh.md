@@ -44,7 +44,7 @@ sudo systemctl enable --now dsh.service
 | dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本);运行期无自动更新 |
 | 暴露方式 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),可选 basic auth |
 | 守护 | `dsh web` 退出自动重启;`docker exec dsh dsh-restart` 手动重启 |
-| 远程兼容 | 幂等客户端补丁:设置/凭据页可经代理使用;`crypto.randomUUID` polyfill 支持纯 HTTP 内网 |
+| 远程兼容 | 一个容器适配插件(`container/plugin/`,经 `dsh --patch` 挂载):dsh 进程内会话 cookie 自举、"打开配置文件"降级为 `/download/settings.yaml` 下载端点、浏览器侧 `isLoopback` 补丁脚本 |
 | 可观测性 | OCI labels、`HEALTHCHECK`(curl 3080 + 3081) |
 | 运行用户 | uid 1000(`dsh`),免密 sudo;`/home/dsh` 为持久化用户层 |
 
@@ -52,9 +52,10 @@ sudo systemctl enable --now dsh.service
 
 - **端口模型**——`dsh web` 监听 `127.0.0.1:3080`(上游拒绝 `--host 0.0.0.0`);对外端口是 `3081`,示例默认发布在宿主回环地址。
 - **代理即安全边界**——Caddy 把 `Host`/`Origin` 改写为回环,远程浏览器因此通过 dsh 的 `/api` 信任围栏,包括原本仅限回环的设置/凭据接口。任何能访问 `3081` 的人都获得完全控制:请启用 basic auth(`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`,成对设置,否则 entrypoint 拒绝启动)并保持端口防火墙关闭。
-- **会话自动引导**——supervisor 在启动时兑换 dsh 的一次性登录 token,并把会话 cookie 注入每个代理请求;浏览器不会接触 token。
-- **流与压缩**——SSE/WebSocket 无缓冲直通(已对 Caddy 2.6 验证);UI 资源 gzip 压缩(约 1.3 MB → 360 KB)。
-- **客户端补丁**——每次 `dsh web` 启动前应用;若上游改变 bundle 字符串则告警跳过,不阻塞启动。
+- **会话自动引导**——容器适配插件在 dsh 进程内兑换一次性登录 token(启动时),代理再把会话 cookie 注入每个请求;浏览器不会接触 token。
+- **流与压缩**——SSE/WebSocket 无缓冲直通(已对 Caddy 2.6 验证);UI 资源由 dsh 自带 webserver gzip 压缩(约 1.3 MB → 360 KB)。
+- **遥测默认关闭**——entrypoint 设置 `DSH_TELEMETRY_MODE=DISABLED`;除非显式打开,反馈/遥测数据不会离开容器。
+- **客户端补丁**——容器适配插件的 `patch-client.js` 让设置/凭据页可经代理使用(镜像构建时与每次 `dsh web` 启动前应用;若上游改变 bundle 字符串则告警跳过,不阻塞启动)。
 - **附加参数**——通过容器 command 透传 `dsh web` 参数,例如 `["--port", "8080"]`(仅改内部端口;对外端口仍为 `3081`)。
 
 广域网访问请在前置代理上终结 TLS(文档含可用的 nginx 配置,含 WebSocket 头与超时设置)——详见 [docs/deployment.md](docs/deployment.md) 与 [docs/security.md](docs/security.md)。
@@ -64,6 +65,7 @@ sudo systemctl enable --now dsh.service
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(空)* | 对外代理的 basic auth(任何非回环部署都建议启用);成对设置或都不设 |
+| `DSH_TELEMETRY_MODE` | `DISABLED` | dsh 反馈/遥测上传策略;`FEEDBACK_ONLY` 恢复上游默认(显式反馈时上传),`DISABLED` 保持一切本地 |
 
 其余全部使用内置默认值——dsh 数据在 `~/.dsh`,工作目录 `$HOME`,可写缓存在 `~/.cargo` / `~/.local/share`,镜像持有的工具在 `/usr/local/bin` 与 `/opt/rust`。整个 `/home/dsh` 是持久化边界:把它作为单一卷挂载;镜像升级替换工具链,从不动数据。细节见 [docs/build.md](docs/build.md) 与 [docs/deployment.md](docs/deployment.md)。
 

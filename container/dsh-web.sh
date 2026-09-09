@@ -2,18 +2,20 @@
 # dsh web 守护脚本(容器内整个服务栈的监督者):
 #   1. 启动 `dsh web`(输出写入日志文件并 tail 镜像到 stdout, 容器日志仍可见),
 #      退出/崩溃后自动重新拉起; 配合 `dsh-restart` 可在容器内部重启 dsh web。
-#   2. 会话自举(鉴权职责完全落在 Caddy, 浏览器/用户无需接触 token):
-#      dsh web 每次启动会打印一次性 `?token=...` 登录 URL, 本脚本用它向
-#      127.0.0.1:$DSH_WEB_PORT 换取会话 cookie 并存入 /tmp/dsh-caddy/,
-#      随后生成的 Caddyfile 把该 cookie 注入所有代理请求。dsh 的签名密钥
-#      持久化在数据卷凭据库中, cookie 默认 30 天有效、跨进程/跨容器重启有效
-#      —— 已有有效 cookie 时直接复用, 不重复换取。dsh 自身的浏览器围栏
+#      启动命令挂载镜像自带的容器适配插件 overlay(--patch, launcher flag,
+#      必须位于 `web` 之前): 会话 cookie 自举由插件在 dsh 进程内完成, 不再
+#      由本脚本 grep 日志 token + curl 交换。
+#   2. 等待插件写出的会话 cookie(/tmp/dsh-caddy/session-cookie), 随后生成的
+#      Caddyfile 把该 cookie 注入所有代理请求。dsh 的签名密钥持久化在数据卷
+#      凭据库中, cookie 默认 30 天有效、跨进程/跨容器重启有效 —— 插件会复用
+#      仍被接受的旧 cookie, 不重复换取。dsh 自身的浏览器围栏
 #      (3080 直连无 cookie 仍 401)原样保留, 3081 上的鉴权由 Caddy 承担
 #      (basic auth / 网络暴露面)。
 #   3. 启动 Caddy 反代监听 0.0.0.0:3081: 把 Host/Origin 改写为回环后转发到
-#      127.0.0.1:$DSH_WEB_PORT, 对 UI 资源做 gzip 压缩, 并注入会话 cookie;
-#      运行期崩溃自动重启(配置错误 fail-fast)。DSH_PROXY_USER +
-#      DSH_PROXY_PASSWORD 必须成对设置以启用 basic auth, 只设置一个直接退出。
+#      127.0.0.1:$DSH_WEB_PORT, 并注入会话 cookie(UI 资源压缩由上游 dsh 的
+#      webserver 自带 gzip 承担, Caddy 不再重复压缩); 运行期崩溃自动重启
+#      (配置错误 fail-fast)。DSH_PROXY_USER + DSH_PROXY_PASSWORD 必须成对设置
+#      以启用 basic auth, 只设置一个直接退出。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080; 容器内默认追加
 # --no-open(无浏览器环境), 用户显式传入时不重复。
 set -euo pipefail
@@ -88,15 +90,17 @@ trap cleanup TERM INT EXIT
 
 # --- dsh web 启动 -------------------------------------------------------------
 # 输出重定向到日志文件再 tail 镜像到 stdout: 容器日志仍能看到 dsh web 的
-# 全部输出(含一次性登录 token 与报错), 同时本脚本可以从日志提取 token。
+# 全部输出(含一次性登录 token 与报错)。启动命令在 `web` 之前挂载容器适配
+# 插件 overlay(--patch 是 launcher flag), 会话 cookie 自举由插件完成。
 start_dsh_web() {
   : > "$LOG"
-  # 每次启动前重打前端兼容补丁(幂等, 已打过则跳过): 构建产物在系统层
+  # 每次启动前重打浏览器端兼容补丁(幂等, 已打过则跳过): 构建产物在系统层
   # /opt/deepseek-harness, 镜像构建时已打, 运行时再打一次兜底。
-  if command -v dsh-client-patch >/dev/null 2>&1; then
-    dsh-client-patch || echo "[dsh-web] dsh-client-patch failed; continuing" >&2
+  if [ -f /opt/dsh-container-plugin/scripts/patch-client.js ]; then
+    node /opt/dsh-container-plugin/scripts/patch-client.js \
+      || echo "[dsh-web] patch-client failed; continuing" >&2
   fi
-  dsh web "${WEB_ARGS[@]}" >>"$LOG" 2>&1 &
+  dsh --patch /opt/dsh-container-plugin/overlay.yml web "${WEB_ARGS[@]}" >>"$LOG" 2>&1 &
   CHILD_PID=$!
   echo "$CHILD_PID" > "$PIDFILE"
   echo "[dsh-web] dsh web started (pid $CHILD_PID)" >&2
@@ -104,60 +108,23 @@ start_dsh_web() {
 }
 
 # --- 会话自举 -----------------------------------------------------------------
-# 已有 cookie 且仍被 dsh web 接受时直接复用(签名密钥持久化在数据卷凭据库,
-# cookie 默认 30 天有效); 否则等待本次 dsh web 打印的 token 并换取。
+# 由插件在 dsh 进程内完成(token → cookie, 复用仍有效的旧 cookie), 本脚本
+# 只等待插件写出的 cookie 文件出现; 超时则 fail-fast, 与旧实现等价。
 ensure_session() {
-  if [ -f "$COOKIE_FILE" ]; then
-    local code
-    code="$(curl -s -o /dev/null -w '%{http_code}' \
-      -H "Cookie: $(cat "$COOKIE_FILE")" "http://127.0.0.1:${WEB_PORT}/" || true)"
-    if [ "$code" = "200" ]; then
-      echo "[dsh-web] reusing the still-valid session cookie" >&2
+  for _ in $(seq 1 120); do
+    if [ -s "$COOKIE_FILE" ]; then
+      echo "[dsh-web] session cookie ready (minted by the container-adapt plugin)" >&2
       return 0
     fi
-  fi
-  local token="" headers="" cookie=""
-  for _ in $(seq 1 120); do
-    token="$(grep -o 'token=[A-Za-z0-9_-]*' "$LOG" 2>/dev/null | tail -n1 | cut -d= -f2 || true)"
-    [ -n "$token" ] && break
     if ! kill -0 "$CHILD_PID" 2>/dev/null; then
-      echo "[dsh-web] dsh web exited before printing a login token; last log lines:" >&2
+      echo "[dsh-web] dsh web exited before the session cookie appeared; last log lines:" >&2
       tail -n 20 "$LOG" >&2 || true
       return 1
     fi
     sleep 1
   done
-  if [ -z "$token" ]; then
-    echo "[dsh-web] no login token printed by dsh web within 120s" >&2
-    return 1
-  fi
-  headers="$(mktemp)"
-  # token 打印与端口就绪之间可能存在小窗口, 换取请求做短重试。
-  local exchanged=0
-  for _ in $(seq 1 10); do
-    if curl -sS -o /dev/null -D "$headers" "http://127.0.0.1:${WEB_PORT}/?token=${token}"; then
-      exchanged=1
-      break
-    fi
-    sleep 0.5
-  done
-  if [ "$exchanged" != "1" ]; then
-    echo "[dsh-web] token exchange request failed" >&2
-    rm -f "$headers"
-    return 1
-  fi
-  # 头解析用 POSIX 安全写法(镜像里的 awk 是 mawk, 不支持 gawk 的 /i 标志),
-  # 并去掉 curl -D 输出行尾的 \r。
-  cookie="$(awk '/^[Ss]et-[Cc]ookie:/{sub(/^[Ss]et-[Cc]ookie:[ ]*/,""); sub(/;.*/,""); sub(/\r$/,""); print; exit}' "$headers")"
-  rm -f "$headers"
-  if [ -z "$cookie" ]; then
-    echo "[dsh-web] token exchange produced no session cookie" >&2
-    return 1
-  fi
-  # cookie 等价于会话凭证, 只留给本脚本的 Caddyfile 生成读取。
-  umask 077
-  printf '%s' "$cookie" > "$COOKIE_FILE"
-  echo "[dsh-web] session cookie minted from the login token" >&2
+  echo "[dsh-web] no session cookie from the container-adapt plugin within 120s" >&2
+  return 1
 }
 
 # --- Caddyfile 生成 -----------------------------------------------------------
@@ -175,7 +142,6 @@ generate_caddyfile() {
 	auto_https off
 }
 :3081 {
-	encode gzip
 	# index.html 是动态启动清单(内联 bundle URL 与 rev): 必须禁缓存。否则镜像
 	# 升级后浏览器会用旧前端调用已被移除的端点(旧 /api/events.mux ->
 	# 新 /api/remote.mux), 表现为页面能开但事件流全部 502。

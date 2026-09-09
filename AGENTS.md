@@ -16,16 +16,16 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 |---|---|
 | `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/Caddy/gh, source-built dsh (`/opt/deepseek-harness`), entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
-| `container/dsh-web.sh` | Stack supervisor: dsh web + session bootstrap (token → cookie) + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
+| `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + session-cookie wait + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
-| `container/dsh-client-patch.sh` | Idempotent client-side compatibility patch, installed as `/usr/local/bin/dsh-client-patch` |
+| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`) bootstraps the session cookie inside the dsh process, degrades "open settings document" to a `/download/settings.yaml` hint (no `xdg-open`), serves that download endpoint, and `scripts/patch-client.js` applies the browser-side `isLoopback` patch to the built bundle (build-time and before every start) |
 | `container/dsh-migrate-legacy.sh` | One-time startup migration: removes the legacy npm-installed dsh from old data volumes, installed as `/usr/local/bin/dsh-migrate-legacy` |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, design, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
 | `.github/workflows/image.yml` | CI: build + smoke test always; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags) |
 | `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`. It closes a tracker issue only once that tag's push has actually produced an `image.yml` run (a tag that never triggered the pipeline keeps the issue open with a hint) |
-| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → codex agent repair on drift → build + smoke on the repaired tree → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
+| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → codex agent (drift repair **and** an adaptation review on every run — upstream changes that make a hack redundant are deleted, see `docs/upstream-contract.md` § Simplification triggers) → build + smoke on the repaired tree → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
 | `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
 | `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for patch anchors, CLI flags, and the request fence before any image is built |
 | `prompts/release-prep.md` | System prompt for the headless codex agent that repairs contract drift in the `release-prep.yml` prep job |
@@ -50,14 +50,21 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    with user directories last, and the entrypoint runs `dsh-migrate-legacy` to remove the
    npm-installed dsh that pre-source-build images (v0.2.x) left inside old data volumes
    (idempotent, non-blocking). Toolchain copies seeded into volumes by even older images are
-   inert (shadowed by PATH) — manual cleanup commands ship in the release notes.
+   inert (shadowed by PATH) — manual cleanup commands ship in the release notes. The entrypoint
+   also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's OTel feedback uploader
+   (upstream default `FEEDBACK_ONLY` — exports the session prefix on explicit feedback) never
+   sends data out of the container unless the user opts in.
 3. Parses `--port <N>` / `--port=<N>` (default 3080) and rejects `0` and `3081`.
 4. `dsh-web` then brings up the whole service stack (it is the container's supervisor — see
    `container/dsh-web.sh`): it starts `dsh web` on `127.0.0.1:$DSH_WEB_PORT` (output mirrored into
-   the container log), exchanges the one-time `?token=...` login URL that `dsh web` prints for a
-   signed session cookie, generates the Caddyfile, and starts a **Caddy reverse proxy** on
-   `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback, injects the session cookie into every
-   proxied request, and gzip-compresses UI assets. Browsers never handle the token; authentication
+   the container log) mounted with the container-adapt plugin overlay
+   (`dsh --patch /opt/dsh-container-plugin/overlay.yml web ...`). The plugin bootstraps the
+   session cookie inside the dsh process (token → cookie, reusing a still-valid cookie) and
+   writes it to `/tmp/dsh-caddy/session-cookie`; `dsh-web` waits for the file, generates the
+   Caddyfile, and starts a **Caddy reverse proxy** on
+   `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback and injects the session cookie into
+   every proxied request (UI assets are gzip-compressed by dsh's own webserver; Caddy does not
+   re-compress). Browsers never handle the token; authentication
    is Caddy's job: `DSH_PROXY_USER` + `DSH_PROXY_PASSWORD` add basic auth (Caddyfile `basicauth`
    directive on the distro caddy 2.6 — renamed `basic_auth` upstream in 2.7; password bcrypt-hashed
    via `caddy hash-password`, fed over stdin). Setting only one auth variable is a startup error,
@@ -66,12 +73,12 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    at startup).
 5. `dsh-web` supervises `dsh web`: if it exits or crashes it is restarted automatically, and the
    session cookie survives restarts because dsh's signing secret is persisted in the volume (the
-   supervisor re-exchanges only when the old cookie is no longer accepted). The container has no
+   plugin reuses the old cookie while it stays valid). The container has no
    browser, so `dsh-web` appends `--no-open` unless the caller already passed it. Before every
-   `dsh web` launch, `dsh-web` runs `dsh-client-patch`, an idempotent compatibility patch for
-   upstream's browser-side loopback gate (settings/credentials) and a `crypto.randomUUID`
-   polyfill for plain-HTTP LAN use. Inside the container, `dsh-restart` can be used to restart
-   dsh web without restarting the whole container.
+   `dsh web` launch, `dsh-web` runs `node /opt/dsh-container-plugin/scripts/patch-client.js`, an
+   idempotent build-artifact patch for upstream's browser-side loopback gate (settings/credentials;
+   upstream's `trustedHosts` covers only the server-side fence). Inside the container,
+   `dsh-restart` can be used to restart dsh web without restarting the whole container.
 
 ### Hard constraints from upstream dsh (do not fight these)
 
@@ -84,16 +91,25 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   `agentPreset.*`, `host.pickDirectory`/`host.openPath`, `llm.discoverModels`) that upstream
   hard-pins to loopback via an empty trust list. Upstream also requires a browser session
   (one-time `?token=...` login URL → signed cookie backed by a signing secret persisted in the
-  volume). This image absorbs the flow: the supervisor exchanges the token at startup and Caddy
-  injects the cookie into every proxied request, so reaching `3081` means a fully authenticated
-  session — the **proxy is the security boundary**. Never present this as "secure by default";
+  volume). This image absorbs the flow: the container-adapt plugin exchanges the token at dsh
+  startup and Caddy injects the cookie into every proxied request, so reaching `3081` means a
+  fully authenticated session — the **proxy is the security boundary**. Never present this as
+  "secure by default";
   `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control, and dsh's own
   fence still guards direct `3080` access from same-network containers (that port is not
   published).
 - **Upstream's browser code still gates settings/credentials on `location.hostname`**, so the Caddy
-  header rewrite alone is not enough for the settings UI. `dsh-client-patch` makes the browser treat
-  a proxied remote session as loopback and injects a `crypto.randomUUID` polyfill; it is best-effort
-  and skips with a warning if upstream changes the bundle strings.
+  header rewrite alone is not enough for the settings UI. `scripts/patch-client.js` (in
+  `container/plugin/`) makes the browser treat a proxied remote session as loopback; it is
+  best-effort and skips with a warning if upstream changes the bundle strings. (No `index.html`
+  modification is needed — upstream ships its own insecure-context `randomUuid()` in
+  `@deepseek-ai/dsh-util-crypto`.)
+- **`settings/openSettingsDocument` has no headless fallback upstream** (unlike preset/workspace
+  opens, which check `canOpenPath`): the plugin `disabled`s the upstream `settings-controller` row
+  and replaces it via the constructor `internals` (openPath/openTextFile/canOpenPath), degrading
+  the button to a message pointing at `/download/settings.yaml`. That endpoint is registered via
+  `webServer.register` and applies `ctx.connection.requestRejection` (same Host/Origin + browser
+  session checks as the `/api` fence), so direct `3080` access without a cookie is rejected.
 - dsh's agent workspace is the process cwd — the entrypoint must `cd "$HOME"` (or, for tests,
   whichever directory it is configured to use).
 
@@ -155,7 +171,9 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
   new `dsh-v*` tag and closes it once the tag is mirrored here and its push actually triggered
   `image.yml`; on a new tag it also dispatches
   `.github/workflows/release-prep.yml`, which runs the contract check, repairs drift with a
-  headless codex agent (see `prompts/release-prep.md`), re-validates with build + smoke, pushes
+  headless codex agent and reviews the upstream diff for hack-simplification opportunities
+  (`docs/upstream-contract.md` § Simplification triggers; see `prompts/release-prep.md`),
+  re-validates with build + smoke, pushes
   the release tag, and confirms the push actually triggered `image.yml` (a fine-grained
   `RELEASE_PAT` needs the Workflows: read and write permission for that) — the manual `git tag`
   flow above remains the fallback. `.github/workflows/pat-trigger-probe.yml` can pre-verify the
@@ -176,7 +194,7 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
    `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` set, the same flow must return **401 without basic
    credentials and succeed with them**, and setting only one auth variable must exit nonzero.
    Always test inside the built image (the dev machine may lack `caddy`).
-6. If you touched the client patch, run the `dsh-client-patch` validate step and verify the served
-   index.html contains the `crypto.randomUUID` polyfill; for the connection bundle, extract the
+6. If you touched the client patch, run the `patch-client.js` validate step: extract the
    `/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=...` URL from the served index and
-   verify it contains the `isLoopback` patch.
+   verify it contains the `isLoopback` patch (there is no `index.html` modification anymore — no
+   polyfill is injected).

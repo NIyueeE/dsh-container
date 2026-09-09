@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # dsh-container 镜像冒烟测试: 对给定镜像做端到端验证, 覆盖 token 交换、
-# Caddy 头改写、会话注入、前端补丁、工具链分层布局、supervisor 重启与
-# basic auth 全链路。由 .github/workflows/image.yml 与 release-prep.yml
-# 共同调用; 本地可用 `just test` 运行。
+# Caddy 头改写、会话注入、前端补丁、遥测默认关闭、工具链分层布局、
+# supervisor 重启与 basic auth 全链路。由 .github/workflows/image.yml 与
+# release-prep.yml 共同调用; 本地可用 `just test` 运行。
 #
 # 用法: tests/smoke.sh <image> [--expect-dsh-version X.Y.Z]
 #   <image>                 已构建(load/存在本地)的镜像引用
@@ -112,8 +112,6 @@ index_html="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
   || die "GET / with session cookie failed"
 [[ "$index_html" == *'<title>DeepSeek Harness</title>'* ]] \
   || die "served index.html does not contain the expected title"
-[[ "$index_html" == *'dsh-container randomUUID polyfill'* ]] \
-  || die "served index.html lacks the crypto.randomUUID polyfill"
 
 # HEALTHCHECK 本身也要能被 Docker 判为 healthy。
 health=""
@@ -163,6 +161,12 @@ fi
 # Caddy 代理已在容器内运行(头改写链路)
 "$DOCKER" exec "$cid" sh -c 'pgrep -x caddy >/dev/null' \
   || die "caddy process not found inside the container"
+# 遥测默认关闭: entrypoint 必须把 DSH_TELEMETRY_MODE=DISABLED 传给 dsh web
+# (用户点反馈时不会把完整会话上下文发往 harness-telemetry.deepseeksvc.com)。
+dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -f "dsh web" | head -n1' || true)"
+[ -n "$dsh_pid" ] || die "dsh web process not found for telemetry env check"
+"$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < "/proc/$1/environ" | grep -Fx "DSH_TELEMETRY_MODE=DISABLED"' _ "$dsh_pid" \
+  || die "dsh web is not running with DSH_TELEMETRY_MODE=DISABLED"
 # dsh 必须解析到镜像内版本 (卷中旧 npm 副本若存在也不得遮蔽)。
 "$DOCKER" exec "$cid" sh -c '[ "$(command -v dsh)" = "/usr/local/bin/dsh" ]' \
   || die "dsh does not resolve to the image-provided /usr/local/bin/dsh"
@@ -178,6 +182,10 @@ fi
 "$DOCKER" exec "$cid" sh -c \
   '[ "$(stat -c %a /tmp/dsh-caddy/session-cookie)" = "600" ] && [ "$(stat -c %a /tmp/dsh-caddy/Caddyfile)" = "600" ]' \
   || die "session-cookie/Caddyfile permissions are not 0600"
+# 会话 cookie 由容器适配插件在 dsh 进程内自举(替代旧的 dsh-web token 交换):
+# 日志必须出现插件的自举记录。
+"$DOCKER" logs "$cid" 2>&1 | grep -F '[dsh-container-adapt]' \
+  || die "container-adapt plugin did not bootstrap the session cookie"
 "$DOCKER" logs "$cid" 2>&1 | grep -F 'WARNING: the proxy listens on 0.0.0.0:3081 with NO authentication' \
   || die "no-auth proxy did not print the exposure warning"
 
@@ -192,6 +200,27 @@ direct_api="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' -X PO
   http://127.0.0.1:3080/api/settings/describe -H 'content-type: application/json' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [ "$direct_api" = "401" ] || die "direct dsh (3080) /api without cookie returned $direct_api, expected 401"
+
+# 设置 > 打开配置文件(settings/openSettingsDocument)降级: 容器无桌面,
+# 不得再报 spawn xdg-open ENOENT —— 插件把"原生打开"降级为带下载链接的
+# 友好提示(消息出现在 UI toast)。经 3081 的请求由 Caddy 注入会话 cookie。
+open_doc="$(curl -s -X POST http://127.0.0.1:3081/api/settings/openSettingsDocument \
+  -H 'content-type: application/json' \
+  --data '{"type":"client-request","rpcId":"1","method":"settings/openSettingsDocument","payload":{"args":{}}}')"
+[[ "$open_doc" == *'/download/settings.yaml'* ]] \
+  || die "settings/openSettingsDocument did not degrade to the download endpoint: $open_doc"
+[[ "$open_doc" != *'xdg-open'* ]] \
+  || die "settings/openSettingsDocument still attempts xdg-open: $open_doc"
+# 下载端点: 经代理 200 + attachment; 3080 直连无 cookie 必须被拒(插件
+# 路由套用了上游 requestRejection 鉴权)。
+dl_headers="$(curl -s -D - -o /dev/null http://127.0.0.1:3081/download/settings.yaml)"
+printf '%s' "$dl_headers" | grep -qi 'content-disposition: attachment' \
+  || die "download endpoint lacks Content-Disposition: attachment"
+printf '%s' "$dl_headers" | grep -qi '^HTTP/1.1 200' \
+  || die "download endpoint did not return 200"
+dl_direct="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' \
+  http://127.0.0.1:3080/download/settings.yaml)"
+[ "$dl_direct" != "200" ] || die "download endpoint served on 3080 without a session cookie"
 
 # 前端兼容补丁: 新 upstream dsh 以 /plugins/??<id>/client.js&rev=...
 # 形式在首页注入 bundle URL, 提取 connection 的单包 URL 后验证补丁。
@@ -208,21 +237,16 @@ connection_bundle="$(curl -fsS "http://127.0.0.1:3081${connection_bundle_url}")"
 [[ "$connection_bundle" != *'isLoopback: transport?.ownsHost === true'* ]] \
   || die "old isLoopback gate still present in the served bundle"
 
-# 非回环 Host 头模拟远程浏览器: Caddy 改写后同样可用。注意 curl 在
-# 覆盖 Host 头时不会按 jar 匹配发送 cookie, 因此这里显式携带会话
-# cookie(真实远程浏览器按自己访问的 host 存取 cookie, 不受影响)。
-session_cookie="$(awk -F'\t' 'NF>=7 {print $6 "=" $7}' "$cookie_jar" | tail -n1)"
-[ -n "$session_cookie" ] || die "session cookie missing from the cookie jar"
-index_alt="$(curl -fsS -H "Cookie: $session_cookie" -H 'Host: dsh.test' http://127.0.0.1:3081/)" \
-  || die "GET / with Host: dsh.test failed"
-[[ "$index_alt" == *'dsh-container randomUUID polyfill'* ]] \
-  || die "Host: dsh.test index lacks the polyfill"
+# 非回环 Host 头模拟远程浏览器: Caddy 改写后同样可用。bundle 是静态资源,
+# 不经过 /api 围栏, 无需携带会话 cookie。
 bundle_alt="$(curl -fsS -H 'Host: dsh.test' "http://127.0.0.1:3081${connection_bundle_url}")" \
   || die "fetching the connection bundle with Host: dsh.test failed"
 [[ "$bundle_alt" == *'isLoopback: true, // dsh-container remote-proxy patch'* ]] \
   || die "Host: dsh.test bundle lacks the isLoopback patch"
-"$DOCKER" exec "$cid" sh -c 'command -v dsh-client-patch >/dev/null' \
-  || die "dsh-client-patch not installed"
+# 容器适配插件(container/plugin/)必须随镜像安装: 会话 cookie 自举由插件
+# 在 dsh 进程内完成, 浏览器端补丁脚本也在插件包内。
+"$DOCKER" exec "$cid" sh -c 'test -f /opt/dsh-container-plugin/index.js && test -f /opt/dsh-container-plugin/overlay.yml && test -f /opt/dsh-container-plugin/scripts/patch-client.js' \
+  || die "container-adapt plugin files missing in the image"
 
 # dsh web 守护/重启: dsh-restart 后由 dsh-web 重新拉起, 新进程会打印
 # 新 token; 等新 token 出现后重新登录, 再验证页面与补丁仍然可用。
@@ -250,6 +274,10 @@ for _ in $(seq 1 15); do
 done
 [ "$survive" = "200" ] \
   || die "proxied / after dsh-restart returned $survive, expected 200 (session did not survive restart)"
+# 幂等: 重启后的新 dsh web 进程里, 插件必须复用仍有效的旧 cookie
+# (签名密钥持久化在卷), 而不是重新换取 —— 日志出现 reusing 即证明。
+"$DOCKER" logs "$cid" 2>&1 | grep -F 'reusing the still-valid session cookie' \
+  || die "container-adapt plugin did not reuse the session cookie after dsh-restart"
 # 信息性: 重启前的会话 cookie 是否仍被接受(不作为判定条件)。
 old_cookie_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
 if [ "$old_cookie_code" != "200" ]; then
@@ -260,8 +288,6 @@ index_restart="$(curl -fsS -b "$cookie_relogin" http://127.0.0.1:3081/)" \
   || die "GET / after restart failed"
 [[ "$index_restart" == *'<title>DeepSeek Harness</title>'* ]] \
   || die "served index.html after restart lacks the expected title"
-[[ "$index_restart" == *'dsh-container randomUUID polyfill'* ]] \
-  || die "served index.html after restart lacks the polyfill"
 bundle_restart_url="$(grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' \
   <<<"$index_restart" | head -n1 || true)"
 [ -n "$bundle_restart_url" ] \

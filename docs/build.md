@@ -48,10 +48,10 @@ image-owned binaries and they can never shadow them — but waste space; remove 
 reclaim `~/.rustup`'s ~1GB. The commands ship in each release note (see also
 [releasing.md](releasing.md)).
 
-The image's `dsh-client-patch` compatibility layer is intentionally applied at runtime before every
-`dsh web` start rather than baked into the user layer: the patch target lives in the system layer
-and resets on image upgrades, so it must be reapplied on every boot. It skips gracefully if
-upstream changes the bundle strings.
+The image's browser-side compatibility patch (`container/plugin/scripts/patch-client.js`) is
+intentionally applied at build time and again before every `dsh web` start rather than baked into
+the user layer: the patch target lives in the system layer and resets on image upgrades, so it must
+be reapplied on every boot. It skips gracefully if upstream changes the bundle strings.
 
 ## Example
 
