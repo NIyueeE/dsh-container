@@ -90,8 +90,9 @@ trap cleanup TERM INT EXIT
 
 # --- dsh web 启动 -------------------------------------------------------------
 # 输出重定向到日志文件再 tail 镜像到 stdout: 容器日志仍能看到 dsh web 的
-# 全部输出(含一次性登录 token 与报错)。启动命令在 `web` 之前挂载容器适配
-# 插件 overlay(--patch 是 launcher flag), 会话 cookie 自举由插件完成。
+# 全部输出(含一次性登录 token 与报错)。启动命令用 launcher 根 flag 组合
+# `--patch <overlay> --profile web`(注意: `web` 别名会拒绝父级 --patch,
+# 见上游 args.ts rejectParentOptions —— 必须用 --profile web 形式)。
 start_dsh_web() {
   : > "$LOG"
   # 每次启动前重打浏览器端兼容补丁(幂等, 已打过则跳过): 构建产物在系统层
@@ -100,7 +101,7 @@ start_dsh_web() {
     node /opt/dsh-container-plugin/scripts/patch-client.js \
       || echo "[dsh-web] patch-client failed; continuing" >&2
   fi
-  dsh --patch /opt/dsh-container-plugin/overlay.yml web "${WEB_ARGS[@]}" >>"$LOG" 2>&1 &
+  dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web "${WEB_ARGS[@]}" >>"$LOG" 2>&1 &
   CHILD_PID=$!
   echo "$CHILD_PID" > "$PIDFILE"
   echo "[dsh-web] dsh web started (pid $CHILD_PID)" >&2

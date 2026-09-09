@@ -26,8 +26,9 @@ affected enforcement point in `container/*.sh`.
 | 2 | Header-based `/api` trust fence (checks `Host`/loopback/`trustedHosts`, `Origin`, `sec-fetch-site`) | `packages/client/connection/src/api-request-trust.ts` | The Caddy proxy rewrites `Host`/`Origin` to loopback and is the only exposure path; the whole remote-access design assumes the fence inspects headers, never TCP source | `contract.sh server.request_fence` + smoke 200/401 assertions on `/api/settings/describe` |
 | 3 | `dsh web` accepts `--port` | `apps/cli` arg pass-through (spec in `apps/cli/tests/args.spec.ts`) | `container/entrypoint.sh` parses `--port` and forwards it; upstream rejects `--host 0.0.0.0` by design, which the image works with (loopback + proxy) | `contract.sh cli.port` |
 | 4 | `dsh web` accepts `--no-open` | same | `container/dsh-web.sh` appends `--no-open` (the container has no browser) | `contract.sh cli.no-open` |
-| 5 | `Connection.authenticatedUrl()` (process launch token) | `packages/client/connection/src/rpc.ts` | The container-adapt plugin (`container/plugin/`) exchanges the token for the session cookie inside the dsh process; `ctx.webServer.port` is the other dependency | `contract.sh plugin.authenticated_url` + smoke cookie-bootstrap assertions |
-| 6 | `SettingsController` constructor `internals` (`openPath`/`openTextFile`/`canOpenPath`) + `webServer.register(route)` | `packages/api/settings-controller/src/index.ts` + `packages/host/webserver/src/index.ts` | The plugin replaces the `settings-controller` row (overlay `disabled`): internals injection degrades "open settings document" (no `xdg-open` in a headless container) and `webServer.register` serves the `/download/settings.yaml` endpoint | `contract.sh plugin.settings_internals` + `plugin.web_route` + smoke degrade/download assertions |
+| 5 | `dsh` launcher accepts root `--patch <file>` (used as `--patch <overlay> --profile web`; the `web` alias rejects parent flags by design) | `apps/cli/src/args.ts` | `container/dsh-web.sh` mounts the plugin overlay with the root flag combination — the `web` alias would be rejected by `rejectParentOptions` | `contract.sh cli.patch` |
+| 6 | `Connection.authenticatedUrl()` (process launch token) | `packages/client/connection/src/rpc.ts` | The container-adapt plugin (`container/plugin/`) exchanges the token for the session cookie inside the dsh process; `ctx.webServer.port` is the other dependency | `contract.sh plugin.authenticated_url` + smoke cookie-bootstrap assertions |
+| 7 | `SettingsController` constructor `internals` (`openPath`/`openTextFile`/`canOpenPath`) + `webServer.register(route)` | `packages/api/settings-controller/src/index.ts` + `packages/host/webserver/src/index.ts` | The plugin replaces the `settings-controller` row (overlay `disabled`): internals injection degrades "open settings document" (no `xdg-open` in a headless container) and `webServer.register` serves the `/download/settings.yaml` endpoint | `contract.sh plugin.settings_internals` + `plugin.web_route` + smoke degrade/download assertions |
 
 Notes:
 
@@ -50,7 +51,8 @@ Notes:
 ## Behavioral contract (verified by `tests/smoke.sh`, not statically checkable)
 
 1. `dsh web` prints a one-time `?token=...` login URL. The container-adapt plugin (mounted via
-   `dsh --patch /opt/dsh-container-plugin/overlay.yml`) exchanges it inside the dsh process and
+   `dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web`) exchanges it inside the
+   dsh process and
    writes the signed session cookie to `/tmp/dsh-caddy/session-cookie` (reusing a still-valid
    cookie across restarts; the signing secret persists in the volume).
 2. With the cookie injected by Caddy, `/` and privileged methods return `200` through `:3081`;
@@ -126,7 +128,7 @@ When `contract.sh` reports drift for a new upstream tag:
 2. If it is item 1: derive the new built-form string and update the candidate list in
    `container/plugin/scripts/patch-client.js` (keep old candidates if they are merely extended, and
    keep the header note about the verified upstream revision).
-3. If it is item 2–6: do **not** improvise a workaround; report the drift for human review — these
+3. If it is item 2–7: do **not** improvise a workaround; report the drift for human review — these
    define the image's security posture or the plugin's upstream API surface.
 4. Update this document and `tests/contract.sh` so both describe the new reality.
 5. `tests/smoke.sh` remains the final gate: if behavior broke in a way the static checks cannot

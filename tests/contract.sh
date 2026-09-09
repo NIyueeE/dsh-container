@@ -125,8 +125,10 @@ else
   MISSED+=("server.request_fence"); miss=$((miss + 1))
 fi
 
-# critical: dsh web CLI 契约 —— entrypoint 解析 --port, dsh-web 追加 --no-open。
-for flag in -- --no-open --port; do
+# critical: dsh web CLI 契约 —— entrypoint 解析 --port, dsh-web 追加 --no-open,
+# 并挂载插件 overlay(--patch 是 launcher 根 flag, 与 --profile web 组合使用;
+# 注意上游的 web 别名会 rejectParentOptions 拒绝父级 --patch)。
+for flag in -- --no-open --port --patch; do
   [ "$flag" = "--" ] && continue
   id="cli.${flag#--}"
   if found_in "." "$flag"; then

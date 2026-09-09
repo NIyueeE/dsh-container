@@ -58,8 +58,10 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 4. `dsh-web` then brings up the whole service stack (it is the container's supervisor — see
    `container/dsh-web.sh`): it starts `dsh web` on `127.0.0.1:$DSH_WEB_PORT` (output mirrored into
    the container log) mounted with the container-adapt plugin overlay
-   (`dsh --patch /opt/dsh-container-plugin/overlay.yml web ...`). The plugin bootstraps the
-   session cookie inside the dsh process (token → cookie, reusing a still-valid cookie) and
+   (`dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web ...` — the `web` alias
+   rejects parent flags upstream, so the root `--profile web` form is required). The plugin
+   bootstraps the session cookie inside the dsh process (token → cookie, reusing a still-valid
+   cookie) and
    writes it to `/tmp/dsh-caddy/session-cookie`; `dsh-web` waits for the file, generates the
    Caddyfile, and starts a **Caddy reverse proxy** on
    `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback and injects the session cookie into

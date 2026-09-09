@@ -23,8 +23,9 @@
 #     进程 cwd 直接使用 $HOME, 不预创建固定工作区子目录
 #   - dsh web 由 dsh-web 守护脚本托管, 崩溃/退出后自动重启;
 #     容器内可用 dsh-restart 手动重启 dsh web(无需重启整个容器)
-#   - dsh-web 以 `dsh --patch /opt/dsh-container-plugin/overlay.yml web ...`
-#     启动 dsh, 挂载容器适配插件(container/plugin/, 镜像所有, 随镜像升级):
+#   - dsh-web 以 `dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web ...`
+#     启动 dsh(注意 web 别名会拒绝父级 --patch, 必须用 --profile web 形式),
+#     挂载容器适配插件(container/plugin/, 镜像所有, 随镜像升级):
 #     会话 cookie 自举在 dsh 进程内完成(token → cookie, 复用仍有效的旧
 #     cookie), 写出 /tmp/dsh-caddy/session-cookie 供 Caddyfile 注入;
 #     设置 > 打开配置文件降级为 /download/settings.yaml 下载端点(容器无
