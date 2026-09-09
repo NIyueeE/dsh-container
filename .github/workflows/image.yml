@@ -90,34 +90,6 @@ jobs:
           EOF
           node container/plugin/scripts/patch-client.js --dsh-root "$tmp/dsh" >/dev/null 2>&1
 
-      - name: legacy npm dsh migration is idempotent and preserves unrelated packages
-        run: |
-          set -euo pipefail
-          tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
-          home="$tmp/home"
-          mkdir -p \
-            "$home/.local/lib/node_modules/@deepseek-ai/dsh" \
-            "$home/.local/lib/node_modules/@other/keepme" \
-            "$home/.local/bin"
-          printf 'legacy' > "$home/.local/lib/node_modules/@deepseek-ai/dsh/package.json"
-          printf '#!/bin/sh\necho 9.9.9-legacy\n' > "$home/.local/bin/dsh"
-          chmod +x "$home/.local/bin/dsh"
-          HOME="$home" bash container/dsh-migrate-legacy.sh
-          test ! -e "$home/.local/lib/node_modules/@deepseek-ai/dsh" \
-            || { echo "legacy package was not removed" >&2; exit 1; }
-          test ! -e "$home/.local/bin/dsh" \
-            || { echo "legacy bin was not removed" >&2; exit 1; }
-          test -e "$home/.local/lib/node_modules/@other/keepme" \
-            || { echo "unrelated global npm package was removed" >&2; exit 1; }
-          # 幂等: 再跑一次仍是成功 no-op
-          HOME="$home" bash container/dsh-migrate-legacy.sh
-          # 悬空符号链接也要清掉
-          ln -s /nonexistent/dsh "$home/.local/bin/dsh"
-          HOME="$home" bash container/dsh-migrate-legacy.sh
-          test ! -e "$home/.local/bin/dsh" && test ! -L "$home/.local/bin/dsh" \
-            || { echo "dangling legacy symlink was not removed" >&2; exit 1; }
-
       - name: Validate compose example
         run: docker compose -f examples/compose.yaml config --quiet
 

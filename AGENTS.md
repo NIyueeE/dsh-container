@@ -19,7 +19,6 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + session-cookie wait + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
 | `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`) bootstraps the session cookie inside the dsh process, degrades "open settings document" to a `/download/settings.yaml` hint (no `xdg-open`), serves that download endpoint, and `scripts/patch-client.js` applies the browser-side `isLoopback` patch to the built bundle (build-time and before every start) |
-| `container/dsh-migrate-legacy.sh` | One-time startup migration: removes the legacy npm-installed dsh from old data volumes, installed as `/usr/local/bin/dsh-migrate-legacy` |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, design, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -47,10 +46,9 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    live under `$HOME` (`CARGO_HOME=~/.cargo`, uv data in `~/.local/share/uv`,
    `PNPM_HOME=~/.local/share/pnpm`). Tool upgrades happen by image upgrade; a volume can never
    shadow image-provided tools. PATH is image-first (`/usr/local/bin` before `$HOME/.local/bin`)
-   with user directories last, and the entrypoint runs `dsh-migrate-legacy` to remove the
-   npm-installed dsh that pre-source-build images (v0.2.x) left inside old data volumes
-   (idempotent, non-blocking). Toolchain copies seeded into volumes by even older images are
-   inert (shadowed by PATH) — manual cleanup commands ship in the release notes. The entrypoint
+   with user directories last. Toolchain copies and the npm-installed dsh that pre-source-build
+   images (v0.2.x) seeded into volumes are inert (shadowed by PATH); manual cleanup commands
+   ship in the release notes. The entrypoint
    also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's OTel feedback uploader
    (upstream default `FEEDBACK_ONLY` — exports the session prefix on explicit feedback) never
    sends data out of the container unless the user opts in.

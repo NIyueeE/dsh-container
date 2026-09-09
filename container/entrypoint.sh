@@ -10,10 +10,9 @@
 #      最前), 卷上遗留的旧副本遮蔽不了镜像内版本(手动清理见 release notes)。
 #   3. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081), 经
 #      DSH_WEB_PORT 传给 dsh-web(内部管道变量, 非用户配置面)。
-#   4. 幂等清理旧版(v0.2.x)镜像遗留在卷中的 npm 版 dsh 后, exec dsh-web ——
-#      dsh web 的启动/监督、会话 cookie 的就绪等待与 Caddy 反代全部由
-#      dsh-web 托管(会话 cookie 自举由容器适配插件在 dsh 进程内完成,
-#      见 container/plugin/ 与 container/dsh-web.sh)。
+#   4. exec dsh-web —— dsh web 的启动/监督、会话 cookie 的就绪等待与 Caddy
+#      反代全部由 dsh-web 托管(会话 cookie 自举由容器适配插件在 dsh 进程内
+#      完成, 见 container/plugin/ 与 container/dsh-web.sh)。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
 # 遥测默认关闭: dsh 的反馈 OTel 上报(默认 FEEDBACK_ONLY 时, 用户点反馈会把
 # 完整会话上下文发往 harness-telemetry.deepseeksvc.com)在本镜像中默认
@@ -52,13 +51,6 @@ mkdir -p "$HOME/.cargo/bin" "$HOME/.local/bin" "$PNPM_HOME"
 # (dsh/uv/pnpm/cargo), 必须压过用户层目录; 用户自装工具垫底。
 export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 cd "$HOME"
-
-# 迁移: 旧镜像 (v0.2.x) 曾把 dsh 作为 npm 全局包装进持久化用户层
-# (~/.local), 旧数据卷会遮蔽镜像内新版本; 启动时幂等清除旧副本
-# (失败仅告警, 不阻塞启动), 详见 container/dsh-migrate-legacy.sh。
-if ! dsh-migrate-legacy; then
-  echo "[entrypoint] legacy dsh migration failed; continuing" >&2
-fi
 
 # 从附加参数中提取 --port <N> / --port=<N>, 作为 dsh web 的内部监听端口
 # (对外端口固定 3081, 由 Caddy 反代, 不受影响)。

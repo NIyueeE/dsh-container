@@ -10,7 +10,6 @@ container/
   dsh-web.sh             # dsh web supervisor: auto-restart dsh web, installed as /usr/local/bin/dsh-web
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
   plugin/                # container-adapt plugin: cookie bootstrap + settings-doc download endpoint + patch-client.js, at /opt/dsh-container-plugin
-  dsh-migrate-legacy.sh  # removes legacy npm-installed dsh from old data volumes on boot
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)
@@ -25,7 +24,6 @@ docs/
   build.md               # build configuration & version pinning
   releasing.md           # image tags, publishing & release automation
   upstream-contract.md   # the upstream contract (machine-checked by tests/contract.sh)
-  design.md              # design references
   development.md         # this file
 justfile                 # build / debug / restart / test / contract recipes
 .github/

@@ -197,15 +197,14 @@ RUN set -eux; \
     rustup --version
 
 # ---------------------------------------------------------------------------
-# 7. 入口、dsh web 守护/重启、历史数据迁移与容器适配插件
+# 7. 入口、dsh web 守护/重启与容器适配插件
 #    (插件 = 全部进程内适配逻辑的唯一维护点, 见 container/plugin/)
 # ---------------------------------------------------------------------------
 COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-web.sh /usr/local/bin/dsh-web
 COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
-COPY container/dsh-migrate-legacy.sh /usr/local/bin/dsh-migrate-legacy
 COPY container/plugin /opt/dsh-container-plugin
-RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/dsh-migrate-legacy
+RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart
 
 # ---------------------------------------------------------------------------
 # 8. 拉取 dsh 官方源码并切换到指定 tag(默认 latest = 官方最新 tag)
