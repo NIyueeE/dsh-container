@@ -163,7 +163,9 @@ fi
   || die "caddy process not found inside the container"
 # 遥测默认关闭: entrypoint 必须把 DSH_TELEMETRY_MODE=DISABLED 传给 dsh web
 # (用户点反馈时不会把完整会话上下文发往 harness-telemetry.deepseeksvc.com)。
-dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -f "dsh web" | head -n1' || true)"
+# dsh web 是容器内唯一的常驻 node 进程(启动命令为 --profile web 形式,
+# 不能按 "dsh web" 字样匹配; pgrep -f 会匹配到 exec 的 sh 自身)。
+dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
 [ -n "$dsh_pid" ] || die "dsh web process not found for telemetry env check"
 "$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < "/proc/$1/environ" | grep -Fx "DSH_TELEMETRY_MODE=DISABLED"' _ "$dsh_pid" \
   || die "dsh web is not running with DSH_TELEMETRY_MODE=DISABLED"
