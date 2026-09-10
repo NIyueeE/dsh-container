@@ -71,9 +71,12 @@ fi
 pass=0; miss=0; warn=0
 declare -a MISSED=()
 
-# 在指定相对路径下递归找固定字符串(grep -F, 跳过 node_modules/.git)
+# 在指定相对路径下递归找固定字符串(grep -F, 跳过 node_modules/.git)。
+# 排除文档类文件: README/文档里出现某字符串不算机器可核对的锚点, 否则
+# flag 被从代码里删掉但 README 还提及时会 false-PASS。
 found_in() { # <rel-root> <fixed-string> -> 0/1
   grep -rIsF --exclude-dir=node_modules --exclude-dir=.git \
+    --exclude='*.md' --exclude='*.i18n.yaml' \
     -e "$2" "$ROOT/$1" >/dev/null 2>&1
 }
 

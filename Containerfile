@@ -212,8 +212,9 @@ RUN set -eux; \
 COPY container/entrypoint.sh /usr/local/bin/entrypoint
 COPY container/dsh-web.sh /usr/local/bin/dsh-web
 COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
+COPY container/healthcheck.sh /usr/local/bin/healthcheck
 COPY container/plugin /opt/dsh-container-plugin
-RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart
+RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/healthcheck
 
 # ---------------------------------------------------------------------------
 # 8. 拉取 dsh 官方源码并切换到指定 tag(默认 latest = 官方最新 tag)
@@ -278,11 +279,12 @@ RUN apt-get update
 WORKDIR /home/dsh
 EXPOSE 3081
 
-# Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:3080;
+# Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:$DSH_WEB_PORT;
 # healthcheck 同时要求 dsh 和代理可响应。dsh web 对无会话的根请求返回 401,
-# 因此这里用 curl 的退出码(连接成功)而不是 HTTP 200 作为存活判据。
+# 因此存活判据是 curl 退出码(连接成功)而不是 HTTP 200。内部端口由脚本从
+# pid1 环境的 DSH_WEB_PORT 读取(entrypoint 解析 --port 后写入), 兜底 3080。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -sS -o /dev/null http://127.0.0.1:3080/ && curl -sS -o /dev/null http://127.0.0.1:3081/ || exit 1
+    CMD /usr/local/bin/healthcheck
 
 USER dsh
 ENTRYPOINT ["entrypoint"]

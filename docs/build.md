@@ -4,8 +4,10 @@ The base image is pinned by default, and the dsh source tag / Rust toolchain / u
 pinned with `--build-arg`. uv is installed by the official standalone installer script (the same
 pattern as rustup; `UV_VERSION` pins it, `latest` resolves the newest release at build time); pnpm
 is installed at the version required by the checked-out dsh tag (read from its `packageManager`
-field). All three are image-owned real binaries in the read-only system layer (`/usr/local/bin`,
-`/opt/rust`), so tool versions are a property of the image tag, not of the volume. Caddy/podman/gh
+field). All three are image-owned real binaries in the system layer (`/usr/local/bin`,
+`/opt/rust`; the one writable exception is rustup's home `/opt/rust/rustup`, which rustup must
+write at runtime — it is built `dsh`-owned and the entrypoint repairs its ownership on every
+start), so tool versions are a property of the image tag, not of the volume. Caddy/podman/gh
 come from apt; dsh is built from the official repository with its `pnpm-lock.yaml`. Default builds
 are therefore reproducible at the level of the upstream lockfile; pin `DSH_TAG` for a fully pinned
 dsh version.
@@ -27,9 +29,9 @@ entrypoint), the volume owns the state.
 
 - Image-owned: uv/uvx and the pnpm binary in `/usr/local/bin`, the Rust toolchain tree in
   `/opt/rust` (rustup proxies symlinked into `/usr/local/bin`), dsh in `/opt/deepseek-harness`.
-  Tool upgrades happen by image upgrade — `uv self update` / `rustup self update` cannot write
-  the root-owned system layer, and a `rustup update <channel>` at runtime would only write the
-  container layer (lost on recreation), so runtime updates are not a supported upgrade path.
+  Tool upgrades happen by image upgrade — `uv self update` cannot write the root-owned
+  `/usr/local/bin`, and a runtime `rustup update` would only write the container layer (lost on
+  recreation), so runtime updates are not a supported upgrade path.
 - Volume-owned (writable, persisted): `~/.cargo` (cargo registry/cache and `cargo install`
   binaries), uv data in `~/.local/share/uv` and `~/.cache/uv`, pnpm store and user global
   packages in `~/.local/share/pnpm` (`PNPM_HOME`), anything the user puts in `~/.local/bin`.

@@ -40,9 +40,6 @@ or these paths were hit). Focus your review on those paths and the § Simplifica
    without dependency/script changes, tests) — or there is no genuine simplification opportunity —
    reply with exactly `NO_ACTION_NEEDED` and stop. Do not write a full report, do not make
    cosmetic edits.
-
-## Rules
-
 1. **Minimal repair; prefer deletion over patching.** When a Simplification trigger fires,
    deleting the hack (and its contract item / smoke assertions / docs) is the preferred change.
    Otherwise the typical fix is updating the candidate strings in

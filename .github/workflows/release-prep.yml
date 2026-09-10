@@ -191,7 +191,8 @@ jobs:
               "https://api.github.com/repos/$UPSTREAM_REPO/commits/$NEW_TAG" \
               > /tmp/upstream-diff.json
           fi
-          echo "files_source=$files_source" >> "$GITHUB_OUTPUT"
+          # 分诊步骤自行按文件存在性选择清单来源, 这里只记录来源供日志参考
+          echo "files_source=$files_source"
           echo "status=$(jq -r '.status // empty' /tmp/upstream-diff.json 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
       - name: Diff triage (code-level agent admission gate)
@@ -260,10 +261,14 @@ jobs:
           NEW_TAG: ${{ steps.resolve.outputs.new_tag }}
           HITS: ${{ steps.triage.outputs.surface_hits }}
         run: |
+          # HITS 来自上游 git diff 的文件路径(不受信数据, DSH_UPSTREAM_REPO
+          # 可被变量覆盖): 先做字符白名单清洗, 防止反引号/]( 等跳出行内
+          # 代码注入 markdown/HTML 到公开 issue。
+          hits_safe="$(printf '%s' "$HITS" | sed 's/[^A-Za-z0-9_./,-]/_/g')"
           gh issue comment "$ISSUE" --body \
             "## Diff triage (code-level) — agent not admitted for \`$NEW_TAG\`
 
-            Contract verdict: \`${{ steps.contract.outputs.verdict }}\`; the upstream diff does not touch the adaptation surface (hits: \`${HITS}\`). No agent review needed; verify runs on the default branch." || true
+            Contract verdict: \`${{ steps.contract.outputs.verdict }}\`; the upstream diff does not touch the adaptation surface (hits: \`${hits_safe}\`). No agent review needed; verify runs on the default branch." || true
 
   prep:
     name: Agent drift repair + adaptation review (dsh)
@@ -313,7 +318,7 @@ jobs:
           OLD_TAG: ${{ needs.contract.outputs.old_tag }}
         run: |
           set -euo pipefail
-          # 容器里没有 gh CLI, 直接用 curl 调 REST API(公开仓库, token 提额)
+          # 镜像自带 gh, 但这里 curl 直调 REST API 即可(公开仓库, token 提额)
           if ! curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "https://api.github.com/repos/$UPSTREAM_REPO/compare/${OLD_TAG}...${NEW_TAG}" \
@@ -326,12 +331,12 @@ jobs:
           git clone --quiet --depth 1 --branch "$NEW_TAG" \
             "https://github.com/$UPSTREAM_REPO.git" /tmp/upstream
           # 祖先信号: compare status=behind 表示 NEW_TAG 落后于已有发布
-          # (误派发旧版本), 传给 agent 作为早退指引
+          # (误派发旧版本)。triage 门已把误派发挡在 agent 入场之前, 这里
+          # 仍导出与 prompt 一致的大写名, 作为 agent 的早退指引。
           status="$(jq -r '.status // empty' /tmp/upstream-diff.json 2>/dev/null || true)"
-          {
-            echo "is_ancestor=$([ "$status" = behind ] && echo yes || echo no)"
-          } >> "$GITHUB_ENV"
-          echo "context ready: /tmp/upstream-diff.json, /tmp/upstream (is_ancestor=${is_ancestor:-no})"
+          ancestor="$([ "$status" = behind ] && echo yes || echo no)"
+          echo "IS_ANCESTOR=$ancestor" >> "$GITHUB_ENV"
+          echo "context ready: /tmp/upstream-diff.json, /tmp/upstream (is_ancestor=$ancestor)"
 
       - name: Write dsh settings
         env:
@@ -370,6 +375,11 @@ jobs:
           # workspace 属主是 runner uid, 容器内以 root 跑 —— git 会报
           # dubious ownership; 全局 safe.directory 注入(与 commit 步骤同法)
           printf '[safe]\n\tdirectory = %s\n' "$GITHUB_WORKSPACE" > "$GIT_CONFIG_GLOBAL"
+          # 清掉 actions/checkout 注入到 .git/config 的 GITHUB_TOKEN 凭据
+          # (http.https://github.com/.extraheader): agent 的 bash 工具能读
+          # .git/config, token 不得留在其视野内; 分支推送改走独立 remote
+          # (见 Commit repair branch 步骤)。
+          git config --unset-all 'http.https://github.com/.extraheader' || true
 
       - name: Run dsh agent (drift repair + adaptation review)
         env:
@@ -384,18 +394,34 @@ jobs:
           [ -s /tmp/agent-report.md ] \
             || { echo "(agent produced no final message; see reasoning log)" > /tmp/agent-report.md; }
 
+      - name: Redact secrets from agent reasoning log
+        if: always()
+        env:
+          TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
+          TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
+        run: |
+          set -euo pipefail
+          [ -f /tmp/agent-reasoning.log ] || exit 0
+          for v in "$TERNARYBIT_API_KEY" "$TERNARYBIT_URL"; do
+            [ -n "$v" ] || continue
+            esc="$(printf '%s' "$v" | sed 's/[^[:alnum:]]/\\&/g')"
+            sed -i "s/$esc/[REDACTED]/g" /tmp/agent-reasoning.log || true
+          done
+
       - name: Upload agent reasoning log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: agent-reasoning
           path: /tmp/agent-reasoning.log
+          retention-days: 7
           if-no-files-found: ignore
 
       - name: Commit repair branch
         id: commit
         env:
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # 容器 job 经典坑: workspace 文件属主是宿主 runner 的 UID, 容器内
@@ -408,16 +434,22 @@ jobs:
           printf '[safe]\n\tdirectory = %s\n' "$GITHUB_WORKSPACE" > "$GIT_CONFIG_GLOBAL"
           cd "${GITHUB_WORKSPACE:-$PWD}"
           git rev-parse --is-inside-work-tree
-          if git diff --quiet; then
+          # 变更判定用 porcelain(覆盖已暂存与未跟踪 ??): git diff 只看"已
+          # 跟踪且未暂存"的差异 —— agent 若自行 git add 或新建文件, diff
+          # 判不出有改动, 修复会被静默丢弃(verify 跑在未修复的树上)。
+          git reset --quiet
+          if [ -z "$(git status --porcelain)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "branch=" >> "$GITHUB_OUTPUT"
             echo "agent made no changes; verify will run on the default branch"
             exit 0
           fi
-          # 安全: agent 修改路径白名单 —— .github/workflows 是本流水线的闸门
-          # 本体, agent(受提示注入影响的 LLM)永远不得改动; 白名单之外的
-          # 路径一律 fail loudly 而不是默默提交进 main。
-          bad="$(git diff --name-only | grep -vE '^(container/|docs/|tests/|prompts/|Containerfile)' || true)"
+          # 安全: agent 修改路径白名单 —— .github/ 是本流水线的闸门本体,
+          # agent(受提示注入影响的 LLM)永远不得改动; 白名单之外一律 fail
+          # loudly。对 porcelain 全部条目(含 ?? 未跟踪与重命名)做路径校验。
+          bad="$(git -c status.renames=false status --porcelain -z \
+            | tr '\0' '\n' | sed -E 's/^.. //' \
+            | grep -vE '^(container/|docs/|tests/|prompts/|Containerfile)' || true)"
           if [ -n "$bad" ]; then
             echo "agent modified files outside the allowlist:" >&2
             echo "$bad" >&2
@@ -429,7 +461,11 @@ jobs:
           git -c user.name="dsh-container release agent" \
               -c user.email="actions@github.com" \
               commit -m "fix: adapt to upstream $NEW_TAG (agent-prepared)"
-          git push origin "$branch"
+          # 推送走独立 remote(x-access-token): checkout 注入的 extraheader
+          # 已在 Write dsh settings 步骤清除, agent 全程接触不到凭据。
+          git remote add push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" 2>/dev/null \
+            || git remote set-url push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git push push "HEAD:$branch"
           {
             echo "changed=true"
             echo "branch=$branch"
@@ -477,20 +513,14 @@ jobs:
           fi
           [ "$leak" = 1 ] \
             && echo "warning: secret-like patterns were redacted from the agent report" >&2 || true
-          # 容器里没有 gh: curl 发评论, node 做 JSON 转义(报告是任意
-          # markdown; 镜像自带 node, 没有 python3)。报告是锦上添花 ——
-          # 修复分支已推送, 此步失败不应让一次成功的 prep 整体失败, 故容错降级。
-          if command -v node >/dev/null 2>&1; then
-            body_json="$(node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.stringify({body:d})))' \
-              < /tmp/issue-comment.md)"
-            curl -fsSL -X POST \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE/comments" \
-              -d "$body_json" > /dev/null \
+          # 镜像自带 gh: 直接发评论(body-file 原样 markdown, 无需转义)。
+          # 报告是锦上添花 —— 修复分支已推送, 此步失败不应让一次成功的
+          # prep 整体失败, 故容错降级。
+          if command -v gh >/dev/null 2>&1; then
+            gh issue comment "$ISSUE" --body-file /tmp/issue-comment.md \
               || echo "warning: failed to post the agent report to issue #$ISSUE" >&2
           else
-            echo "warning: node unavailable; agent report not posted to issue #$ISSUE" >&2
+            echo "warning: gh unavailable; agent report not posted to issue #$ISSUE" >&2
           fi
 
   verify:
@@ -537,9 +567,19 @@ jobs:
             BUILD_VERSION=latest
             DSH_TAG=${{ needs.contract.outputs.new_tag }}
 
+      - name: Fetch main's smoke gate
+        # agent 可写 tests/(更新协议要求它同步契约与冒烟), 但门禁必须用
+        # main 上的副本执行 —— 否则被注入的 agent 削弱 smoke.sh 后, verify
+        # 会拿削弱的门禁自证通过。干净路径(无 agent)下与工作树内容相同。
+        run: |
+          set -euo pipefail
+          git fetch --depth 1 origin main
+          git show origin/main:tests/smoke.sh > /tmp/smoke-main.sh
+          chmod +x /tmp/smoke-main.sh
+
       - name: Smoke test
         run: |
-          tests/smoke.sh "${IMAGE_NAME}:prep-${{ github.run_id }}" \
+          /tmp/smoke-main.sh "${IMAGE_NAME}:prep-${{ github.run_id }}" \
             --expect-dsh-version "${NEW_TAG#dsh-v}"
         env:
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
@@ -686,7 +726,9 @@ jobs:
             || true
 
       - name: 'Fallback: manual release instructions'
-        if: env.HAS_PAT != 'true'
+        # 拒绝降级时不得发"ready to release"指引: 两条矛盾评论会让照做的人
+        # 把被守卫拦下的旧版本推上线(image.yml 会把 latest 拖回旧版)。
+        if: env.HAS_PAT != 'true' && steps.guard.outputs.refuse == 'no'
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.contract.outputs.issue }}
@@ -755,8 +797,10 @@ jobs:
             echo "See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for logs."
             echo "The release was NOT published; the tracker issue stays open."
           } > /tmp/issue-comment.md
+          # 本 job 存在的唯一意义就是这条失败说明: 发不出去必须红, 不能
+          # 吞掉 —— "job 绿但 issue 无声"正是 2026-09-09 事故的形态之一。
           if [ -n "$ISSUE" ]; then
-            gh issue comment "$ISSUE" --body-file /tmp/issue-comment.md || true
+            gh issue comment "$ISSUE" --body-file /tmp/issue-comment.md
           else
             cat /tmp/issue-comment.md
           fi

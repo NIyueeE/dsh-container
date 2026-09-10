@@ -130,12 +130,18 @@ if [ -n "$expect" ]; then
   [ "$dsh_version" = "$expect" ] \
     || die "dsh version '$dsh_version' does not match expected version $expect"
 fi
-"$DOCKER" exec "$cid" node --version | grep -Eq '^v[0-9]+\.'
-"$DOCKER" exec "$cid" cargo --version | grep -Eq '^cargo [0-9]+\.'
-"$DOCKER" exec "$cid" uv --version | grep -Eq '^uv [0-9]+\.'
-"$DOCKER" exec "$cid" pnpm --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
-"$DOCKER" exec "$cid" podman --version | grep -Eq '^podman version [0-9]+\.'
-"$DOCKER" exec "$cid" gh --version | grep -Eq '^gh version [0-9]+\.'
+"$DOCKER" exec "$cid" node --version | grep -Eq '^v[0-9]+\.' \
+  || die "node version check failed"
+"$DOCKER" exec "$cid" cargo --version | grep -Eq '^cargo [0-9]+\.' \
+  || die "cargo version check failed"
+"$DOCKER" exec "$cid" uv --version | grep -Eq '^uv [0-9]+\.' \
+  || die "uv version check failed"
+"$DOCKER" exec "$cid" pnpm --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' \
+  || die "pnpm version check failed"
+"$DOCKER" exec "$cid" podman --version | grep -Eq '^podman version [0-9]+\.' \
+  || die "podman version check failed"
+"$DOCKER" exec "$cid" gh --version | grep -Eq '^gh version [0-9]+\.' \
+  || die "gh version check failed"
 
 # 分层布局: 工具链是镜像系统层真二进制(/usr/local/bin, /opt/rust),
 # 卷上只有可写缓存与自装区 —— 路径解析与读写边界都必须成立。
@@ -147,6 +153,9 @@ fi
   test "$(command -v pnpm)" = "/usr/local/bin/pnpm"
   test "$(command -v cargo)" = "/usr/local/bin/cargo"
   test -d "${RUSTUP_HOME:-/opt/rust/rustup}/toolchains"
+  # rustup 运行期必须能写 RUSTUP_HOME(settings/tmp/downloads/toolchains);
+  # 容器重建后属主回到 root 的回归由 entrypoint 自愈兜底, 这里断言结果。
+  test -w "${RUSTUP_HOME:-/opt/rust/rustup}"
   test -w "$cargo_home"
   test -w "$home/.local/bin"
   mkdir -p "$cargo_home/registry/cache" "$cargo_home/registry/index" "$pnpm_home"

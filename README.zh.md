@@ -21,7 +21,7 @@
 ```bash
 docker compose -f examples/compose.yaml up -d
 docker compose logs dsh | grep 'dsh web:'
-# 在本地浏览器打开 http://127.0.0.1:3081/(代理自动完成登录)
+# open http://127.0.0.1:3081/ in your local browser (the proxy bootstraps the login)
 ```
 
 ### Podman Quadlet(Linux,推荐)

@@ -36,7 +36,22 @@ export HOME
 export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # 内部端口: entrypoint 解析 --port 后经 DSH_WEB_PORT 传入(默认 3080)。
-WEB_PORT="${DSH_WEB_PORT:-3080}"
+# 独立执行(不经 entrypoint)时自身也解析 --port <N>/--port=<N> —— 否则
+# dsh web 监听 N 而 Caddy 仍转发到默认端口, 每个请求静默 502。
+args_port=""
+expect_port=0
+for a in "$@"; do
+  if [ "$expect_port" = 1 ]; then
+    args_port="$a"
+    expect_port=0
+    continue
+  fi
+  case "$a" in
+    --port) expect_port=1 ;;
+    --port=*) args_port="${a#--port=}" ;;
+  esac
+done
+WEB_PORT="${DSH_WEB_PORT:-${args_port:-3080}}"
 case "$WEB_PORT" in
   ''|*[!0-9]*) echo "[dsh-web] invalid DSH_WEB_PORT: '$WEB_PORT' (must be a number)" >&2; exit 1 ;;
 esac
@@ -110,10 +125,15 @@ start_dsh_web() {
 
 # --- 会话自举 -----------------------------------------------------------------
 # 由插件在 dsh 进程内完成(token → cookie, 复用仍有效的旧 cookie), 本脚本
-# 只等待插件写出的 cookie 文件出现; 超时则 fail-fast, 与旧实现等价。
+# 只等待插件写出的 cookie 文件出现/刷新; 超时则 fail-fast, 与旧实现等价。
+# 参数是启动前记录的 cookie 文件 mtime: 首次启动等文件出现, dsh web 重启后
+# 旧文件仍在, 必须等插件重新写入(mtime 前进) —— 插件每次自举后都重写文件
+# (即使复用旧值), 否则 Caddy 会继续注入上一轮的死 cookie, 表现为静默 401。
 ensure_session() {
+  local old_mtime="${1:-0}"
   for _ in $(seq 1 120); do
-    if [ -s "$COOKIE_FILE" ]; then
+    if [ -s "$COOKIE_FILE" ] \
+        && [ "$(stat -c %Y "$COOKIE_FILE" 2>/dev/null || echo 0)" -gt "$old_mtime" ]; then
       echo "[dsh-web] session cookie ready (minted by the container-adapt plugin)" >&2
       return 0
     fi
@@ -222,8 +242,9 @@ restart_caddy() {
 
 # --- 栈引导: dsh web → 会话 cookie → Caddy -------------------------------------
 mkdir -p "$RUNTIME_DIR"
+cookie_mtime="$(stat -c %Y "$COOKIE_FILE" 2>/dev/null || echo 0)"
 start_dsh_web
-if ! ensure_session; then
+if ! ensure_session "$cookie_mtime"; then
   echo "[dsh-web] session bootstrap failed; refusing to serve" >&2
   exit 1
 fi
@@ -252,8 +273,9 @@ while [ "$STOPPING" = "0" ]; do
     fi
     echo "[dsh-web] dsh web exited (status $local_status); restarting in 2s" >&2
     sleep 2
+    cookie_mtime="$(stat -c %Y "$COOKIE_FILE" 2>/dev/null || echo 0)"
     start_dsh_web
-    if ! ensure_session; then
+    if ! ensure_session "$cookie_mtime"; then
       echo "[dsh-web] session bootstrap failed after dsh web restart; giving up" >&2
       exit 1
     fi

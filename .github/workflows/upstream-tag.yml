@@ -127,6 +127,15 @@ jobs:
                 "$ISSUE_TITLE_PREFIX"*)
                   tag="${ititle#"$ISSUE_TITLE_PREFIX "}"
                   [ -n "$tag" ] || continue
+                  # tag push 触发本 workflow 时, image.yml 的 run 可能还没
+                  # 被 Actions 创建(实测延迟 2-6 分钟): 立即查询会误报
+                  # "RELEASE_PAT 缺权限" 的假诊断到公开 issue。push 事件
+                  # 触发的运行跳过验证, 交给每日 cron(那时 run 必已存在)。
+                  if [ "${{ github.event_name }}" = "push" ]; then
+                    echo "push-triggered run: deferring image.yml run verification to the daily schedule"
+                    kept=$((kept + 1))
+                    continue
+                  fi
                   run_id="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" 2>/dev/null \
                     | jq -r --arg tag "$tag" \
                         '.workflow_runs[] | select(.path == ".github/workflows/image.yml" and .head_branch == $tag) | .id' \

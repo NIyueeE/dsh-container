@@ -104,12 +104,13 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    checks the § Simplification triggers table in
    [upstream-contract.md](upstream-contract.md) against the upstream diff: when an upstream
    change makes one of this image's hacks redundant (browser-side loopback gate, cookie
-   bootstrap, settings-document download endpoint, ...), it deletes the hack instead of keeping
+   bootstrap, settings-document button hide via the provider `documentPath` flip, ...), it deletes the hack instead of keeping
    it, and reports the outcome in an "Adaptation review" section. It pushes a `release-prep/<tag>`
    branch and posts its report to the tracker issue — that report is the adaptation decision
    record for the tag; the changes themselves appear in the release note's commit list, and the
-   release body points readers at the adaptation surface. The agent works fully offline (network
-   is not part of its sandbox).
+   release body points readers at the adaptation surface. The agent's inputs are pre-fetched and
+   it is expected to work fully offline (no network is needed); the sandbox is file-effect
+   containment, not an egress boundary.
 3. **verify** — checks out the repair branch (if any), builds the image from the new upstream tag
    (`DSH_TAG=<tag>`, same Containerfile as the release) and runs `tests/smoke.sh`. The agent's own
    claims are never trusted; CI decides.
@@ -117,7 +118,8 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    `dsh-v*` tag already in this repository (so mis-dispatched old tags cannot pull `latest`
    backwards). Then the repair branch is fast-forwarded to `main` (if any) and the `dsh-v*` tag is
    pushed with the `RELEASE_PAT` secret. Immediately after the push the pipeline polls the Actions
-   API until an `image.yml` run appears for the tag; if no run shows up within ~2 minutes the
+   API until an `image.yml` run appears for the tag; if no run shows up within the polling window
+   (~8 minutes; the API can take 2–6 minutes to create the run) the
    release job fails, the tracker issue stays open and the failure note explains the credential
    fix. Only after that confirmation is the tracker issue closed.
 5. **publish** — the PAT push triggers `image.yml` (described above), which re-runs the same smoke

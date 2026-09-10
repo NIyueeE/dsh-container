@@ -43,7 +43,10 @@ export HOME
 export RUSTUP_HOME="${RUSTUP_HOME:-/opt/rust/rustup}"
 # rustup 运行期需要写 RUSTUP_HOME(settings.toml/tmp/downloads/toolchains)。
 # 镜像构建时属主已设为 dsh; 容器重建/快照把属主冲回 root 时这里兜底修复。
-if [ "$(id -u)" != 0 ] && [ "$(stat -c %u "$RUSTUP_HOME" 2>/dev/null)" != "$(id -u)" ]; then
+# 注意: 用户覆盖 RUSTUP_HOME 指向尚不存在的目录(见 docs/build.md 自定义
+# 工具链逃生通道)时跳过 —— 该目录由 rustup 首次使用时自建。
+if [ "$(id -u)" != 0 ] && [ -d "$RUSTUP_HOME" ] \
+    && [ "$(stat -c %u "$RUSTUP_HOME" 2>/dev/null)" != "$(id -u)" ]; then
   echo "[entrypoint] fixing ownership of $RUSTUP_HOME for $(id -un)" >&2
   sudo chown -R "$(id -u):$(id -g)" "$RUSTUP_HOME"
 fi

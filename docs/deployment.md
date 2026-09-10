@@ -45,7 +45,6 @@ the most recent release.
   together with the image (the one writable exception is rustup's home `/opt/rust/rustup`, which
   rustup needs to write at runtime — it is built `dsh`-owned and the entrypoint repairs its
   ownership on every start), so a volume can never shadow a newer image's tools. The dsh
-  upgraded together with the image, so a volume can never shadow a newer image's tools. The dsh
   source tree and built artifacts live in `/opt/deepseek-harness`, so an empty or fresh `/home/dsh`
   volume never hides dsh. To access user files directly from the host, switch the volume to a bind
   mount at `/home/dsh` and keep it owned by uid 1000; on SELinux hosts keep `:Z` in that
@@ -82,12 +81,11 @@ dsh is built into the image at `/opt/deepseek-harness` and there is no runtime n
 To run a different dsh version, publish/use an image built from that upstream tag:
 
 **Upgrading from v0.2.x images:** those images npm-installed dsh into the persisted volume
-(`~/.local`), and that stale copy would shadow the image-provided dsh. The entrypoint handles
-this automatically: on first boot with the new image it removes the legacy
-`~/.local/lib/node_modules/@deepseek-ai/dsh` tree and `~/.local/bin/dsh` entry from the volume
-(idempotently; unrelated npm packages are kept), and PATH is image-first. Toolchain copies seeded
-into volumes by even older images are inert (PATH prefers the image-owned binaries); remove them
-manually to reclaim space (see the release notes). After upgrading and
+(`~/.local`). The stale copy is inert — PATH is image-first, so the image-provided dsh always
+wins — but it wastes space and is confusing; remove it manually with the commands from the
+release notes. Toolchain copies seeded
+into volumes by even older images are likewise inert (PATH prefers the image-owned binaries);
+remove them manually to reclaim space (see the release notes). After upgrading and
 restarting the container, verify with `docker exec dsh dsh --version` (or `podman exec dsh dsh
 --version`) — it must print the version matching the image tag. To clean an image's provenance
 stamp: `docker exec dsh cat /etc/dsh-container/provenance.json`.

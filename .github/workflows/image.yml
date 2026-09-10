@@ -309,9 +309,11 @@ jobs:
           name: ${{ github.ref_name }}
           body: |
             > **Upgrading a data volume created before the image-owned-toolchain layout:** the image
-            > now owns the whole toolchain as read-only system layer (uv/pnpm in `/usr/local/bin`,
+            > owns the whole toolchain as a system layer (uv/pnpm in `/usr/local/bin`,
             > Rust toolchains in `/opt/rust`, dsh in `/opt/deepseek-harness`); `/home/dsh` holds only
-            > data and caches. Toolchain copies seeded into older volumes are inert (PATH prefers the
+            > data and caches. The one writable exception is rustup's home `/opt/rust/rustup`, which
+            > rustup must write at runtime — it is built `dsh`-owned and the entrypoint repairs its
+            > ownership on every start. Toolchain copies seeded into older volumes are inert (PATH prefers the
             > image binaries) but waste space — remove them manually inside the container if desired:
             >
             > ```bash
@@ -329,7 +331,8 @@ jobs:
             > `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` for any non-loopback exposure.
             >
             > **Container adaptation:** this image keeps its hack surface (browser-side `isLoopback`
-            > patch, session-cookie bootstrap plugin, settings-document download endpoint — see
+            > patch, session-cookie bootstrap plugin, settings-document button hide via the provider
+            > `documentPath` flip — see
             > `docs/upstream-contract.md` § Simplification triggers) as small as upstream allows.
             > Adaptation changes for this tag are visible in the commits below; the decision record
             > (Adaptation review) lives in the release-prep tracker issue for this tag.

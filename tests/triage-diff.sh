@@ -26,7 +26,7 @@
 # 输出(逐行):
 #   TRIAGE ancestor=yes|no
 #   TRIAGE fatal=yes|no
-#   TRIAGE surface_hits=<path,path,...|none|unknown(compare-truncated)>
+#   TRIAGE surface_hits=<path,path,...|none|unknown(compare-truncated)|unknown(parse-error)>
 #   TRIAGE agent_required=yes|no
 # 退出码: 0 = 正常判定; 1 = 输入/基础设施错误
 set -euo pipefail
@@ -62,12 +62,15 @@ done
 FATAL_IDS="server.request_fence"
 
 # 适配面: 上游路径前缀(正则)。命中任一即需要 agent 做语义审查。
-# - packages/client/connection/      isLoopback 补丁锚点 + /api 围栏 + authenticatedUrl
+# - packages/client/connection/        isLoopback 补丁锚点 + /api 围栏 + authenticatedUrl
 # - packages/api/settings-controller/  settings describe/documentPath 契约
 # - packages/client/ui-settings-general/  SettingsDocumentAction 渲染门
-# - apps/cli/src/                    CLI 契约(--port/--patch/--no-open 与会话入口)
-# - packages/bundle/base/            遥测默认值等 bundle 层契约
-SURFACE_PAT='^(packages/client/connection/|packages/api/settings-controller/|packages/client/ui-settings-general/|apps/cli/src/|packages/bundle/base/)'
+# - packages/bundle/web-app/           web CLI 契约(--port/--no-open 在
+#                                      src/startup.ts)与登录 URL 宣告
+#                                      (src/index.ts authenticatedUrl)
+# - apps/cli/src/                      launcher 根 flag(--patch/--profile)
+# - packages/bundle/base/              遥测默认值等 bundle 层契约
+SURFACE_PAT='^(packages/client/connection/|packages/api/settings-controller/|packages/client/ui-settings-general/|packages/bundle/web-app/|apps/cli/src/|packages/bundle/base/)'
 
 ancestor=no
 [ "$STATUS" = "behind" ] && ancestor=yes
@@ -85,15 +88,23 @@ if [ -n "$FILES" ]; then
   hits="$(grep -E "$SURFACE_PAT" "$FILES" | sort -u | paste -sd, - || true)"
   [ -n "$hits" ] || hits="none"
 elif [ -f "$DIFF" ]; then
-  count="$(jq '[.files[]?] | length' "$DIFF" 2>/dev/null || echo 0)"
-  if [ "$count" -ge 300 ]; then
-    # compare API 上限 300 文件: 清单不完整, 无法证明未命中适配面
-    hits="unknown(compare-truncated)"
-  else
-    hits="$(jq -r '.files[].filename // empty' "$DIFF" 2>/dev/null \
-      | grep -E "$SURFACE_PAT" | sort -u | paste -sd, - || true)"
-    [ -n "$hits" ] || hits="none"
-  fi
+  count="$(jq '[.files[]?] | length' "$DIFF" 2>/dev/null || echo parse-error)"
+  case "$count" in
+    parse-error)
+      # payload 无法解析(截断/损坏): 无法证明未命中适配面, 保守放行
+      hits="unknown(parse-error)"
+      ;;
+    *)
+      if [ "$count" -ge 300 ]; then
+        # compare API 上限 300 文件: 清单不完整, 无法证明未命中适配面
+        hits="unknown(compare-truncated)"
+      else
+        hits="$(jq -r '.files[].filename // empty' "$DIFF" 2>/dev/null \
+          | grep -E "$SURFACE_PAT" | sort -u | paste -sd, - || true)"
+        [ -n "$hits" ] || hits="none"
+      fi
+      ;;
+  esac
 else
   echo "error: --diff $DIFF does not exist" >&2
   exit 1

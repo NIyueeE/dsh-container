@@ -8,9 +8,10 @@ build_format := if container == "podman" { "--format docker" } else { "" }
 build:
     {{container}} build {{build_format}} -t ghcr.io/niyueee/dsh-container:local .
 
-# 前台调试运行(桥接 + 端口映射; --rm 退出后用户层改动随容器丢弃)
+# 前台调试运行(回环端口映射, 与 examples 一致 —— 局域网暴露是显式
+# 的 -p 3081:3081 改绑动作; --rm 退出后用户层改动随容器丢弃)
 debug:
-    {{container}} run --rm -p 3081:3081 \
+    {{container}} run --rm -p 127.0.0.1:3081:3081 \
         ghcr.io/niyueee/dsh-container:local
 
 # 在不重启容器的情况下重启容器内的 dsh web(dsh-web 守护会自动重新拉起)

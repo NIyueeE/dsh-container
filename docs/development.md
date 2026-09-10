@@ -9,13 +9,15 @@ container/
   entrypoint.sh          # container entrypoint: Caddy proxy + start dsh-web
   dsh-web.sh             # dsh web supervisor: auto-restart dsh web, installed as /usr/local/bin/dsh-web
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
-  plugin/                # container-adapt plugin: cookie bootstrap + settings-doc download endpoint + patch-client.js, at /opt/dsh-container-plugin
+  healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
+  plugin/                # container-adapt plugin: cookie bootstrap + settings-document button hide + patch-client.js, at /opt/dsh-container-plugin
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)
 tests/
   smoke.sh               # end-to-end image smoke test (CI + `just test`)
   contract.sh            # static upstream-contract check against a dsh-v* tag
+  triage-diff.sh         # code-level agent admission gate for release-prep (diff triage)
 prompts/
   release-prep.md        # system prompt for the headless dsh release agent
 docs/
