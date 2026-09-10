@@ -21,12 +21,15 @@ dsh version.
 | `UV_VERSION` | `latest` | uv version installed by the official standalone installer script (`latest` resolves the newest uv release at build time) |
 | `BUILD_GIT_SHA` / `BUILD_GIT_REF` | `unknown` | Written to the OCI labels `org.opencontainers.image.revision` / `org.opencontainers.image.ref.name` |
 
-Toolchain vs. data: the image owns the tools (read-only at runtime), the volume owns the state.
+Toolchain vs. data: the image owns the tools (read-only at runtime — the one exception is rustup's
+home `/opt/rust/rustup`, which rustup must write: it is built `dsh`-owned and self-healed by the
+entrypoint), the volume owns the state.
 
 - Image-owned: uv/uvx and the pnpm binary in `/usr/local/bin`, the Rust toolchain tree in
   `/opt/rust` (rustup proxies symlinked into `/usr/local/bin`), dsh in `/opt/deepseek-harness`.
-  Tool upgrades happen by image upgrade — `rustup update` / `uv self update` are intentionally
-  not usable at runtime.
+  Tool upgrades happen by image upgrade — `uv self update` / `rustup self update` cannot write
+  the root-owned system layer, and a `rustup update <channel>` at runtime would only write the
+  container layer (lost on recreation), so runtime updates are not a supported upgrade path.
 - Volume-owned (writable, persisted): `~/.cargo` (cargo registry/cache and `cargo install`
   binaries), uv data in `~/.local/share/uv` and `~/.cache/uv`, pnpm store and user global
   packages in `~/.local/share/pnpm` (`PNPM_HOME`), anything the user puts in `~/.local/bin`.

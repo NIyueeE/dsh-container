@@ -82,8 +82,11 @@ LABEL org.opencontainers.image.title="DeepSeek Harness (dsh) container image" \
       org.opencontainers.image.ref.name="${BUILD_GIT_REF}"
 
 # 基础环境变量
-# 工具链归镜像(系统层, 运行期只读), 卷只放可写缓存/数据/自装工具:
-# RUSTUP_HOME 指向 /opt/rust 的工具链树; CARGO_HOME/PNPM_HOME 留在用户卷。
+# 工具链归镜像(系统层), 卷只放可写缓存/数据/自装工具:
+# RUSTUP_HOME(/opt/rust/rustup)指向工具链树, 运行期需要写入 —— rustup 的
+# settings/tmp/downloads/toolchains 都要写; 构建时属主已设为 dsh,
+# entrypoint 启动时兜底自愈(见 container/entrypoint.sh)。
+# CARGO_HOME/PNPM_HOME 留在用户卷。
 # PATH 镜像优先, 用户目录(含 PNPM_HOME 的自装全局包)垫底。
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -183,9 +186,12 @@ RUN set -eux; \
 
 # ---------------------------------------------------------------------------
 # 6. 安装 Rust/cargo(系统层: 工具链树在 /opt/rust, rustup 代理 symlink 到
-#    /usr/local/bin, 随镜像升级)。运行期 RUSTUP_HOME 指回 /opt/rust/rustup
-#    (只读), CARGO_HOME 重定向到用户卷(~/.cargo)承接 registry/cache 与
-#    cargo install 自装工具 —— 工具链归镜像, 缓存/自装归用户
+#    /usr/local/bin, 随镜像升级)。运行期 RUSTUP_HOME 指回 /opt/rust/rustup,
+#    CARGO_HOME 重定向到用户卷(~/.cargo)承接 registry/cache 与
+#    cargo install 自装工具 —— 工具链归镜像, 缓存/自装归用户。
+#    rustup 运行期要写 RUSTUP_HOME(settings/tmp/downloads/toolchains), 因此
+#    这里把属主交给 dsh: 容器重建后不会因镜像层的 root 属主而拒绝写入
+#    (entrypoint 启动时还会兜底自愈)。
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     export RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo; \
@@ -194,6 +200,7 @@ RUN set -eux; \
     sh /tmp/rustup-init.sh -y --profile minimal --no-modify-path --default-toolchain "${RUST_TOOLCHAIN}"; \
     for b in "$CARGO_HOME/bin/"*; do ln -sfn "$b" /usr/local/bin/; done; \
     rm -f /tmp/rustup-init.sh; \
+    chown -R $USER_UID:$USER_GID "$RUSTUP_HOME"; \
     rustc --version; \
     cargo --version; \
     rustup --version

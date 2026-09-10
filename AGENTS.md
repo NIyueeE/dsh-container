@@ -38,9 +38,13 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 
 1. Restores `HOME` from passwd — containers run with a numeric `USER 1000`, so Docker does not set
    `HOME` (npm/uv/cargo need it).
-2. Three-zone layout (the hermes-agent pattern): the image owns the whole toolchain as read-only
-   system layer — dsh at `/opt/deepseek-harness`, uv/pnpm and the rustup proxies as real binaries
-   in `/usr/local/bin`, the Rust toolchain tree in `/opt/rust`. The `/home/dsh` volume holds only
+2. Three-zone layout (the hermes-agent pattern): the image owns the whole toolchain as a system
+   layer — dsh at `/opt/deepseek-harness`, uv/pnpm and the rustup proxies as real binaries
+   in `/usr/local/bin`, the Rust toolchain tree in `/opt/rust`. One deliberate exception to
+   read-only: rustup must write its home (`RUSTUP_HOME=/opt/rust/rustup` — settings, tmp,
+   downloads, toolchains), so the build bakes `dsh` ownership into it and the entrypoint
+   self-heals that ownership at every start (a recreated container would otherwise revert to
+   root-owned files and the first rustup write fails). The `/home/dsh` volume holds only
    data: dsh data stays at upstream's `~/.dsh` (no `DSH_HOME` override), the process cwd is `$HOME`
    itself (dsh creates directories under it as needed), and writable caches/user-installed tools
    live under `$HOME` (`CARGO_HOME=~/.cargo`, uv data in `~/.local/share/uv`,

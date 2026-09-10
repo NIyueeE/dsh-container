@@ -32,14 +32,21 @@ if [ -z "$HOME" ]; then
 fi
 export HOME
 
-# 分层: 工具链归镜像(系统层, 只读), 卷只放数据/缓存/自装工具:
+# 分层: 工具链归镜像(系统层), 卷只放数据/缓存/自装工具:
 # - dsh 数据不设置 DSH_HOME, 使用上游默认 ~/.dsh
 # - dsh 的 cwd 固定为 $HOME; 不预创建固定工作区目录, dsh 会按需创建
-# - rust 工具链树: /opt/rust/rustup(镜像所有, 只读; 升级随镜像)
+# - rust 工具链树: /opt/rust/rustup(镜像所有但运行期可写 —— 构建时属主已设
+#   为 dsh, 启动时兜底自愈; 升级随镜像)
 # - cargo 可写区: ~/.cargo(registry/cache, cargo install 自装 bin 也在这)
 # - uv 数据: ~/.local/share/uv、~/.cache/uv(uv 管理的 Python 也在这)
 # - pnpm: PNPM_HOME=~/.local/share/pnpm 只当 store 与自装全局包目录
 export RUSTUP_HOME="${RUSTUP_HOME:-/opt/rust/rustup}"
+# rustup 运行期需要写 RUSTUP_HOME(settings.toml/tmp/downloads/toolchains)。
+# 镜像构建时属主已设为 dsh; 容器重建/快照把属主冲回 root 时这里兜底修复。
+if [ "$(id -u)" != 0 ] && [ "$(stat -c %u "$RUSTUP_HOME" 2>/dev/null)" != "$(id -u)" ]; then
+  echo "[entrypoint] fixing ownership of $RUSTUP_HOME for $(id -un)" >&2
+  sudo chown -R "$(id -u):$(id -g)" "$RUSTUP_HOME"
+fi
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
 # 遥测默认关闭(镜像层默认, 用户可覆盖): 点反馈等显式交互也不会上报

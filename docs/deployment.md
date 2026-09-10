@@ -41,7 +41,10 @@ the most recent release.
   The volume holds only data — `~/.dsh` (profiles / sessions / plugins / credentials), writable
   caches (`~/.cargo` registry, uv data, pnpm store), dotfiles, and anything the user installs
   under `$HOME` — all of it survives image upgrades. The toolchain is image-owned: uv, pnpm, and
-  the Rust toolchain live in the read-only system layer (`/usr/local/bin`, `/opt/rust`) and are
+  the Rust toolchain live in the system layer (`/usr/local/bin`, `/opt/rust`) and are upgraded
+  together with the image (the one writable exception is rustup's home `/opt/rust/rustup`, which
+  rustup needs to write at runtime — it is built `dsh`-owned and the entrypoint repairs its
+  ownership on every start), so a volume can never shadow a newer image's tools. The dsh
   upgraded together with the image, so a volume can never shadow a newer image's tools. The dsh
   source tree and built artifacts live in `/opt/deepseek-harness`, so an empty or fresh `/home/dsh`
   volume never hides dsh. To access user files directly from the host, switch the volume to a bind
