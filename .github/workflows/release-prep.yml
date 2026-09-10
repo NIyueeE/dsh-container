@@ -4,8 +4,10 @@ name: Release prep
 #
 #   contract — tests/contract.sh 静态契约检查(docs/upstream-contract.md 的机器形态),
 #              数秒判定上游 tag 是否存在兼容漂移; 本仓库已有同名 tag 时幂等跳过
-#   prep     — (漂移时)在 codex-universal 容器里以 headless codex 运行修复 agent:
-#              读上游 diff + 契约文档, 最小化修复(通常是 container/plugin/scripts/
+#   prep     — (漂移时)在本仓库上一个发布 tag 的镜像里以 dsh headless 运行修复
+#              agent(dsh 数据在独立 HOME, settings 由 secrets 生成, 模型走
+#              自建中转的 openai-completions 端点): 读上游 diff + 契约文档,
+#              最小化修复(通常是 container/plugin/scripts/
 #              patch-client.js 的候选串); 每次发布(含无漂移)都对照契约文档
 #              § Simplification triggers 审视上游新能力, 能干掉 hack 就删掉
 #              (适配层随上游演进保持最小); 结果推 release-prep/<tag> 分支,
@@ -24,7 +26,8 @@ name: Release prep
 #
 # 触发: upstream-tag.yml 发现新上游 tag 后 repository_dispatch(事件
 # upstream-dsh-tag, 携带 new_tag/old_tag/issue), 或手动 dispatch 填 new_tag。
-# 配置: secrets CODEX_API_KEY / CODEX_BASE_URL / CODEX_MODEL(agent 模型后端),
+# 配置: secrets TERNARYBIT_API_KEY / TERNARYBIT_URL / AGENT_MODEL(agent 模型后端,
+#       自建中转, openai-completions 协议),
 #       可选 secret RELEASE_PAT(fine-grained, 需勾选 "Workflows: read and write"
 #       仓库权限, 否则 push 的 tag 不产生 push event, 不会触发下游)。
 
@@ -47,7 +50,7 @@ concurrency:
   group: release-prep
   cancel-in-progress: false
 
-# 容器 job(codex-universal)的默认 run shell 是 sh(dash), 不支持 pipefail;
+# 容器 job(自己的镜像)的默认 run shell 是 sh(dash), 不支持 pipefail;
 # 全 workflow 显式用 bash(host runner 上的 job 本来也是 bash, 行为不变)。
 defaults:
   run:
@@ -155,7 +158,7 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
 
   prep:
-    name: Agent drift repair + adaptation review (codex)
+    name: Agent drift repair + adaptation review (dsh)
     needs: contract
     # 每次发布都跑 agent: 漂移时修复; 干净时仍对照 § Simplification triggers
     # 审视上游 diff(能干掉 hack 就删)。仅当本仓库已有该 tag(幂等跳过)时不跑。
@@ -169,11 +172,20 @@ jobs:
       branch: ${{ steps.commit.outputs.branch }}
       changed: ${{ steps.commit.outputs.changed }}
     container:
-      # OpenAI 官方 codex agent 通用镜像(预装 codex CLI 与常用工具链)。
-      # TODO: 首次成功运行后按 digest 钉死, 防止上游镜像漂移。
-      image: ghcr.io/openai/codex-universal:latest
+      # 用本仓库上一个发布 tag 的镜像当 agent 运行时: 自带 dsh CLI 与全套
+      # 工具链, 镜像不可变(不再依赖 codex-universal:latest 的可变漂移)。
+      # old_tag 由 contract job 解析, 首次发版为空时兜底 latest。
+      # 镜像入口会启动 dsh web, CI 里必须绕过(--entrypoint ""); --user root
+      # 规避 Actions workspace 属主与 git dubious-ownership 问题。
+      image: ghcr.io/niyueee/dsh-container:${{ needs.contract.outputs.old_tag || 'latest' }}
+      options: --entrypoint "" --user root
     env:
-      CODEX_HOME: /tmp/codex-home
+      # dsh 数据(settings/sessions)落在 Actions 容器 job 的 HOME(/github/home),
+      # 不落 workspace; git 全局 safe.directory 由 Write dsh settings 步骤注入。
+      GIT_CONFIG_GLOBAL: /tmp/dsh-ci-gitconfig
+      TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
+      TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
+      AGENT_MODEL: ${{ secrets.AGENT_MODEL }}
     steps:
       - uses: actions/checkout@v7
 
@@ -204,63 +216,64 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "context ready: /tmp/upstream-diff.json, /tmp/upstream (is_ancestor=${is_ancestor:-no})"
 
-      - name: Write codex config
+      - name: Write dsh settings
         env:
-          # 端点/模型走 secrets(不公开); wire_api 留 variable, 默认 chat
-          # (OpenAI chat completions, 中转普遍支持)。chat 需要 codex<=0.90.x
-          # (本 job 安装步骤已钉住); 换用支持 Responses API 的端点后可升级。
-          CODEX_BASE_URL: ${{ secrets.CODEX_BASE_URL }}
-          CODEX_MODEL: ${{ secrets.CODEX_MODEL }}
-          CODEX_WIRE_API: ${{ vars.CODEX_WIRE_API || 'chat' }}
+          TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
+          TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
+          AGENT_MODEL: ${{ secrets.AGENT_MODEL }}
         run: |
           set -euo pipefail
-          mkdir -p "$CODEX_HOME"
-          cat > "$CODEX_HOME/config.toml" <<EOF
-          model = "${CODEX_MODEL}"
-          model_provider = "custom"
-
-          [model_providers.custom]
-          name = "custom"
-          base_url = "${CODEX_BASE_URL}"
-          env_key = "CODEX_API_KEY"
-          wire_api = "${CODEX_WIRE_API}"
+          mkdir -p "$HOME/.dsh"
+          cat > "$HOME/.dsh/settings.yaml" <<EOF
+          agent-default-model:
+            provider: ternarybit
+            model: "${AGENT_MODEL}"
+          permission:
+            defaultPreset: workspace-write
+          llm-pi-ai:
+            providers:
+              ternarybit:
+                displayName: TernaryBit
+                apiKeyEnv: TERNARYBIT_API_KEY
+                api: openai-completions
+                baseURL: "${TERNARYBIT_URL}"
+                models:
+                  - id: "${AGENT_MODEL}"
+                    name: "${AGENT_MODEL}"
+                    contextWindow: 1000000
+                    maxTokens: 384000
+                    input:
+                      - text
+                    reasoningEfforts:
+                      off: null
+                      low: low
+                      high: high
+                      max: max
           EOF
+          # workspace 属主是 runner uid, 容器内以 root 跑 —— git 会报
+          # dubious ownership; 全局 safe.directory 注入(与 commit 步骤同法)
+          printf '[safe]\n\tdirectory = %s\n' "$GITHUB_WORKSPACE" > "$GIT_CONFIG_GLOBAL"
 
-      - name: Install codex CLI
-        run: |
-          set -euo pipefail
-          if command -v codex >/dev/null 2>&1; then
-            echo "codex already present: $(codex --version)"
-            exit 0
-          fi
-          # codex-universal 镜像不预装 CLI(云端由平台运行时注入), 也没有
-          # node/npm —— 直接装官方 release 的 musl 静态二进制(glibc 环境可跑)。
-          # 钉在 0.90.0: 0.100.0 起移除了 wire_api="chat"(见 codex
-          # discussions/7782), 而自建中转的 glm 系模型只讲 chat completions;
-          # 升级前先确认端点已支持 Responses API。prep 跑在 x86_64 上。
-          codex_version=0.90.0
-          tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
-          curl -fsSL \
-            "https://github.com/openai/codex/releases/download/rust-v${codex_version}/codex-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz -C "$tmp"
-          # tarball 内文件名带平台后缀, 统一安装为 /usr/local/bin/codex
-          bin="$(find "$tmp" -type f -name 'codex*' | head -n1)"
-          [ -n "$bin" ] || { echo "codex binary not found in release tarball" >&2; exit 1; }
-          install -m 0755 "$bin" /usr/local/bin/codex
-          codex --version
-
-      - name: Run codex agent
+      - name: Run dsh agent (drift repair + adaptation review)
         env:
-          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
         run: |
           set -euo pipefail
-          codex exec --json --sandbox workspace-write \
-            --output-last-message /tmp/agent-report.md \
-            "$(cat prompts/release-prep.md)"
+          cd "$GITHUB_WORKSPACE"
+          # stdout = 最终回复(即 agent 报告); stderr = 推理过程(留作排障,
+          # 见下方 artifact)。dsh 数据在独立 HOME($HOME/.dsh), 不污染 workspace。
+          dsh --profile headless "$(cat prompts/release-prep.md)" \
+            > /tmp/agent-report.md 2> /tmp/agent-reasoning.log
           [ -s /tmp/agent-report.md ] \
-            || { echo "(agent produced no final message; see JSONL log)" > /tmp/agent-report.md; }
+            || { echo "(agent produced no final message; see reasoning log)" > /tmp/agent-report.md; }
+
+      - name: Upload agent reasoning log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-reasoning
+          path: /tmp/agent-reasoning.log
+          if-no-files-found: ignore
 
       - name: Commit repair branch
         id: commit
@@ -312,8 +325,8 @@ jobs:
           ISSUE: ${{ needs.contract.outputs.issue }}
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
           BRANCH: ${{ steps.commit.outputs.branch }}
-          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
-          CODEX_BASE_URL: ${{ secrets.CODEX_BASE_URL }}
+          TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
+          TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
         run: |
           set -euo pipefail
           {
@@ -331,7 +344,7 @@ jobs:
           # 先把本 job 已知的密钥值与常见 token 形态脱敏; 命中即告警。
           # (GITHUB_TOKEN 与 RELEASE_PAT 不在本 job 的 env 里, agent 接触不到。)
           leak=0
-          for v in "$CODEX_API_KEY" "$CODEX_BASE_URL"; do
+          for v in "$TERNARYBIT_API_KEY" "$TERNARYBIT_URL"; do
             [ -n "$v" ] || continue
             if grep -qF -- "$v" /tmp/issue-comment.md; then
               esc="$(printf '%s' "$v" | sed 's/[^[:alnum:]]/\\&/g')"
@@ -347,11 +360,11 @@ jobs:
           fi
           [ "$leak" = 1 ] \
             && echo "warning: secret-like patterns were redacted from the agent report" >&2 || true
-          # 容器里没有 gh: curl 发评论, python3 做 JSON 转义(报告是任意
-          # markdown)。报告是锦上添花 —— 修复分支已推送, 此步失败不应让
-          # 一次成功的 prep 整体失败, 故容错降级。
-          if command -v python3 >/dev/null 2>&1; then
-            body_json="$(python3 -c 'import json,sys;print(json.dumps({"body":sys.stdin.read()}))' \
+          # 容器里没有 gh: curl 发评论, node 做 JSON 转义(报告是任意
+          # markdown; 镜像自带 node, 没有 python3)。报告是锦上添花 ——
+          # 修复分支已推送, 此步失败不应让一次成功的 prep 整体失败, 故容错降级。
+          if command -v node >/dev/null 2>&1; then
+            body_json="$(node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.stringify({body:d})))' \
               < /tmp/issue-comment.md)"
             curl -fsSL -X POST \
               -H "Authorization: Bearer $GH_TOKEN" \
@@ -360,7 +373,7 @@ jobs:
               -d "$body_json" > /dev/null \
               || echo "warning: failed to post the agent report to issue #$ISSUE" >&2
           else
-            echo "warning: python3 unavailable; agent report not posted to issue #$ISSUE" >&2
+            echo "warning: node unavailable; agent report not posted to issue #$ISSUE" >&2
           fi
 
   verify:

@@ -17,7 +17,7 @@ tests/
   smoke.sh               # end-to-end image smoke test (CI + `just test`)
   contract.sh            # static upstream-contract check against a dsh-v* tag
 prompts/
-  release-prep.md        # system prompt for the headless codex release agent
+  release-prep.md        # system prompt for the headless dsh release agent
 docs/
   deployment.md          # deployment & maintenance guide
   security.md            # security notes

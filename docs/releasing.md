@@ -81,7 +81,7 @@ the manual `git tag` step in the common case:
 
 ```text
 upstream tag ─▶ watcher ─▶ contract ─┬─ clean ──▶ verify ───────────────┐
-                                     └─ drift ──▶ prep (codex agent) ──┤
+                                     └─ drift ──▶ prep (dsh agent) ────┤
                                                   pushes repair branch │ green
                                                                        ▼
                              release: downgrade guard ─▶ PAT tag push ─▶ confirm image.yml run ─▶ close issue
@@ -95,8 +95,8 @@ upstream tag ─▶ watcher ─▶ contract ─┬─ clean ──▶ verify ─
    seconds, before any image is built. If this repository already has the tag, the run skips
    (repeated and manual dispatches are idempotent).
 2. **prep** (on drift, and always an adaptation review) — a headless
-   [codex](https://github.com/openai/codex) agent (version
-   pinned in the workflow) runs in the `codex-universal` container, reviews the pre-fetched
+   `dsh` agent (the dsh CLI shipped in this image; the prep job runs in the
+   image of the previous release tag), reviews the pre-fetched
    upstream diff and checkout against the contract, and applies a minimal repair (typically new
    candidate strings in `container/plugin/scripts/patch-client.js`); drift in security-defining
    contract items is reported, never worked around. On **every** run — drift or not — it also
@@ -177,10 +177,9 @@ Configuration for `release-prep.yml`:
 
 | Setting | Kind | Purpose |
 |---|---|---|
-| `CODEX_BASE_URL` | secret | Model endpoint for the codex agent (any OpenAI-compatible URL) |
-| `CODEX_MODEL` | secret | Model name (e.g. `deepseek-chat`) |
-| `CODEX_WIRE_API` | variable | `chat` (default, for OpenAI-compatible endpoints; requires the pinned codex ≤ 0.90.x) or `responses` (OpenAI official; enables newer codex) |
-| `CODEX_API_KEY` | secret | API key for the model endpoint |
+| `TERNARYBIT_API_KEY` | secret | API key for the model relay (New API token bound to the model channel) |
+| `TERNARYBIT_URL` | secret | Public base URL of the model relay, ending in `/v1` (must be reachable from GitHub Actions runners) |
+| `AGENT_MODEL` | secret | Model id for the prep agent (e.g. `deepseek-v4-flash-0731`); wired into the generated dsh `settings.yaml` |
 | `RELEASE_PAT` | secret | Optional fine-grained PAT whose push publishes the release tag. Needs **Contents: Read and write** (to push) **and Workflows: Read and write** (to make the tag push create `image.yml` runs) on this repository. Neither a `GITHUB_TOKEN` push nor a GitHub App installation-token push triggers `image.yml` (verified live), so a user PAT is the reliable trigger — the pipeline additionally confirms the run exists after pushing, and `.github/workflows/pat-trigger-probe.yml` can pre-verify the credential. Without it, the pipeline stops at ready-to-release and posts manual `git tag` instructions to the tracker issue |
 
 The pipeline can also be run on demand: Actions → "Release prep" → "Run workflow" with the
