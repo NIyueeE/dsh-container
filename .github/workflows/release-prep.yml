@@ -598,6 +598,7 @@ jobs:
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       ISSUE: ${{ needs.contract.outputs.issue }}
       NEW_TAG: ${{ needs.contract.outputs.new_tag }}
     steps:
