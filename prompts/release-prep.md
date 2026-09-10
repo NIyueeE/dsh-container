@@ -28,6 +28,18 @@ New upstream tag: **$NEW_TAG** (also exported as environment variable `NEW_TAG`)
 
 Environment: `IS_ANCESTOR=yes` when the compare payload shows `$NEW_TAG` is *behind* the previously
 released tag (i.e. a mis-dispatch of an older version) — check it before investing effort.
+`SURFACE_HITS` lists the upstream paths within the adaptation surface that this tag actually
+changed (code-level diff triage already ran; you were admitted only because the contract drifted
+or these paths were hit). Focus your review on those paths and the § Simplification triggers.
+
+## Rules
+
+0. **Exit early when there is nothing to do.** You are the *last* gate, not the first: the
+   pipeline already ran the contract check and a code-level diff triage. If the drift report is a
+   false alarm **and** the surface hits are only metadata (READMEs, `*.i18n.yaml`, `package.json`
+   without dependency/script changes, tests) — or there is no genuine simplification opportunity —
+   reply with exactly `NO_ACTION_NEEDED` and stop. Do not write a full report, do not make
+   cosmetic edits.
 
 ## Rules
 

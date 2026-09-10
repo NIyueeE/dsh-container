@@ -1,14 +1,20 @@
 # Upstream Contract
 
 This document is the machine-checkable statement of **what this image depends on from upstream
-dsh**. It has two consumers:
+dsh**. It has three consumers:
 
 - `tests/contract.sh` — the executable form: statically greps an upstream tag for every critical
   item below in seconds, before any image is built. Release preparation runs it first; any `MISS`
   means compatibility drift.
-- The release-prep agent (`.github/workflows/release-prep.yml`) — when drift is detected, the agent
-  reads this document, compares it against the upstream diff, and repairs this repository (usually
-  by updating the patch anchors in `container/plugin/scripts/patch-client.js`).
+- `tests/triage-diff.sh` — the code-level agent admission gate: combines the contract verdict with
+  the complete upstream changed-file list (`git diff --name-only` between the two tags; the compare
+  API caps at 300 files and would miss the adaptation surface) and admits the release-prep agent
+  only when the contract drifted (outside the security fence) or the diff touches the adaptation
+  surface. Fence drift and mis-dispatched older tags fail the run without an agent.
+- The release-prep agent (`.github/workflows/release-prep.yml`) — when drift is detected (or the
+  surface is hit), the agent reads this document, compares it against the upstream diff, and
+  repairs this repository (usually by updating the patch anchors in
+  `container/plugin/scripts/patch-client.js`), or exits early with `NO_ACTION_NEEDED`.
 
 Behavioral assertions (login flow, fence responses, proxy behavior) are enforced end-to-end by
 `tests/smoke.sh` after the image is built. The two layers are complementary: contract.sh decides
@@ -102,8 +108,9 @@ Notes:
 
 ## Simplification triggers
 
-The image keeps its adaptation surface (the hack layer) as small as upstream allows. **Every
-release prep reviews this table against the upstream diff** — a simplification opportunity is
+The image keeps its adaptation surface (the hack layer) as small as upstream allows. The
+**release-prep agent reviews this table against the upstream diff whenever the code-level triage
+admitted it** (contract drift or adaptation-surface hits) — a simplification opportunity is
 taken whenever an upstream change makes one of these hacks redundant, and the outcome is recorded
 in the release note (the commits themselves) and the tracker issue (the Adaptation review).
 

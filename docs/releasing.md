@@ -80,10 +80,10 @@ When the watcher finds a new upstream tag it dispatches the release-prep pipelin
 the manual `git tag` step in the common case:
 
 ```text
-upstream tag ─▶ watcher ─▶ contract ─┬─ clean ──▶ verify ───────────────┐
-                                     └─ drift ──▶ prep (dsh agent) ────┤
-                                                  pushes repair branch │ green
-                                                                       ▼
+upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no surface hits ──▶ verify ─┐
+                                                    └─ drift or surface hit ─▶ prep (dsh agent) ─┤
+                                                                              pushes repair branch │ green
+                                                                                                    ▼
                              release: downgrade guard ─▶ PAT tag push ─▶ confirm image.yml run ─▶ close issue
                                                                                                   │ push event
                                                                                                   ▼
@@ -94,7 +94,8 @@ upstream tag ─▶ watcher ─▶ contract ─┬─ clean ──▶ verify ─
    [upstream-contract.md](upstream-contract.md) (patch anchors, CLI flags, request fence) in
    seconds, before any image is built. If this repository already has the tag, the run skips
    (repeated and manual dispatches are idempotent).
-2. **prep** (on drift, and always an adaptation review) — a headless
+2. **prep** (only when the code-level triage admits it: contract drift outside the security fence,
+   or upstream diff touching the adaptation surface) — a headless
    `dsh` agent (the dsh CLI shipped in this image; the prep job runs in the
    image of the previous release tag), reviews the pre-fetched
    upstream diff and checkout against the contract, and applies a minimal repair (typically new

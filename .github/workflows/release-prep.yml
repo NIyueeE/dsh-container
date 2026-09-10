@@ -70,6 +70,10 @@ jobs:
       old_tag: ${{ steps.resolve.outputs.old_tag }}
       issue: ${{ steps.resolve.outputs.issue }}
       verdict: ${{ steps.contract.outputs.verdict }}
+      ancestor: ${{ steps.triage.outputs.ancestor }}
+      fatal: ${{ steps.triage.outputs.fatal }}
+      agent_required: ${{ steps.triage.outputs.agent_required }}
+      surface_hits: ${{ steps.triage.outputs.surface_hits }}
     steps:
       - uses: actions/checkout@v7
 
@@ -157,12 +161,123 @@ jobs:
           cat /tmp/contract-report.txt >> "$GITHUB_STEP_SUMMARY"
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
 
+      - name: Collect upstream diff (complete file list)
+        if: steps.contract.outputs.verdict != 'skipped'
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ steps.resolve.outputs.new_tag }}
+          OLD_TAG: ${{ steps.resolve.outputs.old_tag }}
+        run: |
+          set -euo pipefail
+          # 完整文件清单用 git 拿: compare API 有 300 文件上限且按路径排序
+          # 截断, 会漏掉适配面(packages/ 恰好在截断区, 实测过)。git 失败
+          # 才退回 compare payload —— 分诊脚本会识别截断并保守放行 agent。
+          files_source="compare"
+          if [ -n "$OLD_TAG" ] \
+              && git clone --quiet --depth 1 --branch "$NEW_TAG" \
+                   "https://github.com/$UPSTREAM_REPO.git" /tmp/triage-upstream 2>/dev/null \
+              && git -C /tmp/triage-upstream fetch --quiet --depth 1 origin tag "$OLD_TAG" 2>/dev/null; then
+            git -C /tmp/triage-upstream diff --name-only "$OLD_TAG" "$NEW_TAG" \
+              > /tmp/triage-files.txt
+            files_source="git"
+          fi
+          # 祖先信号(误派发检测)与兜底清单: compare payload
+          if ! curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$UPSTREAM_REPO/compare/${OLD_TAG}...${NEW_TAG}" \
+                > /tmp/upstream-diff.json 2>/dev/null; then
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$UPSTREAM_REPO/commits/$NEW_TAG" \
+              > /tmp/upstream-diff.json
+          fi
+          echo "files_source=$files_source" >> "$GITHUB_OUTPUT"
+          echo "status=$(jq -r '.status // empty' /tmp/upstream-diff.json 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Diff triage (code-level agent admission gate)
+        if: steps.contract.outputs.verdict != 'skipped'
+        id: triage
+        run: |
+          set -euo pipefail
+          # 从契约报告解析 MISS 的 check-id(DRIFT: id1 id2 ... 行)
+          missed="$(sed -n 's/^DRIFT: //p' /tmp/contract-report.txt \
+            | tr ' ' '\n' | grep -v '^$' | paste -sd' ' - || true)"
+          args=(--verdict "${{ steps.contract.outputs.verdict }}" \
+            --missed "$missed" --status "${{ steps.diff.outputs.status }}")
+          if [ -f /tmp/triage-files.txt ]; then
+            tests/triage-diff.sh --files /tmp/triage-files.txt "${args[@]}" > /tmp/triage.txt
+          elif [ -f /tmp/upstream-diff.json ]; then
+            tests/triage-diff.sh --diff /tmp/upstream-diff.json "${args[@]}" > /tmp/triage.txt
+          else
+            # 无任何 diff 数据: 无法证明安全, 保守放行 agent
+            printf 'TRIAGE ancestor=no\nTRIAGE fatal=no\nTRIAGE surface_hits=unknown(no-diff-data)\nTRIAGE agent_required=yes\n' \
+              > /tmp/triage.txt
+          fi
+          cat /tmp/triage.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          while IFS='=' read -r k v; do
+            echo "$k=$v" >> "$GITHUB_OUTPUT"
+          done < <(sed 's/^TRIAGE //' /tmp/triage.txt)
+
+      - name: Fail fast on fence drift or mis-dispatched tag
+        if: >-
+          ${{
+            steps.contract.outputs.verdict != 'skipped' &&
+            (steps.triage.outputs.fatal == 'yes' || steps.triage.outputs.ancestor == 'yes')
+          }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.resolve.outputs.issue }}
+          NEW_TAG: ${{ steps.resolve.outputs.new_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.triage.outputs.fatal }}" = "yes" ]; then
+            msg="## Release prep stopped: security-fence contract drift in \`$NEW_TAG\`
+
+            \`tests/contract.sh\` reports \`server.request_fence\` missing — the /api header trust fence this image's proxy relies on is gone or redesigned upstream. Per policy this is reported, never worked around: the agent was NOT admitted and no release was attempted."
+          else
+            msg="## Release prep stopped: \`$NEW_TAG\` is not newer than the last released tag (mis-dispatch)
+
+            The upstream compare reports this tag as *behind*; nothing was built or released."
+          fi
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --body "$msg" || true
+          fi
+          printf '%s\n' "$msg" >&2
+          exit 1
+
+      - name: Note code-level triage decision
+        if: >-
+          ${{
+            steps.contract.outputs.verdict != 'skipped' &&
+            steps.triage.outputs.agent_required == 'no' &&
+            steps.triage.outputs.fatal == 'no' &&
+            steps.triage.outputs.ancestor == 'no' &&
+            steps.resolve.outputs.issue != ''
+          }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.resolve.outputs.issue }}
+          NEW_TAG: ${{ steps.resolve.outputs.new_tag }}
+          HITS: ${{ steps.triage.outputs.surface_hits }}
+        run: |
+          gh issue comment "$ISSUE" --body \
+            "## Diff triage (code-level) — agent not admitted for \`$NEW_TAG\`
+
+            Contract verdict: \`${{ steps.contract.outputs.verdict }}\`; the upstream diff does not touch the adaptation surface (hits: \`${HITS}\`). No agent review needed; verify runs on the default branch." || true
+
   prep:
     name: Agent drift repair + adaptation review (dsh)
     needs: contract
-    # 每次发布都跑 agent: 漂移时修复; 干净时仍对照 § Simplification triggers
-    # 审视上游 diff(能干掉 hack 就删)。仅当本仓库已有该 tag(幂等跳过)时不跑。
-    if: needs.contract.outputs.verdict != 'skipped'
+    # 入场条件(代码级分诊, tests/triage-diff.sh): 契约漂移(非围栏类)或 diff
+    # 命中适配面才唤醒 agent; 围栏漂移/误派发已在 contract job 快速失败。
+    # 仅当本仓库已有该 tag(幂等跳过)时不跑。
+    if: >-
+      ${{
+        needs.contract.outputs.verdict != 'skipped' &&
+        needs.contract.outputs.agent_required == 'yes' &&
+        needs.contract.outputs.fatal != 'yes' &&
+        needs.contract.outputs.ancestor != 'yes'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -186,6 +301,8 @@ jobs:
       TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
       TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
       AGENT_MODEL: ${{ secrets.AGENT_MODEL }}
+      # 代码级分诊结果: 适配面命中的上游路径(agent 的聚焦范围)
+      SURFACE_HITS: ${{ needs.contract.outputs.surface_hits }}
     steps:
       - uses: actions/checkout@v7
 
