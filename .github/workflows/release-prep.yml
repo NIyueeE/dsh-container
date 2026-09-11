@@ -6,7 +6,7 @@ name: Release prep
 #              数秒判定上游 tag 是否存在兼容漂移; 本仓库已有同名 tag 时幂等跳过
 #   prep     — (漂移时)在本仓库上一个发布 tag 的镜像里以 dsh headless 运行修复
 #              agent(dsh 数据在独立 HOME, settings 由 secrets 生成, 模型走
-#              自建中转的 openai-completions 端点): 读上游 diff + 契约文档,
+#              自建中转的 openai-responses 端点): 读上游 diff + 契约文档,
 #              最小化修复(通常是 container/plugin/scripts/
 #              patch-client.js 的候选串); 每次发布(含无漂移)都对照契约文档
 #              § Simplification triggers 审视上游新能力, 能干掉 hack 就删掉
@@ -27,7 +27,7 @@ name: Release prep
 # 触发: upstream-tag.yml 发现新上游 tag 后 repository_dispatch(事件
 # upstream-dsh-tag, 携带 new_tag/old_tag/issue), 或手动 dispatch 填 new_tag。
 # 配置: secrets TERNARYBIT_API_KEY / TERNARYBIT_URL / AGENT_MODEL(agent 模型后端,
-#       自建中转, openai-completions 协议),
+#       自建中转, openai-responses 协议),
 #       可选 secret RELEASE_PAT(fine-grained, 需勾选 "Workflows: read and write"
 #       仓库权限, 否则 push 的 tag 不产生 push event, 不会触发下游)。
 
@@ -357,7 +357,7 @@ jobs:
               ternarybit:
                 displayName: TernaryBit
                 apiKeyEnv: TERNARYBIT_API_KEY
-                api: openai-completions
+                api: openai-responses
                 baseURL: "${TERNARYBIT_URL}"
                 models:
                   - id: "${AGENT_MODEL}"
@@ -366,6 +366,7 @@ jobs:
                     maxTokens: 384000
                     input:
                       - text
+                      - image
                     reasoningEfforts:
                       off: null
                       low: low
