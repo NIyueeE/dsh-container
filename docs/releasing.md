@@ -210,7 +210,7 @@ Configuration for `release-prep.yml`:
 |---|---|---|
 | `TERNARYBIT_API_KEY` | secret | API key for the model relay (New API token bound to the model channel) |
 | `TERNARYBIT_URL` | secret | Public base URL of the model relay, ending in `/v1` (must be reachable from GitHub Actions runners) |
-| `AGENT_MODEL` | secret | Model id for the prep agent (e.g. `deepseek-v4-flash-0731`); wired into the generated dsh `settings.yaml` |
+| `AGENT_MODEL` | secret | Model id for the prep agent (e.g. `deepseek-v4-flash-0731`); wired into the generated `$HOME/.dsh/settings.yaml` — on prep images running dsh v0.1.7+ that file is imported once into the active profile on first start (`settings.yaml.imported` afterwards), which still applies to the `headless` profile because the Settings plugin lives in the base bundle |
 | `RELEASE_PAT` | secret | Optional fine-grained PAT whose push publishes the release tag. Needs **Contents: Read and write** (to push) **and Workflows: Read and write** (to make the tag push create `image.yml` runs) on this repository. Neither a `GITHUB_TOKEN` push nor a GitHub App installation-token push triggers `image.yml` (verified live), so a user PAT is the reliable trigger — the pipeline additionally confirms the run exists after pushing, and `.github/workflows/pat-trigger-probe.yml` can pre-verify the credential. Without it, the pipeline stops at ready-to-release and posts manual `git tag` instructions to the tracker issue |
 
 The pipeline can also be run on demand: Actions → "Release prep" → "Run workflow" with the

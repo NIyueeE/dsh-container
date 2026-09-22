@@ -55,9 +55,10 @@ upstream's "Open config file" would spawn the native text-editor command into no
 container. The plugin wraps the settings controller's `describe` method so `settings/describe`
 reports `hasDocument: false` (and flips the provider's `documentPath` on pre-v0.1.7 upstream
 tags), so the browser never renders the button (upstream renders the action only when the
-describe mirror reports a local document). No download endpoint exists — the document
-lives on the mounted volume at `~/.dsh/settings.yaml` (a volume cannot be shadowed by the image;
-only the user who mounts the volume and uid 1000 can read it).
+describe mirror reports a local document). No download endpoint exists — settings live on the
+mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them in the active profile's plugin
+configuration, `~/.dsh/profiles/<profile>/cordis.patch.yml`, with the legacy `settings.yaml`
+imported once), and only the user who mounts the volume and uid 1000 can read it.
 
 Consequences:
 
@@ -81,11 +82,20 @@ included — to `https://harness-telemetry.deepseeksvc.com/v1/logs`, regardless 
 provider.
 
 This image defaults to **`DSH_TELEMETRY_MODE=DISABLED`** (set by the entrypoint): nothing leaves
-the container, and clicking feedback records it in the session log while printing a one-line
-"not uploaded through OpenTelemetry" warning. To opt back in, pass `DSH_TELEMETRY_MODE=FEEDBACK_ONLY`
-(or point `DSH_TELEMETRY_OTLP_URL` at your own collector); a non-empty `DSH_TELEMETRY_DISABLED`
-disables the row entirely. The separate DeepSeek session-log contributor (`session-log-deepseek`)
-is opt-in and off by default either way.
+the container **through the OTel paths**, and clicking feedback records it in the session log while
+printing a one-line "not uploaded through OpenTelemetry" warning. To opt back in, pass
+`DSH_TELEMETRY_MODE=FEEDBACK_ONLY` (or point `DSH_TELEMETRY_OTLP_URL` at your own collector); a
+non-empty `DSH_TELEMETRY_DISABLED` disables the row entirely (`FULL` is rejected upstream).
+
+**This switch does not cover the DeepSeek session-log contributor.** Upstream ships
+`session-log-deepseek` mounted with `enabled: true` — independently of `DSH_TELEMETRY_MODE` — so
+when you talk to the DeepSeek API (the default provider), complete unaccepted session-log suffixes
+(message text, tool arguments and results, workspace paths) are attached to those requests,
+including through a configured gateway. If you use a non-DeepSeek provider it never fires; if you
+want it off while using DeepSeek, set `enabled: false` on the `session-log-deepseek` entry in the
+active profile's plugin configuration (`~/.dsh/profiles/<profile>/cordis.patch.yml`) and restart
+dsh web. The image deliberately does not disable it for you — it is part of the DeepSeek API
+protocol, and upstream's own docs describe it as default-on.
 
 ## Don't mount host credentials
 
@@ -108,18 +118,24 @@ entry or use an additional isolation layer (user namespace, VM, etc.).
 The image installs podman (with `crun`, `fuse-overlayfs`, `uidmap`) and configures subuid/subgid for
 uid 1000, and it prepares the runtime environment itself: the entrypoint provisions a writable
 `XDG_RUNTIME_DIR` (rootless podman cannot start without one), and the image sets
-`_CONTAINERS_USERNS_CONFIGURED=1` so the inner podman reuses the outer user namespace instead of
+`_CONTAINERS_USERNS_CONFIGURED=1` so the inner podman **skips user-namespace creation** instead of
 calling `newuidmap` — which cannot work inside a default Docker container (uid 1000 has no
-CAP_SETUID, and the default seccomp profile may block `unshare`).
+CAP_SETUID, and the default seccomp profile may block `unshare`). It therefore creates the nested
+container's mount/PID/network namespaces inside the *current* user namespace, which is why a
+rootful host has to grant the capabilities for that (see the host flags below).
 
 Whether `podman run` actually succeeds still depends on the host: nested user namespaces and
-`/dev/fuse` must be allowed (`--security-opt seccomp=unconfined --security-opt apparmor=unconfined
---device /dev/fuse` on Docker, `--userns=keep-id` on a rootless Podman host, or `--privileged`);
-Docker Desktop does not support it at all. Treat in-container podman as an experimental in-container
-dev tool, not a guaranteed isolation primitive — and note that the host flags which enable it
-(`--privileged`, unconfined seccomp) weaken the container boundary itself, so enable them only when
-nested containers are actually needed. See [deployment.md](deployment.md) § In-container podman for
-the full host matrix and the rootful/`vfs` fallbacks.
+`/dev/fuse` must be allowed, and because the inner podman skips creating its own user namespace it
+needs `CAP_SYS_ADMIN` in the namespace it runs in — supplied by the container's own user namespace
+on a rootless host (`--userns=keep-id`, then `sudo podman …` inside), or granted explicitly on
+Docker / rootful Podman (`--cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --device /dev/fuse
+--security-opt seccomp=unconfined --security-opt apparmor=unconfined`, or `--privileged`); Docker
+Desktop does not support it at all. Treat in-container podman as an experimental
+in-container dev tool, not a guaranteed isolation primitive — and note that the host flags which
+enable it (`--privileged`, `CAP_SYS_ADMIN`, unconfined seccomp) weaken the container boundary
+itself, so enable them only when nested containers are actually needed. See
+[deployment.md](deployment.md) § In-container podman for the full host matrix and the
+rootful/`vfs` fallbacks.
 
 ## `~/.dsh` holds API keys
 

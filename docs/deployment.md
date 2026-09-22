@@ -88,7 +88,7 @@ release notes. Toolchain copies seeded
 into volumes by even older images are likewise inert (PATH prefers the image-owned binaries);
 remove them manually to reclaim space (see the release notes). After upgrading and
 restarting the container, verify with `docker exec dsh dsh --version` (or `podman exec dsh dsh
---version`) — it must print the version matching the image tag. To clean an image's provenance
+--version`) — it must print the version matching the image tag. To inspect an image's provenance
 stamp: `docker exec dsh cat /etc/dsh-container/provenance.json`.
 
 - **Quadlet** already sets `Pull=newer` (pulls on restart when a newer remote image exists) and
@@ -147,8 +147,12 @@ cookie), replacing the old supervisor-side exchange.
 **The settings-document button is hidden** — "Open config file" (Settings) has no headless
 fallback upstream and would spawn `xdg-open` into nothing in a container. The plugin makes
 `settings/describe` report `hasDocument: false`, so upstream's own UI never renders the button.
-The document itself stays at `~/.dsh/settings.yaml` on the mounted volume — edit it from the
-host, or read it inside the container (`docker exec dsh cat ~/.dsh/settings.yaml`).
+Settings still live on the mounted volume under `~/.dsh`: upstream v0.1.7+ stores form values in
+the active profile's plugin configuration (`~/.dsh/profiles/<profile>/cordis.patch.yml`, e.g.
+`profiles/web/`) and imports the legacy `~/.dsh/settings.yaml` **once**, renaming it to
+`settings.yaml.imported`; provider credentials stay in `~/.dsh/.credentials.yaml`. Read or edit
+them from the host, or inside the container (`docker exec dsh cat
+~/.dsh/profiles/web/cordis.patch.yml`).
 
 ### External reverse proxy with TLS (WAN)
 
@@ -273,24 +277,45 @@ for the `dsh` user, so the agent can run nested containers. The image side is al
   fallback).
 - **`XDG_RUNTIME_DIR` is provisioned by the entrypoint** (`/run/user/<uid>`, owned by the runtime
   user) — rootless podman cannot start without a writable runtime dir, and a container has no
-  login session to create one. `/etc/bash.bashrc` exports the same default for `docker exec`
-  shells, which bypass the entrypoint.
-- **`_CONTAINERS_USERNS_CONFIGURED=1`** (image ENV) makes the inner podman reuse the outer user
-  namespace instead of calling `newuidmap` — which cannot work inside a default Docker container
-  (uid 1000 has no CAP_SETUID, and the default seccomp profile may block `unshare`). With the
-  variable set, nested images run in single-uid mode and common images work out of the box; on
-  hosts where the outer container already has a properly mapped user namespace (rootless Podman
-  `--userns=keep-id`, Docker `userns-remap`) this is the fully-mapped mode.
+  login session to create one. `/etc/bash.bashrc` exports the same default for **interactive**
+  `docker exec` shells, which bypass the entrypoint; non-interactive exec (`docker exec dsh sh -c
+  '...'`) does *not* read that file, so scripts must set it themselves:
+  `docker exec dsh bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); podman run --rm …'`.
+- **`_CONTAINERS_USERNS_CONFIGURED=1`** (image ENV) makes the inner podman **skip creating a user
+  namespace** instead of calling `newuidmap` — which cannot work inside a default Docker container
+  (uid 1000 has no CAP_SETUID, and the default seccomp profile may block `unshare`). What remains
+  is namespace creation inside the current user namespace, so the capabilities in the host matrix
+  below matter: a rootless host's own user namespace supplies them (for root inside the container),
+  while a host without one — Docker default, rootful Podman — must grant them explicitly. With the
+  variable set, nested images run in
+  single-uid mode and common images work out of the box; on hosts where the outer container already
+  has a properly mapped user namespace (rootless Podman `--userns=keep-id`, Docker
+  `userns-remap`) this is the fully-mapped mode.
 - Storage is preset to `overlay` + `fuse-overlayfs`, and `policy.json` accepts any registry.
 
-What the **host** must still allow (the image cannot do this part):
+What the **host** must still allow (the image cannot do this part). The rule behind the table: with
+`_CONTAINERS_USERNS_CONFIGURED=1` the inner podman **skips creating a user namespace** and therefore
+creates the nested container's mount/PID/network namespaces in the *current* one — which needs
+`CAP_SYS_ADMIN` there. A rootless host's own user namespace supplies that for root inside the
+container (so `sudo podman …` works there); anywhere else it must be granted explicitly.
 
 | Host runtime | Working configuration |
 |---|---|
-| Docker | `--security-opt seccomp=unconfined --security-opt apparmor=unconfined --device /dev/fuse` (or `--privileged`); optionally `--sysctl net.ipv4.ping_group_range="0 2147483647"` so `ping` works as the non-root runtime user |
-| Podman (rootless host) | `--userns=keep-id` |
-| Podman (rootful host) | `--userns=keep-id`, or `--privileged` |
-| Quadlet | `UserNS=keep-id` on a rootless host; otherwise the native keys `AddDevice=/dev/fuse`, `SeccompProfile=unconfined`, `AppArmor=unconfined` (see `examples/dsh.container`) |
+| Docker (default, no userns) | `--cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --device /dev/fuse`, or `--privileged`; optionally `--sysctl net.ipv4.ping_group_range="0 2147483647"` so `ping` works as the non-root runtime user |
+| Docker with `userns-remap` | as above (the remapped userns fixes file ownership, not the missing capability) |
+| Podman (rootless host) | `--userns=keep-id`; the inner podman then runs with the capabilities of the container's own user namespace — use `sudo podman …` inside, or add `--cap-add=CAP_SYS_ADMIN` for unprivileged `podman …` |
+| Podman (rootful host) | `--cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --device /dev/fuse --security-opt seccomp=unconfined --security-opt apparmor=unconfined`, or `--privileged`. **Do not use `--userns=keep-id` here**: as root, keep-id overrides the image's `USER` and runs the container as root, so dsh data lands in `/root/.dsh` (container layer, lost on recreate) instead of the `/home/dsh` volume |
+| Quadlet | `UserNS=keep-id` on a rootless host; on a rootful host `AddCapability=CAP_SYS_ADMIN CAP_NET_ADMIN`, `AddDevice=-/dev/fuse`, `SeccompProfile=unconfined`, `AppArmor=unconfined` (or `PodmanArgs=--privileged`) — see `examples/dsh.container` |
+
+Verify inside the running container (see also the `XDG_RUNTIME_DIR` note above):
+
+```bash
+docker exec dsh bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); podman run --rm docker.io/library/alpine:3.20 echo nested-ok'
+```
+
+`CAP_NET_ADMIN` covers the inner network setup and `/dev/fuse` the `fuse-overlayfs` storage driver.
+Every one of these flags weakens the container boundary (see [security.md](security.md)) — enable
+them only where nested containers are actually needed.
 
 Compose/Quadlet snippets are pre-commented in `examples/compose.yaml` and `examples/dsh.container`.
 Docker Desktop (macOS/Windows) does not support nested user namespaces at all — in-container
@@ -298,8 +323,9 @@ podman is a Linux-host feature.
 
 Fallbacks when the host cannot provide the above:
 
-- **`sudo podman ...`** (rootful inside the container) needs no `newuidmap` — only `CAP_SYS_ADMIN`
-  and `/dev/fuse`, which `--privileged` supplies.
+- **`sudo podman ...`** (rootful inside the container) needs no `newuidmap` — it needs
+  `CAP_SYS_ADMIN` and `/dev/fuse`, which either `--privileged` or an explicit
+  `--cap-add=CAP_SYS_ADMIN` (Quadlet `AddCapability=CAP_SYS_ADMIN`) supplies.
 - **`podman --storage-driver vfs ...`** works without `/dev/fuse` (skips fuse-overlayfs) at the
   cost of speed and disk space.
 

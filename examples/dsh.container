@@ -35,18 +35,25 @@ PublishPort=127.0.0.1:3081:3081
 # Optional: change dsh's internal port (the exposed port stays 3081).
 # Exec=--port 8080
 # Optional: in-container (rootless) podman. The image ships crun, provisions
-# XDG_RUNTIME_DIR and reuses the outer user namespace, but nested userns + fuse
-# must be allowed by the host runtime. Rootless podman host: uncomment
-#   UserNS=keep-id      # single shared userns; inner podman reuses it
-# Any host, when /dev/fuse is available (the '-' prefix makes it optional, so
-# hosts without fuse still start):
-#   AddDevice=-/dev/fuse                    # fuse-overlayfs storage driver
-#   SeccompProfile=unconfined               # let the inner podman unshare a userns
+# XDG_RUNTIME_DIR and skips inner user-namespace creation, but nested namespaces
+# + fuse must be allowed by the host runtime, and the inner podman needs
+# CAP_SYS_ADMIN in the namespace it creates the nested namespaces in.
+# Rootless podman host: one shared userns; the inner podman reuses it and root
+# inside it already holds that capability — use `podman exec -it dsh bash` then
+# `sudo podman run ...`:
+#   UserNS=keep-id
+# Rootful podman host (system unit): keep-id is WRONG here — as root it overrides
+# the image's USER and runs the container as root, so dsh state lands in
+# /root/.dsh (container layer, lost on recreate) instead of the /home/dsh volume.
+# Grant the capabilities the inner podman needs instead:
+#   AddCapability=CAP_SYS_ADMIN CAP_NET_ADMIN
+#   AddDevice=-/dev/fuse                    # '-' prefix: optional, so hosts without fuse still start
+#   SeccompProfile=unconfined               # let the inner podman unshare
 #   AppArmor=unconfined                     # only needed on AppArmor hosts
-# On a rootful podman host those lines (or --privileged) are the equivalent for
-# rootful in-container podman, which needs no newuidmap at all; without
-# /dev/fuse, `podman --storage-driver vfs ...` still works (slower).
-# See docs/deployment.md "In-container podman".
+# `PodmanArgs=--privileged` is the blunt equivalent of those four keys.
+# Without /dev/fuse, `podman --storage-driver vfs ...` still works (slower).
+# Enabling any of this weakens the container boundary — see docs/security.md.
+# See docs/deployment.md "In-container podman" for the full host matrix.
 # Restart dsh web without restarting the container:
 #   podman exec dsh dsh-restart
 # Persist the whole user home. User state and user-installed tools survive

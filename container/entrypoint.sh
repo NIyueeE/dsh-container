@@ -21,7 +21,9 @@
 # 遥测默认关闭: dsh 的反馈 OTel 上报(默认 FEEDBACK_ONLY 时, 用户点反馈会把
 # 完整会话上下文发往 harness-telemetry.deepseeksvc.com)在本镜像中默认
 # DISABLED; 用户可用 DSH_TELEMETRY_MODE / DSH_TELEMETRY_OTLP_URL 显式开启
-# 或改端点(见 docs/security.md)。
+# 或改端点(见 docs/security.md)。注意这只覆盖 OTel 路径: 上游默认挂载的
+# DeepSeek 会话日志贡献者(session-log-deepseek)不受该变量控制, 详见
+# docs/security.md "Telemetry is off by default"。
 set -euo pipefail
 
 # 数值 USER 不自动设置 HOME; 从 passwd 还原, 供 npm/uv/cargo 等使用。
@@ -71,8 +73,9 @@ export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 # login session, /run/user/$UID 默认不存在, 且 /run 属 root —— 用免密 sudo
 # 建好并交给当前用户; sudo 不可用时退到 /tmp 下的自有目录(podman 对 tmpfs
 # 无硬性要求, 0700 自有目录即可)。镜像 ENV 的 _CONTAINERS_USERNS_CONFIGURED=1
-# 已让内层 podman 复用外层 userns(免 newuidmap 失败), exec shell 的兜底
-# 导出在 /etc/bash.bashrc。
+# 已让内层 podman 跳过创建用户命名空间(免 newuidmap 失败; 于是它只能在当前
+# userns 里建命名空间 —— rootful 宿主因此需要 CAP_SYS_ADMIN, 见 docs/deployment.md),
+# exec shell 的兜底导出在 /etc/bash.bashrc。
 if [ "$(id -u)" = 0 ]; then
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run}"
 elif [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -w "${XDG_RUNTIME_DIR:-/nonexistent}" ]; then

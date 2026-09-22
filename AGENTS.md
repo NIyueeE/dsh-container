@@ -60,15 +60,24 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    ship in the release notes. The entrypoint
    also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's OTel feedback uploader
    (upstream default `FEEDBACK_ONLY` — exports the session prefix on explicit feedback) never
-   sends data out of the container unless the user opts in.
+   uploads unless the user opts in. That switch covers the **OTel path only**: upstream mounts
+   `session-log-deepseek` with `enabled: true`, so session-log suffixes are attached to DeepSeek
+   API requests by default — the image leaves that upstream behavior alone and documents it in
+   `docs/security.md`; do not describe the image as "no data leaves the container".
 3. Parses `--port <N>` / `--port=<N>` (default 3080) and rejects `0` and `3081`.
 4. Prepares the in-container podman runtime environment: provisions `XDG_RUNTIME_DIR`
    (`/run/user/<uid>` via passwordless sudo, `/tmp` fallback) — rootless podman cannot start
    without a writable runtime dir — while the image ENV `_CONTAINERS_USERNS_CONFIGURED=1`
-   makes the inner podman reuse the outer user namespace instead of calling `newuidmap`
-   (which cannot work in a default Docker container). `/etc/bash.bashrc` re-exports
-   `XDG_RUNTIME_DIR` for `docker exec` shells. The host still must allow nested userns +
-   `/dev/fuse`; see `docs/deployment.md` § In-container podman.
+   makes the inner podman skip user-namespace creation (podman's `becomeRootInUserNS` returns
+   early on that variable) instead of calling `newuidmap`, which cannot work in a default Docker
+   container. `/etc/bash.bashrc` re-exports
+   `XDG_RUNTIME_DIR` for **interactive** `docker exec` shells. The host must still allow nested
+   namespaces + `/dev/fuse`, and because inner podman then creates the nested mount/PID/network
+   namespaces in the *current* namespace, any host where the container does not own a user
+   namespace (Docker default, rootful Podman) must grant `CAP_SYS_ADMIN` (+`CAP_NET_ADMIN`) or use
+   `--privileged` — a rootless host gets those capabilities from its own user namespace
+   (`--userns=keep-id`, then `sudo podman …` inside); see `docs/deployment.md` § In-container
+   podman.
 5. `dsh-web` then brings up the whole service stack (it is the container's supervisor — see
    `container/dsh-web.sh`): it starts `dsh web` on `127.0.0.1:$DSH_WEB_PORT` (output mirrored into
    the container log) mounted with the container-adapt plugin overlay
@@ -165,10 +174,13 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   container root as reachable by the agent.
 - **podman is installed for in-container rootless work, with subuid/subgid configured, plus the
   runtime-side preparation: `crun`, an entrypoint-provisioned `XDG_RUNTIME_DIR`, and
-  `_CONTAINERS_USERNS_CONFIGURED=1`** (inner podman reuses the outer userns instead of calling
-  `newuidmap`, which cannot work in a default Docker container). Nested containers still depend
-  on the host Docker/Podman seccomp and user-namespace settings (and `/dev/fuse`) — docs must not
-  promise that `podman run` always works inside this image.
+  `_CONTAINERS_USERNS_CONFIGURED=1`** (inner podman skips user-namespace creation instead of
+  calling `newuidmap`, which cannot work in a default Docker container). Nested containers still
+  depend on the host Docker/Podman seccomp and user-namespace settings (and `/dev/fuse`), and on
+  any host where the container has no user namespace of its own (Docker default, rootful Podman)
+  the container additionally needs `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` (or `--privileged`) because
+  inner podman creates the nested namespaces in the current one — docs must not promise that
+  `podman run` always works inside this image.
 - **Ports**: exposed/external port is `3081`; `127.0.0.1:3080` is dsh's internal port only. Keep
   them distinct everywhere. The proxy binds `0.0.0.0:3081` because it differs from dsh's port —
   do not reintroduce container-IP binding tricks. The examples publish it on host loopback

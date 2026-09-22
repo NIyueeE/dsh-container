@@ -45,7 +45,7 @@ the image. There is no login step: the proxy bootstraps the dsh session automati
 | Base image | `debian:13-slim` (pinned; overridable via the `BASE_IMAGE` build arg) |
 | Toolchain | Node.js 22 LTS, pnpm, uv, Rust/cargo (+ rustfmt/clippy), git + git-lfs, build-essential, Caddy, podman + crun, gh — image-owned real binaries, upgraded with the image |
 | Agent CLI tools | ripgrep, fd, python3, zip, openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch — baked into the system layer, so a fresh container never re-downloads them (runtime `apt install` would be lost on recreation) |
-| Nested containers | podman in-container (rootless) with `XDG_RUNTIME_DIR` and the userns env preconfigured; the host runtime must allow nested user namespaces + `/dev/fuse` |
+| Nested containers | podman in-container (rootless) with `XDG_RUNTIME_DIR` and the userns env preconfigured; the host runtime must allow nested user namespaces + `/dev/fuse`, and where the container has no user namespace of its own (Docker default, rootful Podman) it must also grant `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` — see [docs/deployment.md](docs/deployment.md) § In-container podman |
 | dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable); no runtime auto-update |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) with optional basic auth |
 | Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |
@@ -62,8 +62,9 @@ image at `/opt/dsh-container-plugin` and mounted into the web profile via `dsh -
   process and writes the cookie for the proxy to inject; browsers never see a token.
 - **Hidden settings-document button** — "Open config file" has no headless fallback upstream and
   would spawn `xdg-open` into nothing in a container. The plugin makes `settings/describe`
-  report `hasDocument: false`, so the button never renders (upstream's own UI logic). The
-  document itself stays at `~/.dsh/settings.yaml` on the mounted volume.
+  report `hasDocument: false`, so the button never renders (upstream's own UI logic). Settings
+  persist on the mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them per profile in
+  `~/.dsh/profiles/<profile>/cordis.patch.yml`; the legacy `settings.yaml` is imported once).
 - **Browser-side `isLoopback` patch** — `scripts/patch-client.js` makes settings/credentials work
   through the proxy (applied at image build and before every `dsh web` start).
 
@@ -78,15 +79,18 @@ notes (see [docs/upstream-contract.md](docs/upstream-contract.md) § Simplificat
 - **The proxy is the security boundary** — Caddy rewrites `Host`/`Origin` to loopback, so remote
   browsers pass dsh's `/api` trust fence, including settings/credentials methods that are otherwise
   loopback-only. Anyone who can reach `3081` gets full control: enable basic auth
-  (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`, set together or the entrypoint refuses to start) and keep
+  (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`, set together or the supervisor refuses to start) and keep
   the port firewalled.
 - **Session bootstrapped** — the container-adapt plugin exchanges dsh's one-time login token
   inside the dsh process at startup and the proxy injects the session cookie into every proxied
   request; browsers never see a token.
 - **Streams & compression** — SSE/WebSocket pass through unbuffered (verified against Caddy 2.6);
   UI assets are gzip-compressed by dsh's own webserver (≈1.3 MB → ≈360 KB).
-- **Telemetry off by default** — `DSH_TELEMETRY_MODE=DISABLED` is set by the entrypoint; no
-  feedback/telemetry data leaves the container unless you opt back in.
+- **Telemetry off by default** — the entrypoint sets `DSH_TELEMETRY_MODE=DISABLED`, so the OTel
+  feedback uploader never sends anything unless you opt back in. Separate from it, upstream's
+  DeepSeek session-log contributor is **on by default** and attaches session-log suffixes to
+  DeepSeek API requests — see [docs/security.md](docs/security.md) for what it sends and how to
+  turn it off.
 - **Client patch** — the container-adapt plugin's `patch-client.js` makes settings/credentials
   usable through the proxy (applied at build time and before every `dsh web` start; if upstream
   changes the bundle strings it warns and skips instead of blocking startup).
@@ -102,7 +106,7 @@ WebSocket headers and raised timeouts) — see [docs/deployment.md](docs/deploym
 | Variable | Default | Description |
 |---|---|---|
 | `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(empty)* | Basic auth on the exposed proxy (recommended for any non-loopback deployment); set both or neither |
-| `DSH_TELEMETRY_MODE` | `DISABLED` | dsh feedback/telemetry upload policy; `FEEDBACK_ONLY` restores the upstream default (uploads on explicit feedback), `DISABLED` keeps everything local |
+| `DSH_TELEMETRY_MODE` | `DISABLED` | OTel feedback-upload policy; `FEEDBACK_ONLY` restores the upstream default (uploads on explicit feedback), `DISABLED` keeps the OTel path local. It does **not** control the DeepSeek session-log contributor ([security.md](docs/security.md)) |
 
 Everything else uses built-in defaults — dsh data at `~/.dsh`, cwd `$HOME`, writable caches under
 `~/.cargo` / `~/.local/share`, image-owned tools in `/usr/local/bin` and `/opt/rust`. The whole

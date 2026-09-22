@@ -42,7 +42,7 @@ sudo systemctl enable --now dsh.service
 | 基础镜像 | `debian:13-slim`(已钉版本,可用 `BASE_IMAGE` 构建参数覆盖) |
 | 工具链 | Node.js 22 LTS、pnpm、uv、Rust/cargo(含 rustfmt/clippy)、git + git-lfs、build-essential、Caddy、podman + crun、gh——镜像持有的真实二进制,随镜像升级 |
 | agent 常用工具 | ripgrep、fd、python3、zip、openssh-client、tmux、sqlite3、vim.tiny/nano、less、rsync、wget、tree、htop、tzdata、patch——全部烘干进系统层,全新容器开箱即用、无需重新下载(运行期 `apt install` 会随容器重建丢失) |
-| 嵌套容器 | 容器内( rootless )podman 已预配置 `XDG_RUNTIME_DIR` 与 userns 环境变量;宿主运行时需允许嵌套用户命名空间 + `/dev/fuse` |
+| 嵌套容器 | 容器内( rootless )podman 已预配置 `XDG_RUNTIME_DIR` 与 userns 环境变量;宿主运行时需允许嵌套用户命名空间 + `/dev/fuse`,且当容器自身没有用户命名空间时(Docker 默认、rootful Podman)还需授予 `CAP_SYS_ADMIN`/`CAP_NET_ADMIN`——见 [docs/deployment.md](docs/deployment.md) § In-container podman |
 | dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本);运行期无自动更新 |
 | 暴露方式 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),可选 basic auth |
 | 守护 | `dsh web` 退出自动重启;`docker exec dsh dsh-restart` 手动重启 |
@@ -56,7 +56,7 @@ sudo systemctl enable --now dsh.service
 `/opt/dsh-container-plugin`,经 `dsh --patch` 挂载进 web profile:
 
 - **会话 cookie 自举** —— 插件在 dsh 进程内兑换一次性登录 token,写出 cookie 供代理注入;浏览器不会接触 token。
-- **隐藏"打开配置文件"按钮** —— 上游该操作没有无桌面兜底,在容器里会 spawn `xdg-open` 扑空;插件让 `settings/describe` 报告 `hasDocument: false`,按钮按上游自身 UI 逻辑不再渲染。文档本体仍在挂载卷的 `~/.dsh/settings.yaml`。
+- **隐藏"打开配置文件"按钮** —— 上游该操作没有无桌面兜底,在容器里会 spawn `xdg-open` 扑空;插件让 `settings/describe` 报告 `hasDocument: false`,按钮按上游自身 UI 逻辑不再渲染。设置项持久化在挂载卷的 `~/.dsh` 下(上游 v0.1.7+ 按 profile 存于 `~/.dsh/profiles/<profile>/cordis.patch.yml`;旧版 `settings.yaml` 只导入一次)。
 - **浏览器侧 `isLoopback` 补丁** —— `scripts/patch-client.js` 让设置/凭据页可经代理使用(镜像构建时与每次 `dsh web` 启动前应用)。
 
 插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分并在 release note 中说明(见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。
@@ -64,10 +64,10 @@ sudo systemctl enable --now dsh.service
 ## 网络与安全
 
 - **端口模型**——`dsh web` 监听 `127.0.0.1:3080`(上游拒绝 `--host 0.0.0.0`);对外端口是 `3081`,示例默认发布在宿主回环地址。
-- **代理即安全边界**——Caddy 把 `Host`/`Origin` 改写为回环,远程浏览器因此通过 dsh 的 `/api` 信任围栏,包括原本仅限回环的设置/凭据接口。任何能访问 `3081` 的人都获得完全控制:请启用 basic auth(`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`,成对设置,否则 entrypoint 拒绝启动)并保持端口防火墙关闭。
+- **代理即安全边界**——Caddy 把 `Host`/`Origin` 改写为回环,远程浏览器因此通过 dsh 的 `/api` 信任围栏,包括原本仅限回环的设置/凭据接口。任何能访问 `3081` 的人都获得完全控制:请启用 basic auth(`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`,成对设置,否则守护脚本 dsh-web 拒绝启动)并保持端口防火墙关闭。
 - **会话自动引导**——容器适配插件在 dsh 进程内兑换一次性登录 token(启动时),代理再把会话 cookie 注入每个请求;浏览器不会接触 token。
 - **流与压缩**——SSE/WebSocket 无缓冲直通(已对 Caddy 2.6 验证);UI 资源由 dsh 自带 webserver gzip 压缩(约 1.3 MB → 360 KB)。
-- **遥测默认关闭**——entrypoint 设置 `DSH_TELEMETRY_MODE=DISABLED`;除非显式打开,反馈/遥测数据不会离开容器。
+- **遥测默认关闭** —— entrypoint 设置 `DSH_TELEMETRY_MODE=DISABLED`,OTel 反馈上报在你显式打开前不会发送任何内容。与之独立的是上游的 DeepSeek 会话日志贡献者,它**默认开启**,会把会话日志后缀附加到 DeepSeek API 请求上——发送内容与关闭方式见 [docs/security.md](docs/security.md)。
 - **客户端补丁**——容器适配插件的 `patch-client.js` 让设置/凭据页可经代理使用(镜像构建时与每次 `dsh web` 启动前应用;若上游改变 bundle 字符串则告警跳过,不阻塞启动)。
 - **附加参数**——通过容器 command 透传 `dsh web` 参数,例如 `["--port", "8080"]`(仅改内部端口;对外端口仍为 `3081`)。
 
@@ -78,7 +78,7 @@ sudo systemctl enable --now dsh.service
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `DSH_PROXY_USER` / `DSH_PROXY_PASSWORD` | *(空)* | 对外代理的 basic auth(任何非回环部署都建议启用);成对设置或都不设 |
-| `DSH_TELEMETRY_MODE` | `DISABLED` | dsh 反馈/遥测上传策略;`FEEDBACK_ONLY` 恢复上游默认(显式反馈时上传),`DISABLED` 保持一切本地 |
+| `DSH_TELEMETRY_MODE` | `DISABLED` | OTel 反馈上报策略;`FEEDBACK_ONLY` 恢复上游默认(显式反馈时上传),`DISABLED` 让 OTel 路径留在本地。它**不**控制 DeepSeek 会话日志贡献者([security.md](docs/security.md)) |
 
 其余全部使用内置默认值——dsh 数据在 `~/.dsh`,工作目录 `$HOME`,可写缓存在 `~/.cargo` / `~/.local/share`,镜像持有的工具在 `/usr/local/bin` 与 `/opt/rust`。整个 `/home/dsh` 是持久化边界:把它作为单一卷挂载;镜像升级替换工具链,从不动数据。细节见 [docs/build.md](docs/build.md) 与 [docs/deployment.md](docs/deployment.md)。
 

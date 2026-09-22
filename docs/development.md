@@ -6,8 +6,8 @@
 AGENTS.md                # guidelines for agents working on this repo
 Containerfile            # image build (Debian slim + node/pnpm + rust/uv + podman/crun/caddy/gh + baked agent CLI tools + source-built dsh + entrypoint)
 container/
-  entrypoint.sh          # container entrypoint: Caddy proxy + start dsh-web
-  dsh-web.sh             # dsh web supervisor: auto-restart dsh web, installed as /usr/local/bin/dsh-web
+  entrypoint.sh          # entrypoint: HOME restoration, rustup-home ownership self-heal, XDG_RUNTIME_DIR provisioning, --port parsing, then exec dsh-web
+  dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the session cookie, runs the Caddy proxy, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
   healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
   plugin/                # container-adapt plugin: cookie bootstrap + settings-document button hide + patch-client.js, at /opt/dsh-container-plugin
@@ -31,8 +31,8 @@ justfile                 # build / debug / restart / test / contract recipes
 .github/
   dependabot.yml         # Dependabot: weekly github-actions + docker (base image) updates
 .github/workflows/
-  image.yml              # build + validate image; publish + GitHub Release on dsh-v* tags
-  upstream-tag.yml       # daily watcher: tracks upstream dsh tags, dispatches release-prep
+  image.yml              # build + validate image; contract gate + publish + composed GitHub Release on dsh-v* tags
+  upstream-tag.yml       # daily watcher: tracks upstream dsh tags, dispatches release-prep, flags an unpublished tag
   release-prep.yml       # automated release preparation: contract -> agent -> verify -> tag
 ```
 
