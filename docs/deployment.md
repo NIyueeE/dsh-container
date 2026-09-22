@@ -305,7 +305,7 @@ container (so `sudo podman …` works there); anywhere else it must be granted e
 | Docker with `userns-remap` | as above (the remapped userns fixes file ownership, not the missing capability) |
 | Podman (rootless host) | `--userns=keep-id`; the inner podman then runs with the capabilities of the container's own user namespace — use `sudo podman …` inside, or add `--cap-add=CAP_SYS_ADMIN` for unprivileged `podman …` |
 | Podman (rootful host) | `--cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --device /dev/fuse --security-opt seccomp=unconfined --security-opt apparmor=unconfined`, or `--privileged`. **Do not use `--userns=keep-id` here**: as root, keep-id overrides the image's `USER` and runs the container as root, so dsh data lands in `/root/.dsh` (container layer, lost on recreate) instead of the `/home/dsh` volume |
-| Quadlet | `UserNS=keep-id` on a rootless host; on a rootful host `AddCapability=CAP_SYS_ADMIN CAP_NET_ADMIN`, `AddDevice=-/dev/fuse`, `SeccompProfile=unconfined`, `AppArmor=unconfined` (or `PodmanArgs=--privileged`) — see `examples/dsh.container` |
+| Quadlet | `UserNS=keep-id` on a rootless host; on a rootful host `AddCapability=CAP_SYS_ADMIN CAP_NET_ADMIN`, `AddDevice=-/dev/fuse`, `SeccompProfile=unconfined`, `PodmanArgs=--security-opt apparmor=unconfined` (the native `AppArmor=` key needs podman ≥ 5.8; `PodmanArgs=--privileged` replaces the whole set) — see `examples/dsh.container` |
 
 Verify inside the running container (see also the `XDG_RUNTIME_DIR` note above):
 
@@ -392,6 +392,16 @@ was restarted after an update).
 **Podman rootless + bind mounts**
 If you bind-mount a host directory at `/home/dsh`, make sure it is owned by your uid and
 readable by the container; keep the `:Z` label with SELinux.
+
+**Quadlet: `converting "dsh.container": unsupported key 'AppArmor' in group 'Container'`**
+The native `AppArmor=` Quadlet key only exists in podman ≥ 5.8 (the image ships 5.4.x). Use
+`PodmanArgs=--security-opt apparmor=unconfined` instead, or drop the line on hosts without
+AppArmor. Regenerate after editing with `systemctl daemon-reload`.
+
+**Quadlet: `Failed to resolve unit specifiers in 'DSH_PROXY_PASSWORD=…': Invalid slot`**
+The generated unit is a systemd unit, and systemd expands `%` there — a password containing a
+percent sign (e.g. a URL-encoded `%7b`) breaks unit loading. Write the value with a doubled sign
+(`%%`) in the Quadlet file; systemd turns it back into one `%` for the container.
 
 **UI loads but event streams fail with 502 after an image upgrade**
 The browser was holding a cached, pre-upgrade frontend that still calls WebSocket endpoints the

@@ -54,3 +54,14 @@ assert h(en) == h(zh) and l(en) == l(zh) and en.count('```') == zh.count('```')
 print('README parity OK')
 PY
 ```
+
+## CI lanes
+
+`image.yml` classifies every push and pull request from its **real diff**:
+
+- **docs-only** (`*.md` or `LICENSE` touched, nothing else): the image build + smoke test are
+  skipped and only the validation job runs (plus a relative-link check over the docs). Tag builds
+  never take this lane, and anything undecidable (new branch, force push, shallow clone, manual
+  dispatch) falls back to the full build — the classifier fails closed.
+- **everything else** (code, examples, workflows, Containerfile, …): full build + smoke, exactly
+  as before.
