@@ -27,6 +27,8 @@
 // - 每次 dsh web 启动(含崩溃重启、dsh-restart)都会执行一次自举, 复用优先;
 // - 交换/写文件带短重试(与旧 dsh-web 的交换重试语义对齐), 瞬时失败不会
 //   让 dsh-web 空等 120s 后 fail-fast;
+// - 复用探测同样带短重试: 重启后新进程会话存储加载完成前可能拒绝旧 cookie,
+//   多重探几次再决定重新铸造, 避免无谓轮换;
 // - cookie 原子写(tmp + rename), dsh-web 的 cat 永远读不到半截文件。
 // 自举最终失败只记录日志、不阻止 dsh web 启动: dsh-web 侧会因等不到
 // cookie 文件而 fail-fast, 与旧行为等价。
@@ -43,6 +45,46 @@ const COOKIE_FILENAME = 'session-cookie'
 /** 自举重试次数与间隔(覆盖端口就绪窗口与瞬时网络/写盘失败)。 */
 const BOOTSTRAP_RETRIES = 5
 const BOOTSTRAP_RETRY_DELAY_MS = 500
+
+/**
+ * 复用探测重试: dsh web 重启后, 新进程的会话存储可能还在异步加载, 此时带旧
+ * cookie 探测根路径可能拿到非 200(甚至连接被拒)。旧 cookie 本身仍有效(签名
+ * 密钥在卷上持久化), 多重探几次再决定重新铸造 —— 否则无谓轮换 cookie,
+ * Caddy 也要跟着重启, 浏览器侧已注入的会话全部作废。
+ */
+const PROBE_RETRIES = 3
+const PROBE_DELAY_MS = 250
+
+/**
+ * 探测盘上的旧 cookie 是否仍被当前 dsh 进程接受(根路径 200 即可)。
+ * 文件不存在/为空 → 没有可复用的 cookie, 直接返回 false。
+ * @returns true 表示应复用(调用方负责记录日志)。
+ */
+async function reuseExistingCookie(baseUrl, cookieFile) {
+  for (let probe = 1; probe <= PROBE_RETRIES; probe += 1) {
+    let existing
+    try {
+      existing = await readFile(cookieFile, 'utf8')
+    } catch {
+      return false
+    }
+    if (existing === '') return false
+    try {
+      const response = await fetch(`${baseUrl}/`, {
+        headers: { cookie: existing },
+        redirect: 'manual',
+      })
+      if (response.status === 200) return true
+      // 非 200: 启动瞬态(会话存储加载中)或 cookie 真失效, 重试后再判。
+    } catch {
+      // 连接失败(服务未就绪): 重试。
+    }
+    if (probe < PROBE_RETRIES) {
+      await new Promise((resolve) => { setTimeout(resolve, PROBE_DELAY_MS) })
+    }
+  }
+  return false
+}
 
 /** 从 Set-Cookie 头提取第一个 cookie 的 name=value(分号截断, 与旧 awk 一致)。 */
 function firstCookieValue(setCookies) {
@@ -74,21 +116,10 @@ async function bootstrap(ctx) {
   let lastError
   for (let attempt = 1; attempt <= BOOTSTRAP_RETRIES; attempt += 1) {
     try {
-      // 1) 复用仍被 dsh 接受的旧 cookie(文件不存在/读取失败 → 走换取)。
-      try {
-        const existing = await readFile(cookieFile, 'utf8')
-        if (existing !== '') {
-          const probe = await fetch(`${baseUrl}/`, {
-            headers: { cookie: existing },
-            redirect: 'manual',
-          })
-          if (probe.status === 200) {
-            console.log('[dsh-container-adapt] reusing the still-valid session cookie')
-            return
-          }
-        }
-      } catch {
-        // 旧 cookie 不可用: 走换取流程。
+      // 1) 复用仍被 dsh 接受的旧 cookie(带短重试, 见 reuseExistingCookie)。
+      if (await reuseExistingCookie(baseUrl, cookieFile)) {
+        console.log('[dsh-container-adapt] reusing the still-valid session cookie')
+        return
       }
 
       // 2) 用进程启动 token 换取会话 cookie。
