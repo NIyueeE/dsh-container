@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # dsh-container 镜像冒烟测试: 对给定镜像做端到端验证, 覆盖 token 交换、
-# Caddy 头改写、会话注入、前端补丁、遥测默认关闭、工具链分层布局、
-# supervisor 重启与 basic auth 全链路。由 .github/workflows/image.yml 与
-# release-prep.yml 共同调用; 本地可用 `just test` 运行。
+# Caddy 头改写、会话注入、前端补丁、遥测默认关闭、工具链分层布局、内置
+# 常用工具与容器内 podman 运行期环境、supervisor 重启与 basic auth 全链路。
+# 由 .github/workflows/image.yml 与 release-prep.yml 共同调用; 本地可用
+# `just test` 运行。
 #
 # 用法: tests/smoke.sh <image> [--expect-dsh-version X.Y.Z]
 #   <image>                 已构建(load/存在本地)的镜像引用
@@ -142,6 +143,30 @@ fi
   || die "podman version check failed"
 "$DOCKER" exec "$cid" gh --version | grep -Eq '^gh version [0-9]+\.' \
   || die "gh version check failed"
+
+# 内置常用 CLI 工具(系统层烘干): agent 高频命令开箱可用, 不依赖容器内现装
+# —— runtime apt install 落在可写层, 容器重建即丢, 所以常用的必须进镜像。
+# fd 是 Debian fd-find(fdfind)的系统层真名别名。
+"$DOCKER" exec "$cid" sh -c '
+  for t in rg fd patch zip less vi nano ssh rsync wget tree htop sqlite3 tmux crun; do
+    command -v "$t" >/dev/null || { echo "missing built-in tool: $t" >&2; exit 1; }
+  done
+  python3 --version
+  fd --version
+  crun --version
+  git lfs version
+' || die "built-in tool check failed"
+
+# 容器内 rootless podman 运行期环境: entrypoint 为 pid1 进程树 provision
+# XDG_RUNTIME_DIR(rootless podman 必须能写它, 否则直接启动失败);
+# _CONTAINERS_USERNS_CONFIGURED=1 由镜像 ENV 提供(pid1 与 exec 会话都继承),
+# 让内层 podman 复用外层 userns, 免 newuidmap 失败。
+"$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < /proc/1/environ | grep -Fx "XDG_RUNTIME_DIR=/run/user/1000"' \
+  || die "entrypoint did not export XDG_RUNTIME_DIR=/run/user/1000"
+"$DOCKER" exec "$cid" sh -c 'test -d /run/user/1000 && test -O /run/user/1000' \
+  || die "XDG_RUNTIME_DIR not provisioned (or not owned by the runtime user)"
+"$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < /proc/1/environ | grep -Fx "_CONTAINERS_USERNS_CONFIGURED=1"' \
+  || die "podman userns env (_CONTAINERS_USERNS_CONFIGURED=1) not set for pid1"
 
 # 分层布局: 工具链是镜像系统层真二进制(/usr/local/bin, /opt/rust),
 # 卷上只有可写缓存与自装区 —— 路径解析与读写边界都必须成立。

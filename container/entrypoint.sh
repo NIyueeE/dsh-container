@@ -10,7 +10,11 @@
 #      最前), 卷上遗留的旧副本遮蔽不了镜像内版本(手动清理见 release notes)。
 #   3. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081), 经
 #      DSH_WEB_PORT 传给 dsh-web(内部管道变量, 非用户配置面)。
-#   4. exec dsh-web —— dsh web 的启动/监督、会话 cookie 的就绪等待与 Caddy
+#   4. 容器内 podman 运行期环境: provision XDG_RUNTIME_DIR(rootless podman
+#      必须能写它; 容器无 login session, /run/user/$UID 默认不存在且 /run 属
+#      root, 用免密 sudo 建好; _CONTAINERS_USERNS_CONFIGURED=1 由镜像 ENV
+#      提供)。宿主侧还需的 /dev/fuse、seccomp 条件见 docs/deployment.md。
+#   5. exec dsh-web —— dsh web 的启动/监督、会话 cookie 的就绪等待与 Caddy
 #      反代全部由 dsh-web 托管(会话 cookie 自举由容器适配插件在 dsh 进程内
 #      完成, 见 container/plugin/ 与 container/dsh-web.sh)。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
@@ -60,6 +64,31 @@ mkdir -p "$HOME/.cargo/bin" "$HOME/.local/bin" "$PNPM_HOME"
 # PATH 镜像优先 (hermes-agent 模式): /usr/local/bin 里是镜像的真二进制
 # (dsh/uv/pnpm/cargo), 必须压过用户层目录; 用户自装工具垫底。
 export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+# 容器内 podman 运行期环境(尽力而为; 宿主侧要满足的条件见 docs/deployment.md
+# "容器内 podman"): rootless podman 必须能写 XDG_RUNTIME_DIR(libpod 运行时
+# 状态、pause 进程、API socket 都放这里), 缺失或不可写会直接启动失败。容器无
+# login session, /run/user/$UID 默认不存在, 且 /run 属 root —— 用免密 sudo
+# 建好并交给当前用户; sudo 不可用时退到 /tmp 下的自有目录(podman 对 tmpfs
+# 无硬性要求, 0700 自有目录即可)。镜像 ENV 的 _CONTAINERS_USERNS_CONFIGURED=1
+# 已让内层 podman 复用外层 userns(免 newuidmap 失败), exec shell 的兜底
+# 导出在 /etc/bash.bashrc。
+if [ "$(id -u)" = 0 ]; then
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run}"
+elif [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -w "${XDG_RUNTIME_DIR:-/nonexistent}" ]; then
+  runtime_dir="/run/user/$(id -u)"
+  if ! sudo -n mkdir -p "$runtime_dir" 2>/dev/null \
+     || ! sudo -n chown "$(id -u):$(id -g)" "$runtime_dir" 2>/dev/null; then
+    runtime_dir="/tmp/xdg-runtime-$(id -u)"
+    mkdir -p "$runtime_dir" 2>/dev/null || true
+  fi
+  if [ -d "$runtime_dir" ]; then
+    chmod 700 "$runtime_dir" 2>/dev/null || true
+    export XDG_RUNTIME_DIR="$runtime_dir"
+  else
+    echo "[entrypoint] WARNING: cannot provision XDG_RUNTIME_DIR; rootless podman will not run" >&2
+  fi
+fi
 cd "$HOME"
 
 # 从附加参数中提取 --port <N> / --port=<N>, 作为 dsh web 的内部监听端口

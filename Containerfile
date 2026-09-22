@@ -2,8 +2,11 @@
 #
 # DeepSeek Harness (dsh) 容器镜像
 #
-# 基础镜像: debian:13-slim —— 比通用开发容器镜像小很多, 只保留本项目
-# 需要的工具链: Node.js LTS、pnpm、uv、Rust/cargo、Caddy、podman、gh。
+# 基础镜像: debian:13-slim —— 只保留本项目需要的工具链: Node.js LTS、pnpm、
+# uv、Rust/cargo、Caddy、podman、gh, 外加一组 agent 高频 CLI 工具
+# (ripgrep/fd/python3/zip/openssh-client/tmux/sqlite3/编辑器等)。后者全部进
+# 系统层: 卷上只放数据, agent 或用户在容器内 apt install 的东西会随容器重建
+# 丢失(可写层), 常用的就应当在构建期烘干, 避免每次重建都重新下载。
 # 在此之上按官方仓库 https://github.com/deepseek-ai/deepseek-harness 的源码
 # 方式构建 dsh: git clone 后切换到指定 tag, 再用 pnpm install/build:official。
 #
@@ -44,6 +47,15 @@
 #     ~/.local/share/uv、pnpm store)与用户自装工具(~/.local/bin、~/.cargo/bin,
 #     PATH 垫底)。旧镜像种进卷的工具副本被 PATH 遮蔽(惰性), 手动清理见
 #     release notes
+#   - agent 高频 CLI 工具(ripgrep、fd、python3、zip、openssh-client、tmux、
+#     sqlite3、vim/nano、less、rsync、wget、tree、htop、tzdata、patch 等)与
+#     crun 同样进系统层: 容器内 sudo apt install 落在可写层, 重建即丢, 常用
+#     工具必须构建期烘干(见 docs/deployment.md "内置工具" 一节)
+#   - 容器内 rootless podman 的运行期环境: 镜像 ENV 导出
+#     _CONTAINERS_USERNS_CONFIGURED=1(内层 podman 复用外层 userns, 免
+#     newuidmap 失败), entrypoint provision XDG_RUNTIME_DIR(/run/user/$UID,
+#     无 login session 时缺失会导致 rootless podman 直接失败),
+#     /etc/bash.bashrc 给 docker exec 的交互 shell 兜底导出
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
 #     (上游 tag 与 main 均拒绝 --host 0.0.0.0: 上游有意为之的安全设计)
 #   - 遥测默认关闭: entrypoint 导出 DSH_TELEMETRY_MODE=DISABLED(可覆盖),
@@ -99,7 +111,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ENV PATH=/usr/local/sbin:/usr/local/bin:/home/dsh/.local/bin:/home/dsh/.cargo/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PNPM_HOME}
 
 # ---------------------------------------------------------------------------
-# 1. 安装基础工具链、C/C++ 编译依赖、Caddy、嵌套 Podman 及 GitHub CLI 源
+# 1. 安装基础工具链、C/C++ 编译依赖、Caddy、嵌套 Podman 及 GitHub CLI 源。
+#    后半段是 agent 高频 CLI 工具(ripgrep/fd/python3/zip/ssh/tmux/sqlite3/
+#    编辑器/rsync/wget/tree/htop/tzdata/patch/git-lfs)与 podman 的 crun
+#    运行时 —— 全部烘干进系统层, 容器内运行期再 apt install 只会落在可写层、
+#    容器重建即丢(见 docs/deployment.md "内置工具")。
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -115,10 +131,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     caddy \
     podman \
+    crun \
     fuse-overlayfs \
     uidmap \
     slirp4netns \
     iptables \
+    ripgrep \
+    fd-find \
+    patch \
+    python3 \
+    python3-venv \
+    python3-pip \
+    python3-dev \
+    zip \
+    less \
+    vim-tiny \
+    nano \
+    openssh-client \
+    rsync \
+    wget \
+    iputils-ping \
+    iproute2 \
+    lsof \
+    tree \
+    htop \
+    sqlite3 \
+    tmux \
+    tzdata \
+    git-lfs \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -127,10 +167,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
          > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git lfs install --system \
+    # Debian 的 fd-find 二进制叫 fdfind(与既有 fd 包冲突改名), 在系统层补一个
+    # fd 真名 —— 镜像所有, agent/脚本按上游名字直接调用即可。
+    && FD_BIN="$(command -v fdfind || command -v fd-find || true)" \
+    && if [ -z "$FD_BIN" ]; then echo "fd binary (fdfind) missing after fd-find install" >&2; exit 1; fi \
+    && ln -sfn "$FD_BIN" /usr/local/bin/fd \
+    && fd --version
 
 # ---------------------------------------------------------------------------
-# 2. 创建 dsh 用户、免密 sudo 组、rootless Podman 映射
+# 2. 创建 dsh 用户、免密 sudo 组、rootless Podman 映射;
+#    /etc/bash.bashrc 追加 XDG_RUNTIME_DIR 兜底导出 —— docker exec 的交互
+#    shell 不经过 entrypoint(那里已为 pid1 进程树 provision /run/user/$UID),
+#    交互式 bash 自动导出同样默认值, 保证 podman 在 exec 会话里同样可用。
 # ---------------------------------------------------------------------------
 RUN groupadd --gid $USER_GID $USERNAME \
     && useradd --uid $USER_UID --gid $USER_GID -m -s /bin/bash $USERNAME \
@@ -140,7 +190,17 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && echo "$USERNAME:100000:65536" >> /etc/subuid \
     && echo "$USERNAME:100000:65536" >> /etc/subgid \
     && mkdir -p /home/dsh/.dsh /home/dsh/.cargo /home/dsh/.local/bin /home/dsh/.local/share/pnpm \
-    && chown -R $USER_UID:$USER_GID /home/dsh/.dsh /home/dsh/.cargo /home/dsh/.local
+    && chown -R $USER_UID:$USER_GID /home/dsh/.dsh /home/dsh/.cargo /home/dsh/.local \
+    && cat >> /etc/bash.bashrc <<'EOF'
+
+# dsh-container: rootless podman 的 XDG_RUNTIME_DIR 兜底。容器无 login session,
+# 该变量默认不设置, 而 rootless podman 运行期必须能写它(libpod 运行时状态)。
+# pid1 进程树由 entrypoint provision /run/user/$UID; exec 的交互 shell 在这里
+# 补同样的默认值(目录已存在才导出)。
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+fi
+EOF
 
 # ---------------------------------------------------------------------------
 # 3. 配置嵌套 Podman(fuse-overlayfs + 宽松 policy)
@@ -198,6 +258,10 @@ RUN set -eux; \
     mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"; \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh; \
     sh /tmp/rustup-init.sh -y --profile minimal --no-modify-path --default-toolchain "${RUST_TOOLCHAIN}"; \
+    # minimal profile 只带 rustc/std/cargo; 编程 agent 高频使用的
+    # rustfmt/clippy 在构建期补齐 —— 否则运行期 rustup component add 会写
+    # /opt/rust(系统层), 容器重建即丢
+    rustup component add rustfmt clippy; \
     for b in "$CARGO_HOME/bin/"*; do ln -sfn "$b" /usr/local/bin/; done; \
     rm -f /tmp/rustup-init.sh; \
     chown -R $USER_UID:$USER_GID "$RUSTUP_HOME"; \
@@ -269,7 +333,8 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
 # ---------------------------------------------------------------------------
 # 11. 预热 apt 包索引: 最终镜像保留一份最新 /var/lib/apt/lists, 容器内开箱
 #     即可 apt install, 无需先手动 apt-get update。前面各步骤用完即清是为了
-#     压缩中间层; 这里的索引属于系统层, 随镜像升级重置
+#     压缩中间层; 这里的索引属于系统层, 随镜像升级重置(索引会随镜像变旧,
+#     过期时容器内先 sudo apt-get update 再装, 见 docs/build.md)
 # ---------------------------------------------------------------------------
 RUN apt-get update
 
@@ -278,6 +343,17 @@ RUN apt-get update
 # ---------------------------------------------------------------------------
 WORKDIR /home/dsh
 EXPOSE 3081
+
+# 容器内 podman(主要是 rootless): _CONTAINERS_USERNS_CONFIGURED=1 告诉内层
+# podman "用户命名空间已由外层配置好", 直接复用 —— 外层没配 userns 时(默认
+# docker bridge 部署)内层自建 userns 要调 newuidmap, 容器里的 uid 1000 缺
+# CAP_SETUID 且常被 seccomp 拦, 会直接失败; 置 1 后 podman 退化为单 uid
+# 模式, 常见镜像开箱可用, 外层已正确配置 userns(podman --userns=keep-id /
+# docker userns-remap)时同样正确。置空则恢复内层自建 userns 行为。
+# XDG_RUNTIME_DIR 由 entrypoint provision /run/user/$UID(以及 /etc/bash.bashrc
+# 给 exec shell 兜底), 不进 ENV 是因为它依赖运行期 uid。宿主侧还需的
+# /dev/fuse、seccomp 等条件见 docs/deployment.md "容器内 podman"。
+ENV _CONTAINERS_USERNS_CONFIGURED=1
 
 # Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:$DSH_WEB_PORT;
 # healthcheck 同时要求 dsh 和代理可响应。dsh web 对无会话的根请求返回 401,
