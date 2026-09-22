@@ -128,7 +128,9 @@ start_dsh_web() {
 # 只等待插件写出的 cookie 文件出现/刷新; 超时则 fail-fast, 与旧实现等价。
 # 参数是启动前记录的 cookie 文件 mtime: 首次启动等文件出现, dsh web 重启后
 # 旧文件仍在, 必须等插件重新写入(mtime 前进) —— 插件每次自举后都重写文件
-# (即使复用旧值), 否则 Caddy 会继续注入上一轮的死 cookie, 表现为静默 401。
+# (即使复用旧值, 见 container/plugin/index.js 的复用分支), 否则这里会空等
+# 120s 后 fail-fast(容器在重启策略下变成崩溃循环), 或 Caddy 继续注入上一轮
+# 的死 cookie, 表现为静默 401。
 ensure_session() {
   local old_mtime="${1:-0}"
   for _ in $(seq 1 120); do

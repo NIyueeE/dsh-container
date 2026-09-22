@@ -57,8 +57,8 @@ const PROBE_DELAY_MS = 250
 
 /**
  * 探测盘上的旧 cookie 是否仍被当前 dsh 进程接受(根路径 200 即可)。
- * 文件不存在/为空 → 没有可复用的 cookie, 直接返回 false。
- * @returns true 表示应复用(调用方负责记录日志)。
+ * 文件不存在/为空 → 没有可复用的 cookie, 直接返回 undefined。
+ * @returns 可复用的 cookie 原文; undefined 表示必须重新换取。
  */
 async function reuseExistingCookie(baseUrl, cookieFile) {
   for (let probe = 1; probe <= PROBE_RETRIES; probe += 1) {
@@ -66,15 +66,15 @@ async function reuseExistingCookie(baseUrl, cookieFile) {
     try {
       existing = await readFile(cookieFile, 'utf8')
     } catch {
-      return false
+      return undefined
     }
-    if (existing === '') return false
+    if (existing === '') return undefined
     try {
       const response = await fetch(`${baseUrl}/`, {
         headers: { cookie: existing },
         redirect: 'manual',
       })
-      if (response.status === 200) return true
+      if (response.status === 200) return existing
       // 非 200: 启动瞬态(会话存储加载中)或 cookie 真失效, 重试后再判。
     } catch {
       // 连接失败(服务未就绪): 重试。
@@ -83,7 +83,7 @@ async function reuseExistingCookie(baseUrl, cookieFile) {
       await new Promise((resolve) => { setTimeout(resolve, PROBE_DELAY_MS) })
     }
   }
-  return false
+  return undefined
 }
 
 /** 从 Set-Cookie 头提取第一个 cookie 的 name=value(分号截断, 与旧 awk 一致)。 */
@@ -117,7 +117,12 @@ async function bootstrap(ctx) {
   for (let attempt = 1; attempt <= BOOTSTRAP_RETRIES; attempt += 1) {
     try {
       // 1) 复用仍被 dsh 接受的旧 cookie(带短重试, 见 reuseExistingCookie)。
-      if (await reuseExistingCookie(baseUrl, cookieFile)) {
+      //    复用成功也必须原子重写一次文件: dsh-web.sh 的 ensure_session() 以
+      //    cookie 文件 mtime 前进判定"本轮自举完成", 复用路径不写盘会让它空等
+      //    120s 后 exit 1 —— 容器在重启策略下变成崩溃循环。
+      const reusable = await reuseExistingCookie(baseUrl, cookieFile)
+      if (reusable !== undefined) {
+        await writeCookieAtomically(cookieFile, reusable)
         console.log('[dsh-container-adapt] reusing the still-valid session cookie')
         return
       }

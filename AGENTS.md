@@ -76,7 +76,10 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    rejects parent flags upstream, so the root `--profile web` form is required). The plugin
    bootstraps the session cookie inside the dsh process (token → cookie, reusing a still-valid
    cookie) and
-   writes it to `/tmp/dsh-caddy/session-cookie`; `dsh-web` waits for the file, generates the
+   writes it to `/tmp/dsh-caddy/session-cookie` — rewritten on **every** bootstrap, reuse path
+   included, because `dsh-web` keys on that file's mtime advancing (a skipped rewrite makes it wait
+   120 s and exit 1, i.e. a crash loop under a restart policy); `dsh-web` waits for the file,
+   generates the
    Caddyfile, and starts a **Caddy reverse proxy** on
    `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback and injects the session cookie into
    every proxied request (UI assets are gzip-compressed by dsh's own webserver; Caddy does not

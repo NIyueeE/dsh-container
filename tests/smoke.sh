@@ -88,6 +88,9 @@ cid="$("$DOCKER" run -d --rm --name dsh-smoke -p 3081:3081 \
 # 镜像到容器日志); supervisor 会用它自举会话, 这里取 token 供交换
 # 流程断言使用。容器提前退出时快速失败并带出日志。
 running() { [ "$("$DOCKER" inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
+# 容器内会话 cookie 文件的 mtime(秒级); 文件缺失记 0。dsh-web 以它是否
+# 前进判定插件完成自举, 所以断言里不能把"读不到"当成通过。
+cookie_mtime() { "$DOCKER" exec "$1" stat -c %Y /tmp/dsh-caddy/session-cookie 2>/dev/null || echo 0; }
 token=""
 for _ in $(seq 1 60); do
   token="$("$DOCKER" logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"
@@ -297,7 +300,20 @@ bundle_alt="$(curl -fsS -H 'Host: dsh.test' "http://127.0.0.1:3081${connection_b
 
 # dsh web 守护/重启: dsh-restart 后由 dsh-web 重新拉起, 新进程会打印
 # 新 token; 等新 token 出现后重新登录, 再验证页面与补丁仍然可用。
+# 重启前后记录 cookie 文件 mtime: 插件每一轮自举都必须重写该文件(即使
+# 复用仍有效的旧 cookie), dsh-web 的 ensure_session() 正是以 mtime 前进
+# 判定"自举完成" —— 复用路径漏写盘会让它空等 120s 后 exit 1, 容器在
+# 重启策略下变成崩溃循环。这里不空等满 120s, 直接断言契约本身(秒级失败)。
+mtime_before="$(cookie_mtime "$cid")"
 "$DOCKER" exec "$cid" dsh-restart || die "dsh-restart failed"
+mtime_after="$mtime_before"
+for _ in $(seq 1 60); do
+  mtime_after="$(cookie_mtime "$cid")"
+  [ "$mtime_after" -gt "$mtime_before" ] && break
+  sleep 1
+done
+[ "$mtime_after" -gt "$mtime_before" ] \
+  || die "session-cookie mtime did not advance after dsh-restart (plugin skipped the rewrite; mtime stayed $mtime_before)"
 token2=""
 exchange2=""
 for _ in $(seq 1 90); do
