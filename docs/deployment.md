@@ -8,8 +8,9 @@ the Compose example also works on Docker Desktop for macOS/Windows).
 - Linux host (Docker Engine ≥ 24 or Podman ≥ 4.4) — or Docker Desktop for the Compose example
 - Access to `ghcr.io`
 - Port `3081` free (the exposed port; dsh itself listens on `127.0.0.1:3080` inside the container)
-- In-container rootless podman needs a host runtime that allows nested user namespaces (Docker's
-  default seccomp profile may block it); see [security.md](security.md)
+- In-container rootless podman needs a host runtime that allows nested user namespaces and fuse
+  (Docker's default seccomp profile may block it); the image side is fully configured — see
+  §7 "In-container podman" and [security.md](security.md)
 
 ## 2. Docker Compose deployment
 
@@ -235,11 +236,85 @@ server {
 }
 ```
 
-## 6. Offline use
+## 6. Built-in tools
+
+The image bakes the tools an agent reaches for every day into the system layer, so a fresh
+container never spends its first minutes downloading them:
+
+| Group | Contents |
+|---|---|
+| Agent CLI basics | `git` + `git-lfs` (installed system-wide), `curl`, `wget`, `jq`, `ca-certificates`, `gnupg` |
+| Search & patch | `ripgrep` (`rg`), `fd`, `patch`, `diff`/`sed`/`awk` from the base |
+| Languages & runtimes | Node.js 22 LTS + npm/pnpm, uv, Rust/cargo with `rustfmt` + `clippy`, python3 (apt-managed; PEP 668 applies — prefer `uv run` / `uv pip` for project work), build-essential + libssl-dev for native builds |
+| Editors & pagers | `vim.tiny` (`vi`), `nano`, `less` |
+| Networking & debugging | `openssh-client`, `iputils-ping`, `iproute2` (`ss`/`ip`), `lsof`, `tree`, `htop` |
+| Packaging & extras | `zip`/`unzip`, `rsync`, `sqlite3`, `tmux`, `tzdata` |
+
+Anything installed **at runtime** with `sudo apt install` lands in the container's writable layer
+and is **lost when the container is recreated** (`--force-recreate`, image upgrade, Quadlet
+`AutoUpdate`) — it survives an in-place `docker restart` only. Install paths that persist instead
+(they live on the `/home/dsh` volume): `cargo install` (`~/.cargo/bin`), `uv tool install` /
+`uv pip` / uv-managed pythons (`~/.local`), `npm -g` / `pnpm add -g` (NPM and pnpm homes).
+`rustup component add` also writes the system layer and does not survive recreation — the
+frequently used components (`rustfmt`, `clippy`) are preinstalled. If you need a permanent
+apt-level tool, extend the image with a small child `Containerfile`
+(`FROM ghcr.io/niyueee/dsh-container:latest`) and pin that image in the examples.
+
+The final image keeps a pre-warmed `/var/lib/apt/lists`, so `apt install` works without an update
+first — but that index is a snapshot from build time. If an install fails with a 404 or hash
+mismatch, run `sudo apt-get update` before retrying.
+
+## 7. In-container podman
+
+The image installs podman with `crun`, `fuse-overlayfs` and `uidmap`, and configures subuid/subgid
+for the `dsh` user, so the agent can run nested containers. The image side is already prepared:
+
+- **`crun`** is installed — the preferred runtime for nested/rootless setups (runc stays as a
+  fallback).
+- **`XDG_RUNTIME_DIR` is provisioned by the entrypoint** (`/run/user/<uid>`, owned by the runtime
+  user) — rootless podman cannot start without a writable runtime dir, and a container has no
+  login session to create one. `/etc/bash.bashrc` exports the same default for `docker exec`
+  shells, which bypass the entrypoint.
+- **`_CONTAINERS_USERNS_CONFIGURED=1`** (image ENV) makes the inner podman reuse the outer user
+  namespace instead of calling `newuidmap` — which cannot work inside a default Docker container
+  (uid 1000 has no CAP_SETUID, and the default seccomp profile may block `unshare`). With the
+  variable set, nested images run in single-uid mode and common images work out of the box; on
+  hosts where the outer container already has a properly mapped user namespace (rootless Podman
+  `--userns=keep-id`, Docker `userns-remap`) this is the fully-mapped mode.
+- Storage is preset to `overlay` + `fuse-overlayfs`, and `policy.json` accepts any registry.
+
+What the **host** must still allow (the image cannot do this part):
+
+| Host runtime | Working configuration |
+|---|---|
+| Docker | `--security-opt seccomp=unconfined --security-opt apparmor=unconfined --device /dev/fuse` (or `--privileged`); optionally `--sysctl net.ipv4.ping_group_range="0 2147483647"` so `ping` works as the non-root runtime user |
+| Podman (rootless host) | `--userns=keep-id` |
+| Podman (rootful host) | `--userns=keep-id`, or `--privileged` |
+| Quadlet | `UserNS=keep-id` on a rootless host; add `Devices=/dev/fuse` as needed |
+
+Compose/Quadlet snippets are pre-commented in `examples/compose.yaml` and `examples/dsh.container`.
+Docker Desktop (macOS/Windows) does not support nested user namespaces at all — in-container
+podman is a Linux-host feature.
+
+Fallbacks when the host cannot provide the above:
+
+- **`sudo podman ...`** (rootful inside the container) needs no `newuidmap` — only `CAP_SYS_ADMIN`
+  and `/dev/fuse`, which `--privileged` supplies.
+- **`podman --storage-driver vfs ...`** works without `/dev/fuse` (skips fuse-overlayfs) at the
+  cost of speed and disk space.
+
+Two honest limits: in single-uid mode everything inside a nested container runs as one uid (images
+that rely on multiple `USER` directives are not mapped correctly), and in-container podman is a
+development convenience, not an isolation boundary — the host flags that enable it
+(`--privileged`, unconfined seccomp) weaken the container boundary itself, so turn them on only
+when nested containers are actually needed (see [security.md](security.md)).
+
+## 8. Offline use
 
 The running image does not contact the npm registry, and there is no boot-time dsh update to
-disable. Build the image once from the desired upstream tag (pin `DSH_TAG`), then run it on hosts
-that only need access to `ghcr.io` for image pulls:
+disable. The common agent CLI tools (`python3`, `rg`, `fd`, `ssh`, `zip`, ...) are built in, so a
+fresh container works without any runtime downloads. Build the image once from the desired upstream
+tag (pin `DSH_TAG`), then run it on hosts that only need access to `ghcr.io` for image pulls:
 
 ```bash
 podman build --format docker \
@@ -247,7 +322,7 @@ podman build --format docker \
              -t dsh-container .
 ```
 
-## 7. FAQ
+## 9. FAQ
 
 **Permission errors when writing to `/home/dsh`**
 If you replace the named `dsh-home` volume with a host bind mount at `/home/dsh`, that host

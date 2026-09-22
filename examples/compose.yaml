@@ -44,6 +44,16 @@ services:
     # started inside the container. Mounting /var/run/docker.sock is equally
     # high-risk. Only enable either for trusted workloads.
     # privileged: true
+    # Optional: in-container (rootless) podman. The image ships crun, provisions
+    # XDG_RUNTIME_DIR and reuses the outer user namespace, but the host runtime
+    # still has to allow nested userns + fuse. Uncomment what your host needs:
+    #   security_opt:
+    #     - seccomp=unconfined     # Docker's default seccomp may block nested
+    #     - apparmor=unconfined    # userns/unshare; --privileged also works
+    #   devices:
+    #     - /dev/fuse:/dev/fuse    # fuse-overlayfs storage driver
+    # Without /dev/fuse, `podman --storage-driver vfs ...` still works (slower).
+    # See docs/deployment.md "In-container podman".
     # Optional: change dsh's internal port (the exposed port stays 3081).
     # The entrypoint rejects --port 3081 (proxy conflict) and --port 0.
     # command: ["--port", "8080"]

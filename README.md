@@ -43,7 +43,9 @@ the image. There is no login step: the proxy bootstraps the dsh session automati
 | Component | Description |
 |---|---|
 | Base image | `debian:13-slim` (pinned; overridable via the `BASE_IMAGE` build arg) |
-| Toolchain | Node.js 22 LTS, pnpm, uv, Rust/cargo, git, build-essential, Caddy, podman, gh — image-owned real binaries, upgraded with the image |
+| Toolchain | Node.js 22 LTS, pnpm, uv, Rust/cargo (+ rustfmt/clippy), git + git-lfs, build-essential, Caddy, podman + crun, gh — image-owned real binaries, upgraded with the image |
+| Agent CLI tools | ripgrep, fd, python3, zip, openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch — baked into the system layer, so a fresh container never re-downloads them (runtime `apt install` would be lost on recreation) |
+| Nested containers | podman in-container (rootless) with `XDG_RUNTIME_DIR` and the userns env preconfigured; the host runtime must allow nested user namespaces + `/dev/fuse` |
 | dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable); no runtime auto-update |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) with optional basic auth |
 | Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |

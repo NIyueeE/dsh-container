@@ -7,10 +7,19 @@ is installed at the version required by the checked-out dsh tag (read from its `
 field). All three are image-owned real binaries in the system layer (`/usr/local/bin`,
 `/opt/rust`; the one writable exception is rustup's home `/opt/rust/rustup`, which rustup must
 write at runtime — it is built `dsh`-owned and the entrypoint repairs its ownership on every
-start), so tool versions are a property of the image tag, not of the volume. Caddy/podman/gh
-come from apt; dsh is built from the official repository with its `pnpm-lock.yaml`. Default builds
+start), so tool versions are a property of the image tag, not of the volume. Caddy/podman/gh come
+from apt; dsh is built from the official repository with its `pnpm-lock.yaml`. Default builds
 are therefore reproducible at the level of the upstream lockfile; pin `DSH_TAG` for a fully pinned
 dsh version.
+
+Alongside the toolchain, the image bakes an agent's high-frequency CLI tools into the system layer
+(`ripgrep`, `fd`, `python3`, `zip`, `openssh-client`, `tmux`, `sqlite3`, `vim.tiny`, `nano`,
+`less`, `rsync`, `wget`, `tree`, `htop`, `tzdata`, `patch`, `git-lfs`, plus `crun` for nested
+rootless podman). Runtime `apt install` writes the container's writable layer and is lost on
+container recreation, so anything that must persist is installed at build time (or added via a
+child image). `rustfmt`/`clippy` are installed next to the minimal Rust profile for the same
+reason. The full rationale and the persistence matrix live in
+[deployment.md](deployment.md) § Built-in tools.
 
 ## Build arguments
 
@@ -45,7 +54,10 @@ persisted home volume, so a fresh or empty `/home/dsh` volume never hides `dsh`.
 
 The final image keeps a refreshed apt package index: `apt-get update` runs once more at the end of
 the build and `/var/lib/apt/lists` is preserved, so `apt install` works inside the container without
-a manual update first (the index lives in the system layer and resets on image upgrades).
+a manual update first (the index lives in the system layer and resets on image upgrades). Note that
+the preserved index is a build-time snapshot: as the image ages, installs can start failing with
+404s or hash mismatches — run `sudo apt-get update` inside the container and retry when that
+happens.
 
 Older images seeded toolchain copies into the volume (`~/.local/bin` uv/uvx, the pnpm prefix under
 `~/.local/share/pnpm`, rustup proxies in `~/.cargo/bin`). Those are inert — PATH prefers the

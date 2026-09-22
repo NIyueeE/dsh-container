@@ -4,7 +4,7 @@
 
 ```
 AGENTS.md                # guidelines for agents working on this repo
-Containerfile            # image build (Debian slim + node/pnpm + rust/uv + podman/caddy/gh + source-built dsh + entrypoint)
+Containerfile            # image build (Debian slim + node/pnpm + rust/uv + podman/crun/caddy/gh + baked agent CLI tools + source-built dsh + entrypoint)
 container/
   entrypoint.sh          # container entrypoint: Caddy proxy + start dsh-web
   dsh-web.sh             # dsh web supervisor: auto-restart dsh web, installed as /usr/local/bin/dsh-web

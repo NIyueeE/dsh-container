@@ -91,9 +91,9 @@ is opt-in and off by default either way.
 Avoid bind-mounting `~/.ssh`, `~/.aws`, `~/.config/gh`, cloud vendor credentials, etc.
 (see the [official Claude Code container security warning](https://code.claude.com/docs/en/devcontainer)).
 Agents can read everything reachable inside the container, including mounted credentials.
-For the same reason, don't bind-mount the host Docker socket (`/var/run/docker.sock`) or run the
-container with `--privileged`: either gives the agent a straightforward path to the host's root
-account.
+For the same reason, don't bind-mount the host Docker socket (`/var/run/docker.sock`), and run the
+container with `--privileged` only when in-container podman requires it (see "In-container
+rootless podman"): either gives the agent a straightforward path to the host's root account.
 
 ## Container-internal privileges
 
@@ -104,11 +104,21 @@ entry or use an additional isolation layer (user namespace, VM, etc.).
 
 ## In-container rootless podman
 
-The image installs podman and configures subuid/subgid for uid 1000, so the agent can use podman
-for nested containers. Whether `podman run` actually works depends on the host runtime: it needs
-nested user namespaces and appropriate seccomp/AppArmor settings. Docker's default seccomp profile
-or a locked-down Kubernetes runtime may reject the `unshare`/`clone` calls. Treat podman as an
-experimental in-container dev tool, not a guaranteed isolation primitive.
+The image installs podman (with `crun`, `fuse-overlayfs`, `uidmap`) and configures subuid/subgid for
+uid 1000, and it prepares the runtime environment itself: the entrypoint provisions a writable
+`XDG_RUNTIME_DIR` (rootless podman cannot start without one), and the image sets
+`_CONTAINERS_USERNS_CONFIGURED=1` so the inner podman reuses the outer user namespace instead of
+calling `newuidmap` — which cannot work inside a default Docker container (uid 1000 has no
+CAP_SETUID, and the default seccomp profile may block `unshare`).
+
+Whether `podman run` actually succeeds still depends on the host: nested user namespaces and
+`/dev/fuse` must be allowed (`--security-opt seccomp=unconfined --security-opt apparmor=unconfined
+--device /dev/fuse` on Docker, `--userns=keep-id` on a rootless Podman host, or `--privileged`);
+Docker Desktop does not support it at all. Treat in-container podman as an experimental in-container
+dev tool, not a guaranteed isolation primitive — and note that the host flags which enable it
+(`--privileged`, unconfined seccomp) weaken the container boundary itself, so enable them only when
+nested containers are actually needed. See [deployment.md](deployment.md) § In-container podman for
+the full host matrix and the rootful/`vfs` fallbacks.
 
 ## `~/.dsh` holds API keys
 

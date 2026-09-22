@@ -14,7 +14,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 
 | Path | Purpose |
 |---|---|
-| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/Caddy/gh, source-built dsh (`/opt/deepseek-harness`), entrypoint |
+| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors), source-built dsh (`/opt/deepseek-harness`), entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + session-cookie wait + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
@@ -51,14 +51,25 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    live under `$HOME` (`CARGO_HOME=~/.cargo`, uv data in `~/.local/share/uv`,
    `PNPM_HOME=~/.local/share/pnpm`). Tool upgrades happen by image upgrade; a volume can never
    shadow image-provided tools. PATH is image-first (`/usr/local/bin` before `$HOME/.local/bin`)
-   with user directories last. Toolchain copies and the npm-installed dsh that pre-source-build
+   with user directories last. Agent high-frequency CLI tools (ripgrep, fd, python3, zip,
+    openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch,
+    git-lfs, crun) are baked into the system layer too: runtime `apt install` writes the
+    container's writable layer and is lost on recreation, so persistent tools belong in the image,
+    not in a runtime install. Toolchain copies and the npm-installed dsh that pre-source-build
    images (v0.2.x) seeded into volumes are inert (shadowed by PATH); manual cleanup commands
    ship in the release notes. The entrypoint
    also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's OTel feedback uploader
    (upstream default `FEEDBACK_ONLY` — exports the session prefix on explicit feedback) never
    sends data out of the container unless the user opts in.
 3. Parses `--port <N>` / `--port=<N>` (default 3080) and rejects `0` and `3081`.
-4. `dsh-web` then brings up the whole service stack (it is the container's supervisor — see
+4. Prepares the in-container podman runtime environment: provisions `XDG_RUNTIME_DIR`
+   (`/run/user/<uid>` via passwordless sudo, `/tmp` fallback) — rootless podman cannot start
+   without a writable runtime dir — while the image ENV `_CONTAINERS_USERNS_CONFIGURED=1`
+   makes the inner podman reuse the outer user namespace instead of calling `newuidmap`
+   (which cannot work in a default Docker container). `/etc/bash.bashrc` re-exports
+   `XDG_RUNTIME_DIR` for `docker exec` shells. The host still must allow nested userns +
+   `/dev/fuse`; see `docs/deployment.md` § In-container podman.
+5. `dsh-web` then brings up the whole service stack (it is the container's supervisor — see
    `container/dsh-web.sh`): it starts `dsh web` on `127.0.0.1:$DSH_WEB_PORT` (output mirrored into
    the container log) mounted with the container-adapt plugin overlay
    (`dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web ...` — the `web` alias
@@ -76,7 +87,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    not a silent no-auth fallback. The Caddyfile is generated at runtime into
    `/tmp/dsh-caddy/Caddyfile`; Caddy restarts itself if it crashes (config errors still fail fast
    at startup).
-5. `dsh-web` supervises `dsh web`: if it exits or crashes it is restarted automatically, and the
+6. `dsh-web` supervises `dsh web`: if it exits or crashes it is restarted automatically, and the
    session cookie survives restarts because dsh's signing secret is persisted in the volume (the
    plugin reuses the old cookie while it stays valid). The container has no
    browser, so `dsh-web` appends `--no-open` unless the caller already passed it. Before every
@@ -144,9 +155,12 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 - **`dsh` has passwordless sudo** via the `sudo` group (`%sudo ALL=(ALL) NOPASSWD:ALL`). This is
   intentional for a development container, but it means uid 1000 can reach root; treat the
   container root as reachable by the agent.
-- **podman is installed for in-container rootless work, with subuid/subgid configured.** Nested
-  rootless containers additionally depend on the host Docker/Podman seccomp and user-namespace
-  settings — docs must not promise that `podman run` always works inside this image.
+- **podman is installed for in-container rootless work, with subuid/subgid configured, plus the
+  runtime-side preparation: `crun`, an entrypoint-provisioned `XDG_RUNTIME_DIR`, and
+  `_CONTAINERS_USERNS_CONFIGURED=1`** (inner podman reuses the outer userns instead of calling
+  `newuidmap`, which cannot work in a default Docker container). Nested containers still depend
+  on the host Docker/Podman seccomp and user-namespace settings (and `/dev/fuse`) — docs must not
+  promise that `podman run` always works inside this image.
 - **Ports**: exposed/external port is `3081`; `127.0.0.1:3080` is dsh's internal port only. Keep
   them distinct everywhere. The proxy binds `0.0.0.0:3081` because it differs from dsh's port —
   do not reintroduce container-IP binding tricks. The examples publish it on host loopback
