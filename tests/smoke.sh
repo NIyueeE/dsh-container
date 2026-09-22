@@ -238,11 +238,11 @@ direct_api="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' -X PO
 [ "$direct_api" = "401" ] || die "direct dsh (3080) /api without cookie returned $direct_api, expected 401"
 
 # 设置 > 打开配置文件按钮隐藏: 容器无桌面, 上游 openSettingsDocument 无
-# headless 兜底(会 spawn xdg-open 报 ENOENT)—— 插件把 settings provider
-# 实例的 documentPath 置为 undefined, 上游 describe 即返回 hasDocument:false,
-# 浏览器侧 SettingsDocumentAction 按上游自身逻辑(status !== 'ready' → 不
-# 渲染)让按钮消失, 不引入任何浏览器侧代码。经 3081 的请求由 Caddy 注入
-# 会话 cookie。
+# headless 兜底(会 spawn 原生文本编辑器命令扑空)—— 插件包 settingsController
+# 实例的 describe(旧 tag 上再翻 provider 的 documentPath), 上游 describe 即
+# 返回 hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身逻辑
+# (status !== 'ready' → 不渲染)让按钮消失, 不引入任何浏览器侧代码。经 3081
+# 的请求由 Caddy 注入会话 cookie。
 settings_body="$(curl -s -X POST http://127.0.0.1:3081/api/settings/describe \
   -H 'content-type: application/json' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"

@@ -155,8 +155,8 @@ fi
 # critical: 容器适配插件(container/plugin/)依赖的上游 API 锚点 —— 会话
 # cookie 自举用 ctx.connection.authenticatedUrl() 取进程 token、webServer.port
 # 定位内部端口; "打开配置文件"按钮隐藏依赖两条上游行为: describe 的
-# hasDocument 直接取 provider.documentPath(插件把实例的 documentPath 置为
-# undefined 即翻转), 以及 SettingsDocumentAction 在状态非 ready 时不渲染。
+# hasDocument 取值方式(v0.1.7+ 是硬编码 true, 更早是 provider.documentPath
+# 推导), 以及 SettingsDocumentAction 在状态非 ready 时不渲染。
 if grep -qF 'authenticatedUrl' "$ROOT/packages/client/connection/src/rpc.ts"; then
   echo "PASS plugin.authenticated_url"
   pass=$((pass + 1))
@@ -164,11 +164,18 @@ else
   echo "MISS plugin.authenticated_url (Connection.authenticatedUrl missing or renamed)"
   MISSED+=("plugin.authenticated_url"); miss=$((miss + 1))
 fi
-if grep -qF 'hasDocument: settings.documentPath !== undefined' "$ROOT/packages/api/settings-controller/src/index.ts"; then
-  echo "PASS plugin.settings_document_hidden"
+# v0.1.7+: describe 硬编码 hasDocument: true —— 插件的 describe 包装是唯一
+# 的抑制手段, 该硬编码就是"补丁必须存在"的证据(消失反而是好事: 说明上游
+# 改了机制, 需重新核对插件)。
+if grep -qF 'hasDocument: true' "$ROOT/packages/api/settings-controller/src/index.ts"; then
+  echo "PASS plugin.settings_document_hidden (v0.1.7+ describe hardcodes hasDocument; the plugin wraps it)"
+  pass=$((pass + 1))
+elif grep -qF 'hasDocument: settings.documentPath !== undefined' "$ROOT/packages/api/settings-controller/src/index.ts"; then
+  # 旧 tag: hasDocument 由 provider.documentPath 推导, 插件翻该属性。
+  echo "PASS plugin.settings_document_hidden (legacy: describe derives hasDocument from provider.documentPath; the plugin flips it)"
   pass=$((pass + 1))
 else
-  echo "MISS plugin.settings_document_hidden (describe no longer derives hasDocument from provider.documentPath)"
+  echo "MISS plugin.settings_document_hidden (describe no longer derives/hardcodes hasDocument as expected; re-check the plugin adaptation)"
   MISSED+=("plugin.settings_document_hidden"); miss=$((miss + 1))
 fi
 if grep -qF "state.status !== 'ready'" "$ROOT/packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx"; then

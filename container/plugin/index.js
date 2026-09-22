@@ -1,20 +1,27 @@
 // dsh-container 容器适配插件(运行期)。职责:
 //   1. 会话 cookie 自举(替代旧 dsh-web.sh 的 token 交换);
 //   2. 隐藏"打开配置文件"按钮: 容器无桌面, 上游 openSettingsDocument 无
-//      headless 兜底(会 spawn xdg-open 报 ENOENT)—— 把 settings provider
-//      实例的 documentPath 置为 undefined, 上游 settings/describe 即返回
-//      hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身逻辑
-//      (status !== 'ready' → 不渲染)让按钮整个消失, 不引入任何浏览器侧代码。
+//      headless 兜底(会 spawn 原生文本编辑器命令扑空)—— 让 settings/describe
+//      报告 hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身
+//      逻辑(status !== 'ready' → 不渲染)让按钮整个消失, 不引入任何浏览器侧
+//      代码。
 //
-// 上游核对(dsh-v0.1.5-alpha.1):
-//   - describe(): hasDocument = settings.documentPath !== undefined
-//     (packages/api/settings-controller/src/index.ts), provider 即
-//     ctx.get('settings') —— 本插件注入的 settings 服务;
-//   - SettingsDocumentAction 仅在 describe 镜像报 hasDocument:true 时渲染
-//     (packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx);
+// 上游核对(机制随版本演化, 两条路都保留):
+//   - dsh-v0.1.7-alpha.1 起: settings-controller 的 describe() 硬编码
+//     hasDocument: true, provider 接口(SettingsProvider → SettingsForms)已
+//     删除 documentPath —— 翻 provider 属性失效, 改为包 settingsController
+//     实例的 describe。Gateway 调远程方法是 invoke 期在实例上动态取值后再
+//     Reflect.apply 带上 receiver(packages/api/gateway/src/index.ts), 实例
+//     自有属性即遮蔽原型方法;
+//   - 更早的 tag: describe 由 provider 的 documentPath 推导
+//     (hasDocument = settings.documentPath !== undefined), 遮蔽该属性即可;
+//   - 按钮渲染门两种版本一致: SettingsDocumentAction 仅在 store 由 describe
+//     镜像推导出 status==='ready'(即 hasDocument:true)时渲染
+//     (packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx
+//     与 settings-document-store.ts);
 //   - prepareDocument 用 spec.filename(spec 是实例字段), 不受实例属性
-//     遮蔽影响; agent-preset 的打开路径上游自带 {opened:false,path}
-//     headless 回退(canOpenNativePath 在无桌面容器返回 false), 无需接管。
+//     遮蔽影响; agent-preset 的打开路径上游自带 headless 回退
+//     (canOpenNativePath 在无桌面容器返回 false), 无需接管。
 //
 // 幂等与稳健性:
 // - 每次 dsh web 启动(含崩溃重启、dsh-restart)都会执行一次自举, 复用优先;
@@ -27,7 +34,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const name = 'dsh-container-adapt'
-export const inject = ['webServer', 'connection', 'settings']
+export const inject = ['webServer', 'connection', 'settings', 'settingsController']
 
 /** dsh-web 约定存放会话 cookie 的目录(与 container/dsh-web.sh 一致)。 */
 const RUNTIME_DIR = process.env.DSH_CADDY_RUNTIME_DIR ?? '/tmp/dsh-caddy'
@@ -109,6 +116,30 @@ async function bootstrap(ctx) {
   throw lastError ?? new Error('session bootstrap failed')
 }
 
+/** describe 包装标记: 保证多次 apply(dsh web 每次启动/重启)幂等。 */
+const DESCRIBE_WRAPPED = Symbol.for('dsh-container-adapt.describeWrapped')
+
+/**
+ * 强制 settings/describe 报告 hasDocument:false —— v0.1.7+ 上游已把它写死
+ * 成 true, provider 侧无属性可翻, 只能包 controller 实例的 describe。
+ * Gateway 调用路径: Reflect.get(callReceiver, 'describe') 取到的是实例自有
+ * 属性(遮蔽原型方法), 再 Reflect.apply(method, receiver, args) 调用 —— 所以
+ * 这里用普通函数 + apply 转发, this 与参数都保持原样。
+ * @param controller - settingsController 服务实例(dsh-web profile 必有;
+ *    缺失时静默跳过, 不阻塞插件其余职责)。
+ */
+function forceNoSettingsDocument(controller) {
+  if (controller === undefined) return
+  const original = controller.describe
+  if (typeof original !== 'function' || original[DESCRIBE_WRAPPED]) return
+  const wrapped = function describeWithoutDocument() {
+    return { ...original.apply(this, arguments), hasDocument: false }
+  }
+  Object.defineProperty(wrapped, DESCRIBE_WRAPPED, { value: true })
+  Object.defineProperty(controller, 'describe', { value: wrapped, configurable: true })
+  console.log('[dsh-container-adapt] settings describe wrapped: hasDocument forced to false')
+}
+
 /** 挂载: 自举不阻塞插件激活(失败由 dsh-web 的等待超时兜底)。 */
 export function apply(ctx) {
   // 1) 会话 cookie 自举。
@@ -118,8 +149,12 @@ export function apply(ctx) {
 
   // 2) 隐藏"打开配置文件"按钮: 上游把 hasDocument 当作"本地文档可用"信号,
   //    只有它为真时 SettingsDocumentAction 才渲染。容器无桌面且该操作无
-  //    headless 兜底, 直接以数据属性遮蔽 provider 原型上的 documentPath
-  //    getter(spec.filename 不受影响, prepareDocument 照常), 按钮按上游
-  //    自身逻辑消失, 不留下载端点。
-  Object.defineProperty(ctx.settings, 'documentPath', { value: undefined })
+  //    headless 兜底。两条路并存(见文件头"上游核对"):
+  //    - 旧 tag: describe 由 provider.documentPath 推导, 遮蔽该属性
+  //      (spec.filename 不受影响, prepareDocument 照常);
+  //    - v0.1.7+: describe 硬编码 true, 包 controller 实例的 describe。
+  if ('documentPath' in ctx.settings) {
+    Object.defineProperty(ctx.settings, 'documentPath', { value: undefined })
+  }
+  forceNoSettingsDocument(ctx.settingsController)
 }
