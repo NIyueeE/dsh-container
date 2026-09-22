@@ -290,7 +290,7 @@ What the **host** must still allow (the image cannot do this part):
 | Docker | `--security-opt seccomp=unconfined --security-opt apparmor=unconfined --device /dev/fuse` (or `--privileged`); optionally `--sysctl net.ipv4.ping_group_range="0 2147483647"` so `ping` works as the non-root runtime user |
 | Podman (rootless host) | `--userns=keep-id` |
 | Podman (rootful host) | `--userns=keep-id`, or `--privileged` |
-| Quadlet | `UserNS=keep-id` on a rootless host; add `Devices=/dev/fuse` as needed |
+| Quadlet | `UserNS=keep-id` on a rootless host; otherwise the native keys `AddDevice=/dev/fuse`, `SeccompProfile=unconfined`, `AppArmor=unconfined` (see `examples/dsh.container`) |
 
 Compose/Quadlet snippets are pre-commented in `examples/compose.yaml` and `examples/dsh.container`.
 Docker Desktop (macOS/Windows) does not support nested user namespaces at all — in-container

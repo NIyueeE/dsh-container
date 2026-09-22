@@ -36,10 +36,16 @@ PublishPort=127.0.0.1:3081:3081
 # Exec=--port 8080
 # Optional: in-container (rootless) podman. The image ships crun, provisions
 # XDG_RUNTIME_DIR and reuses the outer user namespace, but nested userns + fuse
-# must be allowed by the host runtime. On a rootless podman host, uncomment:
+# must be allowed by the host runtime. Rootless podman host: uncomment
 #   UserNS=keep-id      # single shared userns; inner podman reuses it
-# On a rootful podman host the equivalent is --userns=keep-id or --privileged;
-# without /dev/fuse, `podman --storage-driver vfs ...` still works (slower).
+# Any host, when /dev/fuse is available (the '-' prefix makes it optional, so
+# hosts without fuse still start):
+#   AddDevice=-/dev/fuse                    # fuse-overlayfs storage driver
+#   SeccompProfile=unconfined               # let the inner podman unshare a userns
+#   AppArmor=unconfined                     # only needed on AppArmor hosts
+# On a rootful podman host those lines (or --privileged) are the equivalent for
+# rootful in-container podman, which needs no newuidmap at all; without
+# /dev/fuse, `podman --storage-driver vfs ...` still works (slower).
 # See docs/deployment.md "In-container podman".
 # Restart dsh web without restarting the container:
 #   podman exec dsh dsh-restart
