@@ -150,7 +150,10 @@ fallback upstream and would spawn `xdg-open` into nothing in a container. The pl
 Settings still live on the mounted volume under `~/.dsh`: upstream v0.1.7+ stores form values in
 the active profile's plugin configuration (`~/.dsh/profiles/<profile>/cordis.patch.yml`, e.g.
 `profiles/web/`) and imports the legacy `~/.dsh/settings.yaml` **once**, renaming it to
-`settings.yaml.imported`; provider credentials stay in `~/.dsh/.credentials.yaml`. Read or edit
+`settings.yaml.imported`; provider credentials stay in `~/.dsh/.credentials.yaml`. That import
+runs only *after* the loader has settled, i.e. after the start that found the file has already
+resolved its configuration — so a hand-written `settings.yaml` takes effect from the **next**
+`dsh` start, not the current one (on a fresh home with a single start, never). Read or edit
 them from the host, or inside the container (`docker exec dsh cat
 ~/.dsh/profiles/web/cordis.patch.yml`).
 

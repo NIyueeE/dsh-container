@@ -5,8 +5,9 @@ name: Release prep
 #   contract — tests/contract.sh 静态契约检查(docs/upstream-contract.md 的机器形态),
 #              数秒判定上游 tag 是否存在兼容漂移; 本仓库已有同名 tag 时幂等跳过
 #   prep     — (漂移时)在本仓库上一个发布 tag 的镜像里以 dsh headless 运行修复
-#              agent(dsh 数据在独立 HOME, settings 由 secrets 生成, 模型走
-#              自建中转的 openai-responses 端点): 读上游 diff + 契约文档,
+#              agent(dsh 数据在独立 HOME, 模型配置由 secrets 生成成装载期
+#              --patch 覆盖层 —— 不能写扁平的 settings.yaml, 见 prep 步骤注释,
+#              模型走自建中转的 openai-responses 端点): 读上游 diff + 契约文档,
 #              最小化修复(通常是 container/plugin/scripts/
 #              patch-client.js 的候选串); 每次发布(含无漂移)都对照契约文档
 #              § Simplification triggers 审视上游新能力, 能干掉 hack 就删掉
@@ -301,7 +302,7 @@ jobs:
       options: --entrypoint "" --user root
     env:
       # dsh 数据(settings/sessions)落在 Actions 容器 job 的 HOME(/github/home),
-      # 不落 workspace; git 全局 safe.directory 由 Write dsh settings 步骤注入。
+      # 不落 workspace; git 全局 safe.directory 由 Write dsh agent config 步骤注入。
       GIT_CONFIG_GLOBAL: /tmp/dsh-ci-gitconfig
       TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
       TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
@@ -338,40 +339,56 @@ jobs:
           echo "IS_ANCESTOR=$ancestor" >> "$GITHUB_ENV"
           echo "context ready: /tmp/upstream-diff.json, /tmp/upstream (is_ancestor=$ancestor)"
 
-      - name: Write dsh settings
+      - name: Write dsh agent config (load-time --patch overlay)
         env:
           TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
           TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
           AGENT_MODEL: ${{ secrets.AGENT_MODEL }}
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.dsh"
-          cat > "$HOME/.dsh/settings.yaml" <<EOF
-          agent-default-model:
-            provider: ternarybit
-            model: "${AGENT_MODEL}"
-          permission:
-            defaultPreset: workspace-write
-          llm-pi-ai:
-            providers:
-              ternarybit:
-                displayName: TernaryBit
-                apiKeyEnv: TERNARYBIT_API_KEY
-                api: openai-responses
-                baseURL: "${TERNARYBIT_URL}"
-                models:
-                  - id: "${AGENT_MODEL}"
-                    name: "${AGENT_MODEL}"
-                    contextWindow: 1000000
-                    maxTokens: 384000
-                    input:
-                      - text
-                      - image
-                    reasoningEfforts:
-                      off: null
-                      low: low
-                      high: high
-                      max: max
+          # 模型配置写成 launcher 的装载期覆盖层(下一步 `dsh --patch`), 不写
+          # $HOME/.dsh/settings.yaml: 上游 dsh v0.1.7 起设置文档改存
+          # $DSH_HOME/profiles/<profile>/cordis.patch.yml, 扁平的 settings.yaml
+          # 只剩"一次性 legacy 导入", 且该导入在 Loader 装载完成之后才异步执行
+          # (packages/settings/settings/src/index.ts importLegacyDocument)——
+          # 对当次启动的模型解析来说已经太晚: agent 回落到 bundle 里的默认
+          # agent-default-model(provider deepseek-official), 因容器内没有
+          # DEEPSEEK_API_KEY 而以 MISSING_CREDENTIAL 退出。Actions 的 HOME 每次
+          # 都是全新的, 所以这条路径 100% 失败且只在 agent 步骤暴露(静态契约
+          # 检查与 triage 都拦不到)。覆盖层在装载期生效: 首次启动即有效, 也不
+          # 依赖上游设置文档的存放位置(2026-09-22 dsh-v0.1.7-alpha.2 事故)。
+          # 覆盖层按 entry id 覆盖 base bundle 的既有条目(agent-default-model /
+          # permission / llm-pi-ai), 与镜像自己挂 container/plugin/overlay.yml
+          # 是同一机制。baseURL 是密钥值 —— 与旧 settings.yaml 同等暴露面, 不新增。
+          cat > /tmp/dsh-agent.patch.yml <<EOF
+          - id: agent-default-model
+            config:
+              provider: ternarybit
+              model: "${AGENT_MODEL}"
+          - id: permission
+            config:
+              defaultPreset: workspace-write
+          - id: llm-pi-ai
+            config:
+              providers:
+                ternarybit:
+                  displayName: TernaryBit
+                  apiKeyEnv: TERNARYBIT_API_KEY
+                  api: openai-responses
+                  baseURL: "${TERNARYBIT_URL}"
+                  models:
+                    - id: "${AGENT_MODEL}"
+                      name: "${AGENT_MODEL}"
+                      contextWindow: 1000000
+                      maxTokens: 384000
+                      input:
+                        - text
+                        - image
+                      reasoningEfforts:
+                        off: null
+                        low: low
+                        high: high
+                        max: max
           EOF
           # workspace 属主是 runner uid, 容器内以 root 跑 —— git 会报
           # dubious ownership; 全局 safe.directory 注入(与 commit 步骤同法)
@@ -390,7 +407,8 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           # stdout = 最终回复(即 agent 报告); stderr = 推理过程(留作排障,
           # 见下方 artifact)。dsh 数据在独立 HOME($HOME/.dsh), 不污染 workspace。
-          dsh --profile headless "$(cat prompts/release-prep.md)" \
+          # launcher 自身的 flag(--patch)必须排在 --profile 之前。
+          dsh --patch /tmp/dsh-agent.patch.yml --profile headless "$(cat prompts/release-prep.md)" \
             > /tmp/agent-report.md 2> /tmp/agent-reasoning.log
           [ -s /tmp/agent-report.md ] \
             || { echo "(agent produced no final message; see reasoning log)" > /tmp/agent-report.md; }
@@ -463,7 +481,7 @@ jobs:
               -c user.email="actions@github.com" \
               commit -m "fix: adapt to upstream $NEW_TAG (agent-prepared)"
           # 推送走独立 remote(x-access-token): checkout 注入的 extraheader
-          # 已在 Write dsh settings 步骤清除, agent 全程接触不到凭据。
+          # 已在 Write dsh agent config 步骤清除, agent 全程接触不到凭据。
           git remote add push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" 2>/dev/null \
             || git remote set-url push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git push push "HEAD:$branch"
@@ -769,13 +787,33 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: write
+      actions: read # download-artifact 取回 prep 已上传的 reasoning log
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       ISSUE: ${{ needs.contract.outputs.issue }}
       NEW_TAG: ${{ needs.contract.outputs.new_tag }}
     steps:
+      # agent 的失败原因在容器的 stderr 里(prep 步骤重定向到 reasoning log),
+      # 而 notify 跑在宿主 runner 上: 取回 prep 已上传(且已脱敏)的 artifact,
+      # 让 issue 上的失败说明自带诊断 —— 2026-09-22 dsh-v0.1.7-alpha.2 事故里
+      # issue 只有一句 "See the workflow run", 真正的原因
+      # (MISSING_CREDENTIAL … "deepseek-official")藏在 artifact 里。
+      # artifact 不存在(如 contract 阶段就失败)时继续, 注释里就没有该段。
+      - name: Fetch the agent reasoning log
+        if: needs.prep.result == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: agent-reasoning
+          path: /tmp/agent-reasoning
+
       - name: Post failure note
+        env:
+          # 与 prep 的报告步骤同法脱敏: reasoning log 是 LLM 自由文本, 发到
+          # 公开 issue 前必须清掉本 job 可见的密钥值。
+          TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
+          TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
         run: |
           set -euo pipefail
           {
@@ -796,8 +834,26 @@ jobs:
               echo
             fi
             echo "See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for logs."
+            if [ -s /tmp/agent-reasoning/agent-reasoning.log ]; then
+              echo
+              echo "<details><summary>Agent diagnostic — last 20 lines of the reasoning log (secrets redacted)</summary>"
+              echo
+              echo '```'
+              tail -n 20 /tmp/agent-reasoning/agent-reasoning.log
+              echo '```'
+              echo
+              echo "</details>"
+              echo
+            fi
             echo "The release was NOT published; the tracker issue stays open."
           } > /tmp/issue-comment.md
+          for v in "$TERNARYBIT_API_KEY" "$TERNARYBIT_URL"; do
+            [ -n "$v" ] || continue
+            esc="$(printf '%s' "$v" | sed 's/[^[:alnum:]]/\\&/g')"
+            sed -i "s/$esc/[REDACTED]/g" /tmp/issue-comment.md
+          done
+          sed -i -E 's/(github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{36}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{16,})/[REDACTED-TOKEN]/g' \
+            /tmp/issue-comment.md
           # 本 job 存在的唯一意义就是这条失败说明: 发不出去必须红, 不能
           # 吞掉 —— "job 绿但 issue 无声"正是 2026-09-09 事故的形态之一。
           if [ -n "$ISSUE" ]; then
