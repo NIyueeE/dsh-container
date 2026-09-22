@@ -225,6 +225,8 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
    credentials and succeed with them**, and setting only one auth variable must exit nonzero.
    Always test inside the built image (the dev machine may lack `caddy`).
 6. If you touched the client patch, run the `patch-client.js` validate step: extract the
-   `/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=...` URL from the served index and
+   `plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=...` URL from the served index
+   (document-relative since upstream v0.1.7; the absolute `/plugins/??...` form on older tags —
+   `tests/smoke.sh` accepts both) and
    verify it contains the `isLoopback` patch (there is no `index.html` modification anymore — no
    polyfill is injected).

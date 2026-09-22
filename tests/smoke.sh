@@ -64,6 +64,21 @@ die() {
   exit 1
 }
 
+# 从首页 HTML 提取 connection 客户端 bundle URL 并归一化为绝对路径。
+# 上游 v0.1.7 起 index 注入的是"相对文档"的引用(client-modules 的
+# comboReference 切掉了开头 /, 配合 document-relative app routes), 更早的
+# tag 用 /plugins/??... 绝对形式; 两种都接受, 统一补上前导 / 供 curl 使用。
+extract_connection_bundle_url() {
+  local html="$1" url
+  url="$(grep -oE "plugins/\?\?@deepseek-ai/dsh-client-connection/client\.js&rev=[^\"' ]+" \
+    <<<"$html" | head -n1 || true)"
+  case "$url" in
+    ''|/*) ;;
+    *) url="/$url" ;;
+  esac
+  printf '%s' "$url"
+}
+
 # 桥接 + 端口映射, 与默认部署方式一致(对外端口 3081)。
 cid="$("$DOCKER" run -d --rm --name dsh-smoke -p 3081:3081 \
   -e DSH_HOME=/tmp/dsh-smoke-home \
@@ -254,10 +269,10 @@ dl_gone="$(curl -s -D - -o /dev/null http://127.0.0.1:3081/download/settings.yam
 printf '%s' "$dl_gone" | grep -qi 'content-disposition: attachment' \
   && die "removed download endpoint still serves /download/settings.yaml"
 
-# 前端兼容补丁: 新 upstream dsh 以 /plugins/??<id>/client.js&rev=...
-# 形式在首页注入 bundle URL, 提取 connection 的单包 URL 后验证补丁。
-connection_bundle_url="$(grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' \
-  <<<"$index_html" | head -n1 || true)"
+# 前端兼容补丁: upstream dsh 以(相对文档的) plugins/??<id>/client.js&rev=...
+# 形式在首页注入 bundle URL(v0.1.7 前是 /plugins/??... 绝对形式), 提取
+# connection 的单包 URL 后验证补丁。
+connection_bundle_url="$(extract_connection_bundle_url "$index_html")"
 [ -n "$connection_bundle_url" ] \
   || die "connection client bundle URL not found in served index"
 connection_bundle="$(curl -fsS "http://127.0.0.1:3081${connection_bundle_url}")" \
@@ -320,8 +335,7 @@ index_restart="$(curl -fsS -b "$cookie_relogin" http://127.0.0.1:3081/)" \
   || die "GET / after restart failed"
 [[ "$index_restart" == *'<title>DeepSeek Harness</title>'* ]] \
   || die "served index.html after restart lacks the expected title"
-bundle_restart_url="$(grep -o '/plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=[^" ]*' \
-  <<<"$index_restart" | head -n1 || true)"
+bundle_restart_url="$(extract_connection_bundle_url "$index_restart")"
 [ -n "$bundle_restart_url" ] \
   || die "connection bundle URL not found in served index after restart"
 bundle_restart="$(curl -fsS "http://127.0.0.1:3081${bundle_restart_url}")" \
