@@ -59,10 +59,12 @@ Notes:
 1. `dsh web` prints a one-time `?token=...` login URL. The container-adapt plugin (mounted via
    `dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web`) exchanges it inside the
    dsh process and
-   writes the signed session cookie to `/tmp/dsh-caddy/session-cookie`. Every bootstrap rewrites
-   that file — the reuse path included (a still-valid cookie is reused across restarts because the
-   signing secret persists in the volume) — since `dsh-web.sh` waits for the file's mtime to
-   advance before starting Caddy; the smoke test asserts that advance across `dsh-restart`.
+   writes the signed session cookie to `/tmp/dsh-caddy/session-cookie` as a state file: the content
+   is the cookie in force, a still-valid cookie is reused across restarts (the signing secret
+   persists in the volume) and therefore **not** rewritten. `dsh-web.sh` waits only for the file to
+   exist, then regenerates the Caddyfile and restarts Caddy on content change — a same-container
+   restart never waits on a write. The smoke test covers `dsh-restart` plus a `docker restart` and
+   130 s liveness window (issue #12 regression).
 2. With the cookie injected by Caddy, `/` and privileged methods return `200` through `:3081`;
    direct `:3080` access without a cookie returns `401` (the fence is not bypassed).
 3. The served connection bundle contains the `isLoopback: true` patch and no longer contains the

@@ -5,8 +5,11 @@
 #      启动命令挂载镜像自带的容器适配插件 overlay(--patch, launcher flag,
 #      必须位于 `web` 之前): 会话 cookie 自举由插件在 dsh 进程内完成, 不再
 #      由本脚本 grep 日志 token + curl 交换。
-#   2. 等待插件写出的会话 cookie(/tmp/dsh-caddy/session-cookie), 随后生成的
-#      Caddyfile 把该 cookie 注入所有代理请求。dsh 的签名密钥持久化在数据卷
+#   2. 把插件写出的会话 cookie(/tmp/dsh-caddy/session-cookie)当状态读取:
+#      文件存在且非空 ⇔ 插件当前持有一个可用 cookie; 本脚本只在文件缺失时
+#      等待它出现, 之后每轮比较内容, 变了才重建 Caddyfile 并重启 Caddy ——
+#      没有 mtime 握手(复用旧 cookie 时插件不写盘, "必须看到一次写入"是错的
+#      同步信号)。dsh 的签名密钥持久化在数据卷
 #      凭据库中, cookie 默认 30 天有效、跨进程/跨容器重启有效 —— 插件会复用
 #      仍被接受的旧 cookie, 不重复换取。dsh 自身的浏览器围栏
 #      (3080 直连无 cookie 仍 401)原样保留, 3081 上的鉴权由 Caddy 承担
@@ -123,20 +126,19 @@ start_dsh_web() {
   tail -f --pid="$CHILD_PID" "$LOG" &
 }
 
-# --- 会话自举 -----------------------------------------------------------------
-# 由插件在 dsh 进程内完成(token → cookie, 复用仍有效的旧 cookie), 本脚本
-# 只等待插件写出的 cookie 文件出现/刷新; 超时则 fail-fast, 与旧实现等价。
-# 参数是启动前记录的 cookie 文件 mtime: 首次启动等文件出现, dsh web 重启后
-# 旧文件仍在, 必须等插件重新写入(mtime 前进) —— 插件每次自举后都重写文件
-# (即使复用旧值, 见 container/plugin/index.js 的复用分支), 否则这里会空等
-# 120s 后 fail-fast(容器在重启策略下变成崩溃循环), 或 Caddy 继续注入上一轮
-# 的死 cookie, 表现为静默 401。
-ensure_session() {
-  local old_mtime="${1:-0}"
+# --- 会话 cookie(状态文件, 非事件) --------------------------------------------
+# 由插件在 dsh 进程内自举(token → cookie, 复用仍有效的旧 cookie)并原子写出;
+# 本脚本把 COOKIE_FILE 当状态读取: 存在且非空 ⇔ 插件持有一个可用 cookie。
+# 只做两件事:
+#   - 文件缺失 → 有界等待插件产出, 等不到 fail-fast(会话自举彻底失败);
+#   - 内容变化 → 调用方重建 Caddyfile 并重启 Caddy(插件轮换了 cookie)。
+# 不复用旧 cookie 时插件不写盘, 因此绝不能把"文件被写了一次(mtime 前进)"
+# 当作就绪信号: 那样复用成功反而会让这里空等 120s 后 exit 1, 容器在重启策略
+# 下变成崩溃循环(issue #12)。
+wait_for_cookie() {
   for _ in $(seq 1 120); do
-    if [ -s "$COOKIE_FILE" ] \
-        && [ "$(stat -c %Y "$COOKIE_FILE" 2>/dev/null || echo 0)" -gt "$old_mtime" ]; then
-      echo "[dsh-web] session cookie ready (minted by the container-adapt plugin)" >&2
+    if [ -s "$COOKIE_FILE" ]; then
+      echo "[dsh-web] session cookie ready (bootstrapped by the container-adapt plugin)" >&2
       return 0
     fi
     if ! kill -0 "$CHILD_PID" 2>/dev/null; then
@@ -147,6 +149,24 @@ ensure_session() {
     sleep 1
   done
   echo "[dsh-web] no session cookie from the container-adapt plugin within 120s" >&2
+  return 1
+}
+
+# dsh 端口就绪门(与 cookie 无关): 容器重启时 cookie 文件已存在, 不先等 dsh
+# 监听就拉起 Caddy, 会让反代在 dsh 起来之前对用户返回 502。
+wait_for_dsh_port() {
+  for _ in $(seq 1 120); do
+    if curl -s -o /dev/null "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null; then
+      return 0
+    fi
+    if ! kill -0 "$CHILD_PID" 2>/dev/null; then
+      echo "[dsh-web] dsh web exited before listening on 127.0.0.1:${WEB_PORT}; last log lines:" >&2
+      tail -n 20 "$LOG" >&2 || true
+      return 1
+    fi
+    sleep 0.5
+  done
+  echo "[dsh-web] dsh web did not accept connections on 127.0.0.1:${WEB_PORT} within 60s" >&2
   return 1
 }
 
@@ -243,11 +263,16 @@ restart_caddy() {
 }
 
 # --- 栈引导: dsh web → 会话 cookie → Caddy -------------------------------------
+# cookie 文件已存在(同一容器重启)时 wait_for_cookie 立即返回 —— 复用路径
+# 不会写盘, 所以这里绝不能等"被写一次"。
 mkdir -p "$RUNTIME_DIR"
-cookie_mtime="$(stat -c %Y "$COOKIE_FILE" 2>/dev/null || echo 0)"
 start_dsh_web
-if ! ensure_session "$cookie_mtime"; then
+if ! wait_for_cookie; then
   echo "[dsh-web] session bootstrap failed; refusing to serve" >&2
+  exit 1
+fi
+if ! wait_for_dsh_port; then
+  echo "[dsh-web] dsh web is not accepting connections; refusing to serve" >&2
   exit 1
 fi
 generate_caddyfile
@@ -259,9 +284,10 @@ echo "[dsh-web] caddy started (pid $CADDY_PID); stack ready on 0.0.0.0:3081 -> 1
 last_cookie="$(cat "$COOKIE_FILE" 2>/dev/null || true)"
 
 # --- 监督循环 -------------------------------------------------------------------
-# 单线程轮询(2s): dsh web 退出则重启并重新自举会话(cookie 失效才重新换取,
-# cookie 变化才重启 Caddy); caddy 崩溃则直接重启。若 dsh web/会话/Caddy
-# 无法恢复, 以非零退出交给编排层重启容器 —— 不静默降级。
+# 单线程轮询(2s): dsh web 退出则重启; cookie 文件缺失则等插件产出(有界, 等不到
+# 即退出交给编排层 —— 不静默降级); 插件轮换 cookie(内容变化)才重建 Caddyfile
+# 并重启 Caddy —— 复用旧 cookie 时内容不变, Caddy 与浏览器会话全程不中断。
+# caddy 崩溃则直接重启。
 while [ "$STOPPING" = "0" ]; do
   if ! kill -0 "$CHILD_PID" 2>/dev/null; then
     local_status=0
@@ -275,19 +301,20 @@ while [ "$STOPPING" = "0" ]; do
     fi
     echo "[dsh-web] dsh web exited (status $local_status); restarting in 2s" >&2
     sleep 2
-    cookie_mtime="$(stat -c %Y "$COOKIE_FILE" 2>/dev/null || echo 0)"
     start_dsh_web
-    if ! ensure_session "$cookie_mtime"; then
+  fi
+  if [ ! -s "$COOKIE_FILE" ]; then
+    if ! wait_for_cookie; then
       echo "[dsh-web] session bootstrap failed after dsh web restart; giving up" >&2
       exit 1
     fi
-    new_cookie="$(cat "$COOKIE_FILE" 2>/dev/null || true)"
-    if [ "$new_cookie" != "$last_cookie" ]; then
-      echo "[dsh-web] session cookie changed; regenerating caddy config" >&2
-      generate_caddyfile || exit 1
-      restart_caddy || exit 1
-      last_cookie="$new_cookie"
-    fi
+  fi
+  new_cookie="$(cat "$COOKIE_FILE" 2>/dev/null || true)"
+  if [ -n "$new_cookie" ] && [ "$new_cookie" != "$last_cookie" ]; then
+    echo "[dsh-web] session cookie changed; regenerating caddy config" >&2
+    generate_caddyfile || exit 1
+    restart_caddy || exit 1
+    last_cookie="$new_cookie"
   fi
   if [ -n "$CADDY_PID" ] && ! caddy_alive "$CADDY_PID"; then
     echo "[dsh-web] caddy exited; restarting" >&2

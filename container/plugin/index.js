@@ -25,13 +25,16 @@
 //
 // 幂等与稳健性:
 // - 每次 dsh web 启动(含崩溃重启、dsh-restart)都会执行一次自举, 复用优先;
-// - 交换/写文件带短重试(与旧 dsh-web 的交换重试语义对齐), 瞬时失败不会
-//   让 dsh-web 空等 120s 后 fail-fast;
+// - cookie 文件是状态而非事件: 内容 = 当前有效 cookie。复用成功不写盘, 只有
+//   轮换/首次铸造才原子写(tmp + rename, dsh-web 的 cat 永远读不到半截文件);
+//   dsh-web 以"文件是否存在 + 内容是否变化"收敛, 不依赖写入时机(无 mtime 握手);
+// - 交换/写文件带短重试, 瞬时失败不会让 dsh-web 空等 120s 后 fail-fast;
 // - 复用探测同样带短重试: 重启后新进程会话存储加载完成前可能拒绝旧 cookie,
-//   多重探几次再决定重新铸造, 避免无谓轮换;
-// - cookie 原子写(tmp + rename), dsh-web 的 cat 永远读不到半截文件。
-// 自举最终失败只记录日志、不阻止 dsh web 启动: dsh-web 侧会因等不到
-// cookie 文件而 fail-fast, 与旧行为等价。
+//   多重探几次再决定重新铸造, 避免无谓轮换(纯优化: 即使误判, dsh-web 也会
+//   按内容变化把新 cookie 收敛进 Caddy)。
+// 自举最终失败只记录日志、不阻止 dsh web 启动: 文件缺失时 dsh-web 会在有界
+// 等待后 fail-fast; 文件已存在时监督器继续用现有内容服务(不因一次自举失败
+// 杀掉容器, 避免重启策略下的崩溃循环)。
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -57,8 +60,8 @@ const PROBE_DELAY_MS = 250
 
 /**
  * 探测盘上的旧 cookie 是否仍被当前 dsh 进程接受(根路径 200 即可)。
- * 文件不存在/为空 → 没有可复用的 cookie, 直接返回 undefined。
- * @returns 可复用的 cookie 原文; undefined 表示必须重新换取。
+ * 文件不存在/为空 → 没有可复用的 cookie, 直接返回 false。
+ * @returns true 表示应复用(调用方负责记录日志)。
  */
 async function reuseExistingCookie(baseUrl, cookieFile) {
   for (let probe = 1; probe <= PROBE_RETRIES; probe += 1) {
@@ -66,15 +69,15 @@ async function reuseExistingCookie(baseUrl, cookieFile) {
     try {
       existing = await readFile(cookieFile, 'utf8')
     } catch {
-      return undefined
+      return false
     }
-    if (existing === '') return undefined
+    if (existing === '') return false
     try {
       const response = await fetch(`${baseUrl}/`, {
         headers: { cookie: existing },
         redirect: 'manual',
       })
-      if (response.status === 200) return existing
+      if (response.status === 200) return true
       // 非 200: 启动瞬态(会话存储加载中)或 cookie 真失效, 重试后再判。
     } catch {
       // 连接失败(服务未就绪): 重试。
@@ -83,7 +86,7 @@ async function reuseExistingCookie(baseUrl, cookieFile) {
       await new Promise((resolve) => { setTimeout(resolve, PROBE_DELAY_MS) })
     }
   }
-  return undefined
+  return false
 }
 
 /** 从 Set-Cookie 头提取第一个 cookie 的 name=value(分号截断, 与旧 awk 一致)。 */
@@ -117,12 +120,10 @@ async function bootstrap(ctx) {
   for (let attempt = 1; attempt <= BOOTSTRAP_RETRIES; attempt += 1) {
     try {
       // 1) 复用仍被 dsh 接受的旧 cookie(带短重试, 见 reuseExistingCookie)。
-      //    复用成功也必须原子重写一次文件: dsh-web.sh 的 ensure_session() 以
-      //    cookie 文件 mtime 前进判定"本轮自举完成", 复用路径不写盘会让它空等
-      //    120s 后 exit 1 —— 容器在重启策略下变成崩溃循环。
-      const reusable = await reuseExistingCookie(baseUrl, cookieFile)
-      if (reusable !== undefined) {
-        await writeCookieAtomically(cookieFile, reusable)
+      //    复用成功不写盘: cookie 文件是**状态**(内容 = 当前有效 cookie), 不是
+      //    事件。dsh-web 只在文件缺失时等待、只在内容变化时重建 Caddy 配置,
+      //    所以这里绝不能为了让"写入被观察到"而重写同样的内容。
+      if (await reuseExistingCookie(baseUrl, cookieFile)) {
         console.log('[dsh-container-adapt] reusing the still-valid session cookie')
         return
       }

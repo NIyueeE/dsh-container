@@ -88,9 +88,6 @@ cid="$("$DOCKER" run -d --rm --name dsh-smoke -p 3081:3081 \
 # 镜像到容器日志); supervisor 会用它自举会话, 这里取 token 供交换
 # 流程断言使用。容器提前退出时快速失败并带出日志。
 running() { [ "$("$DOCKER" inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
-# 容器内会话 cookie 文件的 mtime(秒级); 文件缺失记 0。dsh-web 以它是否
-# 前进判定插件完成自举, 所以断言里不能把"读不到"当成通过。
-cookie_mtime() { "$DOCKER" exec "$1" stat -c %Y /tmp/dsh-caddy/session-cookie 2>/dev/null || echo 0; }
 token=""
 for _ in $(seq 1 60); do
   token="$("$DOCKER" logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"
@@ -300,20 +297,10 @@ bundle_alt="$(curl -fsS -H 'Host: dsh.test' "http://127.0.0.1:3081${connection_b
 
 # dsh web 守护/重启: dsh-restart 后由 dsh-web 重新拉起, 新进程会打印
 # 新 token; 等新 token 出现后重新登录, 再验证页面与补丁仍然可用。
-# 重启前后记录 cookie 文件 mtime: 插件每一轮自举都必须重写该文件(即使
-# 复用仍有效的旧 cookie), dsh-web 的 ensure_session() 正是以 mtime 前进
-# 判定"自举完成" —— 复用路径漏写盘会让它空等 120s 后 exit 1, 容器在
-# 重启策略下变成崩溃循环。这里不空等满 120s, 直接断言契约本身(秒级失败)。
-mtime_before="$(cookie_mtime "$cid")"
+# cookie 文件是状态(内容 = 当前有效 cookie), 不是事件: 复用旧 cookie 时插件
+# 不写盘, dsh-web 也不等待写入(只在文件缺失时等待、只在内容变化时重建 Caddy
+# 配置)。所以这里只断言可见行为, 不 grep 日志文本、不等 mtime。
 "$DOCKER" exec "$cid" dsh-restart || die "dsh-restart failed"
-mtime_after="$mtime_before"
-for _ in $(seq 1 60); do
-  mtime_after="$(cookie_mtime "$cid")"
-  [ "$mtime_after" -gt "$mtime_before" ] && break
-  sleep 1
-done
-[ "$mtime_after" -gt "$mtime_before" ] \
-  || die "session-cookie mtime did not advance after dsh-restart (plugin skipped the rewrite; mtime stayed $mtime_before)"
 token2=""
 exchange2=""
 for _ in $(seq 1 90); do
@@ -337,10 +324,19 @@ for _ in $(seq 1 15); do
 done
 [ "$survive" = "200" ] \
   || die "proxied / after dsh-restart returned $survive, expected 200 (session did not survive restart)"
-# 幂等: 重启后的新 dsh web 进程里, 插件必须复用仍有效的旧 cookie
-# (签名密钥持久化在卷), 而不是重新换取 —— 日志出现 reusing 即证明。
-"$DOCKER" logs "$cid" 2>&1 | grep -F 'reusing the still-valid session cookie' \
-  || die "container-adapt plugin did not reuse the session cookie after dsh-restart"
+# 重启后 Caddy 注入的 cookie 仍被 dsh 接受: 特权方法经代理必须 200
+# (dsh-web 若没把(可能已轮换的)新 cookie 收敛进 Caddy, 这里会拿到 401)。
+# 插件是复用还是重新铸造 cookie 都合法 —— 不作为判定条件。
+settings_restart=""
+for _ in $(seq 1 15); do
+  settings_restart="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
+    --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}' || true)"
+  [ "$settings_restart" = "200" ] && break
+  sleep 1
+done
+[ "$settings_restart" = "200" ] \
+  || die "proxied /api/settings/describe after dsh-restart returned $settings_restart, expected 200"
 # 信息性: 重启前的会话 cookie 是否仍被接受(不作为判定条件)。
 old_cookie_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
 if [ "$old_cookie_code" != "200" ]; then
@@ -407,5 +403,28 @@ if timeout 30 "$DOCKER" run --rm --name dsh-smoke-partial-auth \
 fi
 grep -F 'must be set together' /tmp/dsh-partial-auth.log >/dev/null \
   || die "partial-auth container failed without the expected message"
+
+# issue #12 回归(同容器重启路径): cookie 文件在 /tmp 里跨 `docker restart`
+# 存活。旧实现把"文件被写了一次(mtime 前进)"当成就绪信号, 而复用该 cookie
+# 时插件不写盘 → dsh-web 空等 120s 后 exit 1, 在 restart 策略下变成每约
+# 2 分钟一次的崩溃循环。这里真等过那个 120s 窗口, 确认容器仍在运行且代理
+# 可用; 插件复用还是轮换 cookie 都合法。
+"$DOCKER" restart "$cid" >/dev/null || die "docker restart failed"
+restart_root=""
+for _ in $(seq 1 60); do
+  restart_root="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/ || true)"
+  [ "$restart_root" = "200" ] && break
+  running "$cid" || { "$DOCKER" logs --tail 40 "$cid" >&2 || true; die "container exited while coming back from docker restart"; }
+  sleep 1
+done
+[ "$restart_root" = "200" ] \
+  || die "proxied / after docker restart returned $restart_root, expected 200"
+echo "=== [smoke] waiting 130s to confirm the container survives the post-restart window (issue #12)" >&2
+sleep 130
+running "$cid" \
+  || { "$DOCKER" logs --tail 40 "$cid" >&2 || true; die "container exited within 130s of docker restart (issue #12 regression)"; }
+restart_root_late="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/ || true)"
+[ "$restart_root_late" = "200" ] \
+  || die "proxied / 130s after docker restart returned $restart_root_late, expected 200"
 
 echo "=== [smoke] PASS: all checks passed for $image"
