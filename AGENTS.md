@@ -22,8 +22,8 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
-| `.github/workflows/image.yml` | CI: build + smoke test always; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags) |
-| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`. It closes a tracker issue only once that tag's push has actually produced an `image.yml` run (a tag that never triggered the pipeline keeps the issue open with a hint) |
+| `.github/workflows/image.yml` | CI: build + smoke test always; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags). Tag builds additionally run `tests/contract.sh` as a publish gate (the only contract check a manually pushed tag gets) and compose the Release body from this image's upgrade notes + the upstream release notes quoted in a `<details>` block |
+| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`. It closes a tracker issue only once that tag's push has actually produced an `image.yml` run (a tag that never triggered the pipeline keeps the issue open with a hint). It also runs a **release health check** on our newest `dsh-v*` tag: a latest `image.yml` run that is missing, failed, or cancelled opens a "Release pipeline not published" issue, closed automatically once a run succeeds (the safety net for manually pushed tags, which skip release-prep) |
 | `.github/workflows/release-prep.yml` | Automated release preparation: contract check → code-level diff triage (`tests/triage-diff.sh` admits the agent only on drift or adaptation-surface hits; fence drift and mis-dispatched tags fail fast) → dsh headless agent (drift repair + adaptation review, exits early with `NO_ACTION_NEEDED` when there is nothing to do — upstream changes that make a hack redundant are deleted, see `docs/upstream-contract.md` § Simplification triggers) → build + smoke on the repaired tree → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
 | `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
 | `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for patch anchors, CLI flags, and the request fence before any image is built |
@@ -84,8 +84,10 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    wait 120 s and exit 1, i.e. a crash loop under a restart policy; issue #12). `dsh-web` then
    generates the
    Caddyfile, and starts a **Caddy reverse proxy** on
-   `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback and injects the session cookie into
-   every proxied request (UI assets are gzip-compressed by dsh's own webserver; Caddy does not
+   `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback, injects the session cookie into
+   every proxied request, and marks **both** index entries (`/` and `/index.html` — upstream's two
+   supported entry paths) `Cache-Control: no-store` because the served index is the dynamic boot
+   manifest (UI assets are gzip-compressed by dsh's own webserver; Caddy does not
    re-compress). Browsers never handle the token; authentication
    is Caddy's job: `DSH_PROXY_USER` + `DSH_PROXY_PASSWORD` add basic auth (Caddyfile `basicauth`
    directive on the distro caddy 2.6 — renamed `basic_auth` upstream in 2.7; password bcrypt-hashed

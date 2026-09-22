@@ -119,8 +119,14 @@ proxied_open="$(curl -sS http://127.0.0.1:3081/)"
 direct_unauth="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/)"
 [ "$direct_unauth" = "401" ] || die "direct dsh (3080) without cookie returned $direct_unauth, expected 401"
 # 首页必须 no-store: 防止镜像升级后浏览器沿用旧前端。
+# 上游的索引入口有两个(dist 根 + 配置的 index path, 即 / 与 /index.html),
+# 两个都必须禁缓存 —— 否则从 /index.html 进入的浏览器会缓存旧启动清单。
+# /index.html 是索引入口这件事本身也在这里钉住(上游改为 404 时会失败, 提示
+# 复核 dsh-web 的 @index 规则是否还需要第二个路径)。
 curl -sS -o /dev/null -D - http://127.0.0.1:3081/ | grep -qi 'cache-control: no-store' \
   || die "GET / response lacks Cache-Control: no-store"
+curl -sS -o /dev/null -D - http://127.0.0.1:3081/index.html | grep -qi 'cache-control: no-store' \
+  || die "GET /index.html response lacks Cache-Control: no-store (index entry caching not covered)"
 
 # 会话内页面: 标题与前端补丁。先取回整个 index 再做包含判断,
 # 避免 curl | grep -q 的 SIGPIPE/静默失败。

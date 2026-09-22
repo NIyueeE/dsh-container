@@ -8,6 +8,11 @@ name: Upstream dsh tag watch
 # 自动发版准备流水线(契约检查 → agent 修复 → 构建冒烟 → 推 tag); 本仓库推上
 # 同名 tag 且该 push 确实触发了 image.yml 后(tag push 事件存在), 下次运行
 # 自动关闭该 issue。
+# 另外做一次发布健康检查: 本仓库最新 dsh-v* tag 的 image.yml 最近一次运行
+# 若不是 completed/success(从未运行 / 失败 / 被取消), 开一个
+# "Release pipeline not published: <tag>" issue, 成功后自动关闭 —— 手工推 tag
+# 后构建失败时不会再无声无息(2026-09-22 dsh-v0.1.7-alpha.1 的两次失败与一次
+# 取消当时就没有任何提醒)。
 # 推送 dsh-v* tag 或手动 dispatch 时也会立即检查。
 #
 # 上游仓库可用仓库变量 DSH_UPSTREAM_REPO 覆盖(与 image.yml 的 vars.DSH_TAG
@@ -43,6 +48,7 @@ jobs:
       SELF_REPO: ${{ github.repository }}
       UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
       ISSUE_TITLE_PREFIX: 'New upstream dsh release available:'
+      RELEASE_ISSUE_PREFIX: 'Release pipeline not published:'
     steps:
       - name: Compare newest dsh-v* tags and open/close a tracker issue
         run: |
@@ -160,6 +166,54 @@ jobs:
                   ;;
               esac
             done
+
+            # 发布健康检查: "本仓库已有该 tag" 不等于"发布成功"。手工推 tag 后
+            # 构建失败/被取消时不会有人提醒(2026-09-22 dsh-v0.1.7-alpha.1 两次
+            # 失败 + 一次取消就是这样漏掉的, 当时也没有 tracker issue 可挂靠)。
+            # 这里对**最新** dsh-v* tag 检查 image.yml 最近一次 push 运行的结论:
+            # 不是 completed/success 就开一个提醒 issue(标题去重, 成功后自动关)。
+            # tag push 触发的运行有 2-6 分钟创建延迟, 因此只由定时/手动运行判定。
+            if [ "${{ github.event_name }}" != "push" ] && [ -n "$self_tag" ]; then
+              runs="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" 2>/dev/null || echo '{}')"
+              latest="$(jq -r --arg tag "$self_tag" '
+                [.workflow_runs[]?
+                 | select(.path == ".github/workflows/image.yml" and .head_branch == $tag)]
+                | sort_by(.created_at) | last
+                | if . == null then "none (no image.yml run ever started)"
+                  else (.status + "/" + (.conclusion // "pending")) + " " + .html_url end' <<<"$runs")"
+              health_title="$RELEASE_ISSUE_PREFIX $self_tag"
+              health_issue=""
+              for line in "${issues[@]}"; do
+                if [ "${line#*$'\t'}" = "$health_title" ]; then
+                  health_issue="${line%%$'\t'*}"
+                  break
+                fi
+              done
+              if [ "${latest%% *}" = "completed/success" ]; then
+                if [ -n "$health_issue" ]; then
+                  gh issue close "$health_issue" --comment \
+                    "image.yml completed successfully for \`$self_tag\`; the image and Release are published." \
+                    >/dev/null || true
+                  echo "closed release-health issue #$health_issue (pipeline succeeded)"
+                fi
+              elif [ -z "$health_issue" ]; then
+                gh issue create \
+                  --title "$health_title" \
+                  --body "$(printf '%s\n' \
+                    "The newest tag in this repository is \`$self_tag\`, but its \`image.yml\` run has not completed successfully — latest: \`$latest\`." \
+                    "" \
+                    "The tag exists, so \`latest\`/\`dsh-v*\` may be missing, stale, or only partially published. Fix the cause, then re-run:" \
+                    "" \
+                    "- re-run the workflow: Actions → **Image** → the run for \`$self_tag\` → *Re-run failed jobs*" \
+                    "- if upstream drift was the cause, run the **Release prep** workflow so the agent repairs the adaptation, then re-push the tag" \
+                    "- if the tag itself points at a broken commit, delete and re-push it after fixing \`main\`" \
+                    "" \
+                    "This issue closes automatically once that tag's latest \`image.yml\` run succeeds.")" \
+                  >/dev/null
+                echo "opened release-health issue for $self_tag (latest run: $latest)"
+              fi
+            fi
+
             if [ "$closed" -gt 0 ] || [ "$kept" -gt 0 ]; then
               echo "closed $closed tracker issue(s), kept $kept open (tag never triggered image.yml)"
             else

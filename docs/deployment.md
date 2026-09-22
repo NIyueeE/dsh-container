@@ -369,7 +369,8 @@ readable by the container; keep the `:Z` label with SELinux.
 
 **UI loads but event streams fail with 502 after an image upgrade**
 The browser was holding a cached, pre-upgrade frontend that still calls WebSocket endpoints the
-new dsh no longer serves. This image's Caddy proxy marks the index as `Cache-Control: no-store`,
+new dsh no longer serves. This image's Caddy proxy marks both index entries (`/` and
+`/index.html`) `Cache-Control: no-store`,
 so fresh loads always fetch the matching frontend; if you upgraded from an older image (or an
 outer proxy cached the page), do one hard refresh (Ctrl+F5) or clear site data for the UI origin.
 Confirm the running dsh version with `docker exec dsh dsh --version`.

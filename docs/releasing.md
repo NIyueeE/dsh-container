@@ -20,12 +20,32 @@ Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/
 - **main / PR / manual dispatch**: build (amd64) + smoke test a temporary image only — **nothing is pushed
   to GHCR**. CI validates that the image is usable, nothing more.
 - **`dsh-v*` tag (release)**: the workflow checks out the matching upstream
-  `deepseek-ai/deepseek-harness` tag (`DSH_TAG=<tag>`), builds and smoke-tests the amd64 image, and
+  `deepseek-ai/deepseek-harness` tag (`DSH_TAG=<tag>`), runs the static upstream-contract check
+  (`tests/contract.sh --tag <tag>`) as a publish gate, builds and smoke-tests the amd64 image, and
   only after the smoke test passes publishes it by digest. In parallel, the arm64 image is built on
   GitHub's free native Arm runner (`ubuntu-24.04-arm`) — no QEMU emulation. Once both platform
   digests exist, a merge job combines them into one multi-arch image and applies
   `dsh-v*` + `<sha>` + `latest`. A broken image never gets a tag; the release is not created if
-  build or smoke fails.
+  the contract check, build, or smoke fails.
+
+  The contract gate matters for **manually pushed** tags: it is the only place that checks upstream
+  anchors when a tag is pushed without going through the release-preparation pipeline below
+  (`dsh-v0.1.7-alpha.1` was released that way). A `MISS` there means the tag predates an adaptation
+  fix — run the pipeline (or fix the drift) and re-push.
+
+### Release notes
+
+The Release page body is composed at publish time by the `release` job:
+
+1. this image's own upgrade guidance (volume migration is one-way — do not roll the image back;
+   the pre-toolchain-layout cleanup commands; the current adaptation surface),
+2. the upstream release notes for the same tag, quoted verbatim in a collapsed `<details>` block
+   (fetched through the GitHub API; if the upstream tag has no Release page, only the link is
+   emitted),
+3. GitHub's auto-generated commit list for this repository (`generate_release_notes`).
+
+The upstream notes are the authority on per-version migrations (session-log format, settings/preset
+storage, provider configuration) — this repository deliberately does not restate them per release.
 
 ### Tag alignment
 
@@ -69,6 +89,13 @@ Running daily (plus on every `dsh-v*` tag push and on manual dispatch), it compa
   has actually produced an `image.yml` run. If the tag exists yet no run ever started (a broken
   push credential, e.g. a fine-grained `RELEASE_PAT` without the Workflows permission), the issue
   stays open with a push-trigger hint instead of silently losing the signal.
+  The same run also does a **release health check** on the newest `dsh-v*` tag of this repository:
+  if that tag's latest `image.yml` run is missing, failed, or was cancelled, it opens
+  "Release pipeline not published: `<tag>`" and closes the issue automatically once a run
+  succeeds. This is the safety net for manually pushed tags, which skip the release-preparation
+  pipeline and would otherwise fail silently (`dsh-v0.1.7-alpha.1` was released that way: two
+  failed runs and one cancelled run went unnoticed). Runs triggered by a tag push skip the check
+  (Actions needs a few minutes to create the run); the daily schedule picks it up.
 
 The upstream repository can be overridden with the `DSH_UPSTREAM_REPO` repository variable
 (default `deepseek-ai/deepseek-harness`), mirroring `vars.DSH_TAG` in `image.yml`. To re-check on

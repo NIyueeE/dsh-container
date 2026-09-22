@@ -186,6 +186,22 @@ else
   MISSED+=("plugin.settings_action_gate"); miss=$((miss + 1))
 fi
 
+# critical(隐私): 镜像默认 DSH_TELEMETRY_MODE=DISABLED(见 container/entrypoint.sh)
+# 之所以能关掉遥测, 靠的是上游 base bundle 把这个环境变量接到
+# session-telemetry-otel 的 mode 配置上; 上游默认是 FEEDBACK_ONLY(显式提交反馈
+# 时才上传会话前缀)。一旦上游改名/换默认值, 我们的默认就静默失效 —— 属于隐私
+# 面漂移, 必须修复或显式改默认, 不能默认接受。
+telemetry="$ROOT/packages/bundle/base/cordis.patch.yml"
+if [ -f "$telemetry" ] \
+    && grep -qF 'session-telemetry-otel' "$telemetry" \
+    && grep -qF 'process.env.DSH_TELEMETRY_MODE' "$telemetry"; then
+  echo "PASS telemetry.default_off (base bundle maps DSH_TELEMETRY_MODE to the session-telemetry-otel mode)"
+  pass=$((pass + 1))
+else
+  echo "MISS telemetry.default_off (DSH_TELEMETRY_MODE no longer feeds session-telemetry-otel; the image telemetry default-off no longer holds)"
+  MISSED+=("telemetry.default_off"); miss=$((miss + 1))
+fi
+
 # warn: 上游新增的 trustedHosts 只作用于服务端请求围栏(见
 # container/plugin/scripts/patch-client.js 头注), 出现不算漂移, 但提醒
 # 审阅者确认浏览器侧补丁仍然必需。

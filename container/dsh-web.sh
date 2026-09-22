@@ -188,7 +188,10 @@ generate_caddyfile() {
 	# index.html 是动态启动清单(内联 bundle URL 与 rev): 必须禁缓存。否则镜像
 	# 升级后浏览器会用旧前端调用已被移除的端点(旧 /api/events.mux ->
 	# 新 /api/remote.mux), 表现为页面能开但事件流全部 502。
-	@index path /
+	# 上游把索引入口限定为 dist 根与配置的 index path —— 即 / 与 /index.html
+	# 两个路径都返回索引, 两个都要禁缓存(只匹配 / 会让从 /index.html 进入的
+	# 浏览器缓存旧启动清单)。
+	@index path / /index.html
 	header @index Cache-Control "no-store"
 	reverse_proxy 127.0.0.1:${WEB_PORT} {
 		header_up Host 127.0.0.1:${WEB_PORT}

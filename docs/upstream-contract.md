@@ -35,6 +35,7 @@ affected enforcement point in `container/*.sh`.
 | 5 | `dsh` launcher accepts root `--patch <file>` (used as `--patch <overlay> --profile web`; the `web` alias rejects parent flags by design) | `apps/cli/src/args.ts` | `container/dsh-web.sh` mounts the plugin overlay with the root flag combination — the `web` alias would be rejected by `rejectParentOptions` | `contract.sh cli.patch` |
 | 6 | `Connection.authenticatedUrl()` (process launch token) | `packages/client/connection/src/rpc.ts` | The container-adapt plugin (`container/plugin/`) exchanges the token for the session cookie inside the dsh process; `ctx.webServer.port` is the other dependency | `contract.sh plugin.authenticated_url` + smoke cookie-bootstrap assertions |
 | 7 | `settings/describe` reports `hasDocument`; the browser `SettingsDocumentAction` renders nothing unless its describe mirror reports `hasDocument: true` — upstream v0.1.7-alpha.1+ hardcodes `hasDocument: true` (the provider interface dropped `documentPath`), older tags derived it from `provider.documentPath` | `packages/api/settings-controller/src/index.ts` + `packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx` | The container-adapt plugin wraps the `settingsController` instance's `describe` so it reports `hasDocument: false` (Gateway resolves remote methods dynamically at invoke time — `Reflect.get(callReceiver, 'describe')` + `Reflect.apply` — so an instance property shadowing the prototype works), and on pre-v0.1.7 tags additionally flips the provider's `documentPath`. The headless-hostile "Open settings document" button (no upstream fallback; would spawn the native text-editor command into nothing) never renders — no client code, no download endpoint | `contract.sh plugin.settings_document_hidden` + `plugin.settings_action_gate` + smoke describe/gone-endpoint assertions |
+| 8 | `session-telemetry-otel` reads its `mode` from `process.env.DSH_TELEMETRY_MODE` (upstream default `FEEDBACK_ONLY`) | `packages/bundle/base/cordis.patch.yml` | `container/entrypoint.sh` defaults `DSH_TELEMETRY_MODE=DISABLED` so nothing leaves the container unless the user opts in; if upstream renames the variable or stops wiring it, that default silently stops working and the upstream default (upload the session prefix on explicit feedback) applies | `contract.sh telemetry.default_off` |
 
 Notes:
 
@@ -67,6 +68,10 @@ Notes:
    130 s liveness window (issue #12 regression).
 2. With the cookie injected by Caddy, `/` and privileged methods return `200` through `:3081`;
    direct `:3080` access without a cookie returns `401` (the fence is not bypassed).
+   The index is served at **two** entry paths — the dist root `/` and the configured index path
+   `/index.html` — and both must carry `Cache-Control: no-store` (the served index is the dynamic
+   boot manifest: its inline bundle URLs and `rev` change every image upgrade, so a cached entry
+   would run the old frontend against the new server).
 3. The served connection bundle contains the `isLoopback: true` patch and no longer contains the
    original gate — including after `dsh-restart`. `index.html` is served untouched (upstream ships
    its own insecure-context `randomUuid()`; no polyfill is injected).
@@ -132,6 +137,17 @@ When a trigger fires: implement the simplification within the restricted paths, 
 the report's Adaptation review. When none fires, state that explicitly — "no simplification
 opportunity in this tag" is a valid and expected outcome.
 
+## Adaptation review log
+
+The release-prep agent records its Adaptation review on the tracker issue for each tag. When a tag
+is released **without** that path — e.g. the tag already existed here, so the upstream watcher never
+opened a tracker issue or dispatched release-prep (`dsh-v0.1.7-alpha.1`) — record the review in the
+table below instead, so the decision record still exists.
+
+| Tag | Scope | Outcome |
+|---|---|---|
+| `dsh-v0.1.7-alpha.1` | 1299-commit diff vs `dsh-v0.1.6-alpha.2`; all five simplification triggers re-checked by hand (`tests/contract.sh`: 9 pass / 0 miss / 1 warn) | **No simplification fires.** The `isLoopback` patch is still required (v0.1.7 added `trustedHosts` server-side only); the `documentPath` flip stays for pre-v0.1.7 tags, which this repository still builds; no headless `openSettingsDocument` fallback landed; `DSH_TELEMETRY_MODE` still gates `session-telemetry-otel`; upstream still rejects `--host 0.0.0.0`. Two gaps found and closed: the index is also served at `/index.html` (the Caddy `@index` rule now matches both entries) and the telemetry mapping had no static anchor (contract item 8) |
+
 ## Update protocol
 
 When `contract.sh` reports drift for a new upstream tag:
@@ -140,7 +156,7 @@ When `contract.sh` reports drift for a new upstream tag:
 2. If it is item 1: derive the new built-form string and update the candidate list in
    `container/plugin/scripts/patch-client.js` (keep old candidates if they are merely extended, and
    keep the header note about the verified upstream revision).
-3. If it is item 2–7: do **not** improvise a workaround; report the drift for human review — these
+3. If it is item 2–8: do **not** improvise a workaround; report the drift for human review — these
    define the image's security posture or the plugin's upstream API surface.
 4. Update this document and `tests/contract.sh` so both describe the new reality.
 5. `tests/smoke.sh` remains the final gate: if behavior broke in a way the static checks cannot
