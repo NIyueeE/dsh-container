@@ -260,8 +260,9 @@ RUN set -eux; \
     sh /tmp/rustup-init.sh -y --profile minimal --no-modify-path --default-toolchain "${RUST_TOOLCHAIN}"; \
     # minimal profile 只带 rustc/std/cargo; 编程 agent 高频使用的
     # rustfmt/clippy 在构建期补齐 —— 否则运行期 rustup component add 会写
-    # /opt/rust(系统层), 容器重建即丢
-    rustup component add rustfmt clippy; \
+    # /opt/rust(系统层), 容器重建即丢。此时 rustup 代理只在 $CARGO_HOME/bin
+    # (尚未 symlink 到 /usr/local/bin, 也不在本层 PATH 里), 必须显式路径调用
+    "$CARGO_HOME/bin/rustup" component add rustfmt clippy; \
     for b in "$CARGO_HOME/bin/"*; do ln -sfn "$b" /usr/local/bin/; done; \
     rm -f /tmp/rustup-init.sh; \
     chown -R $USER_UID:$USER_GID "$RUSTUP_HOME"; \
