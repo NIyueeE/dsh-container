@@ -104,7 +104,8 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    checks the § Simplification triggers table in
    [upstream-contract.md](upstream-contract.md) against the upstream diff: when an upstream
    change makes one of this image's hacks redundant (browser-side loopback gate, cookie
-   bootstrap, settings-document button hide via the provider `documentPath` flip, ...), it deletes the hack instead of keeping
+   bootstrap, settings-document button hide via the `describe` wrapper / `documentPath` flip,
+   ...), it deletes the hack instead of keeping
    it, and reports the outcome in an "Adaptation review" section. It pushes a `release-prep/<tag>`
    branch and posts its report to the tracker issue — that report is the adaptation decision
    record for the tag; the changes themselves appear in the release note's commit list, and the

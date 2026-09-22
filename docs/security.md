@@ -51,10 +51,11 @@ insecure-context `randomUuid()` (`@deepseek-ai/dsh-util-crypto`, lint-enforced),
 LAN works without a polyfill.
 
 The same plugin keeps the headless-hostile settings-document affordance out of the UI:
-upstream's "Open config file" would spawn `xdg-open` into nothing in a container. The plugin
-sets the settings provider instance's `documentPath` to `undefined`, so `settings/describe`
-reports `hasDocument: false` and the browser never renders the button (upstream renders the
-action only when describe reports a local document). No download endpoint exists — the document
+upstream's "Open config file" would spawn the native text-editor command into nothing in a
+container. The plugin wraps the settings controller's `describe` method so `settings/describe`
+reports `hasDocument: false` (and flips the provider's `documentPath` on pre-v0.1.7 upstream
+tags), so the browser never renders the button (upstream renders the action only when the
+describe mirror reports a local document). No download endpoint exists — the document
 lives on the mounted volume at `~/.dsh/settings.yaml` (a volume cannot be shadowed by the image;
 only the user who mounts the volume and uid 1000 can read it).
 

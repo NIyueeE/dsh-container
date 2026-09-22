@@ -18,7 +18,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + session-cookie wait + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
-| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`) bootstraps the session cookie inside the dsh process and hides the headless-hostile "open settings document" button (provider `documentPath` → `undefined`, so describe reports `hasDocument: false` and upstream's own UI never renders it); `scripts/patch-client.js` applies the browser-side `isLoopback` patch to the built bundle (build-time and before every start) |
+| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`) bootstraps the session cookie inside the dsh process and hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`, plus a `documentPath` flip on pre-v0.1.7 tags; upstream's own UI never renders it); `scripts/patch-client.js` applies the browser-side `isLoopback` patch to the built bundle (build-time and before every start) |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -121,12 +121,12 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   modification is needed — upstream ships its own insecure-context `randomUuid()` in
   `@deepseek-ai/dsh-util-crypto`.)
 - **`settings/openSettingsDocument` has no headless fallback upstream** (unlike preset/workspace
-  opens, which check `canOpenPath`): the plugin keeps the button out of the UI entirely — it sets
-  the settings provider instance's `documentPath` to `undefined` (a data property shadowing the
-  prototype getter; `spec.filename`/`prepareDocument` are unaffected), so `settings/describe`
-  reports `hasDocument: false` and upstream's `SettingsDocumentAction` renders nothing
-  (`status !== 'ready'`). No client code, no download endpoint, no `settings-controller` row
-  override — the overlay is a single plugin include.
+  opens, which check `canOpenPath`): the plugin keeps the button out of the UI entirely — it wraps
+  the `settingsController` instance's `describe` so `settings/describe` reports
+  `hasDocument: false` (upstream v0.1.7+ hardcodes `hasDocument: true` and dropped the provider's
+  `documentPath`; on older tags the plugin additionally flips `documentPath`), and upstream's
+  `SettingsDocumentAction` renders nothing (`status !== 'ready'`). No client code, no download
+  endpoint, no `settings-controller` row override — the overlay is a single plugin include.
 - dsh's agent workspace is the process cwd — the entrypoint must `cd "$HOME"` (or, for tests,
   whichever directory it is configured to use).
 
