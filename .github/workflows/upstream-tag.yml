@@ -174,7 +174,9 @@ jobs:
             # 不是 completed/success 就开一个提醒 issue(标题去重, 成功后自动关)。
             # tag push 触发的运行有 2-6 分钟创建延迟, 因此只由定时/手动运行判定。
             if [ "${{ github.event_name }}" != "push" ] && [ -n "$self_tag" ]; then
-              runs="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" 2>/dev/null || echo '{}')"
+              # 注意不能用 `|| echo '{}'` 兜底: API 抖动会被读成"从未跑过"并开出
+              # 一个公开 issue。查询失败就让 job 失败(list_tags 同款策略)。
+              runs="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" 2>/dev/null)"
               latest="$(jq -r --arg tag "$self_tag" '
                 [.workflow_runs[]?
                  | select(.path == ".github/workflows/image.yml" and .head_branch == $tag)]
