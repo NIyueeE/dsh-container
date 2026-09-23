@@ -273,42 +273,62 @@ mismatch, run `sudo apt-get update` before retrying.
 
 ## 7. In-container podman
 
-The image installs podman with `crun`, `fuse-overlayfs` and `uidmap`, and configures subuid/subgid
-for the `dsh` user, so the agent can run nested containers. The image side is already prepared:
+The image installs podman with `crun`, `fuse-overlayfs`, `slirp4netns` and `uidmap`, and prepares
+the runtime environment for **rootless podman as the `dsh` user** (no `sudo` inside the container):
 
-- **`crun`** is installed — the preferred runtime for nested/rootless setups (runc stays as a
-  fallback).
+- **subuid/subgid carry the `dsh` range exactly once.** Duplicate lines make `newuidmap` build an
+  overlapping mapping, which the kernel rejects with `Invalid argument` — rootless podman then
+  cannot create its user namespace at all.
+- **The image does *not* set `_CONTAINERS_USERNS_CONFIGURED`.** On podman 5.x that variable makes
+  the inner podman skip user-namespace creation while its runtime still requires one (`euid != 0`
+  → `needsUserns`), so the image store and the network backend are never initialized and every
+  store-touching command dies on a nil-pointer panic. Without it the inner podman runs the standard
+  rootless flow: `unshare` + setuid `newuidmap` over the subuid range, then a fully initialized
+  runtime inside that user namespace.
+- **Storage** is preset for rootless overlay via `fuse-overlayfs`: `/etc/containers/storage.conf`
+  sets `mount_program` only. Pinning `driver = "overlay"` next to it (without explicit
+  `runroot`/`graphroot`) makes *rootful* podman fail config loading with `runroot must be set`
+  (podman 5.4.2) — rootless podman is unaffected, but the shared file is kept safe for both.
+  `policy.json` accepts any registry.
+- **`/etc/containers/containers.conf`** presets `default_rootless_network_cmd = "slirp4netns"`
+  (the image does not ship `pasta`, podman 5's preferred rootless network command) and empties
+  `default_sysctls` — Debian's default `net.ipv4.ping_group_range` write fatally fails inside a
+  nested rootless container (the nested `/proc/sys` is read-only), aborting container creation.
 - **`XDG_RUNTIME_DIR` is provisioned by the entrypoint** (`/run/user/<uid>`, owned by the runtime
   user) — rootless podman cannot start without a writable runtime dir, and a container has no
   login session to create one. `/etc/bash.bashrc` exports the same default for **interactive**
   `docker exec` shells, which bypass the entrypoint; non-interactive exec (`docker exec dsh sh -c
   '...'`) does *not* read that file, so scripts must set it themselves:
   `docker exec dsh bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); podman run --rm …'`.
-- **`_CONTAINERS_USERNS_CONFIGURED=1`** (image ENV) makes the inner podman **skip creating a user
-  namespace** instead of calling `newuidmap` — which cannot work inside a default Docker container
-  (uid 1000 has no CAP_SETUID, and the default seccomp profile may block `unshare`). What remains
-  is namespace creation inside the current user namespace, so the capabilities in the host matrix
-  below matter: a rootless host's own user namespace supplies them (for root inside the container),
-  while a host without one — Docker default, rootful Podman — must grant them explicitly. With the
-  variable set, nested images run in
-  single-uid mode and common images work out of the box; on hosts where the outer container already
-  has a properly mapped user namespace (rootless Podman `--userns=keep-id`, Docker
-  `userns-remap`) this is the fully-mapped mode.
-- Storage is preset to `overlay` + `fuse-overlayfs`, and `policy.json` accepts any registry.
 
-What the **host** must still allow (the image cannot do this part). The rule behind the table: with
-`_CONTAINERS_USERNS_CONFIGURED=1` the inner podman **skips creating a user namespace** and therefore
-creates the nested container's mount/PID/network namespaces in the *current* one — which needs
-`CAP_SYS_ADMIN` there. A rootless host's own user namespace supplies that for root inside the
-container (so `sudo podman …` works there); anywhere else it must be granted explicitly.
+What the **host** must still allow (the image cannot do this part):
+
+- `seccomp=unconfined` (+ `apparmor=unconfined` on AppArmor hosts): the inner podman must be able
+  to `unshare(2)` a new user namespace; Docker's and Podman's default seccomp profiles filter the
+  relevant `clone`/`unshare` flags. The host kernel must also allow unprivileged user namespaces
+  (the default on mainstream distros).
+- `/dev/fuse` for the `fuse-overlayfs` storage driver.
+- `/dev/net/tun` for the default rootless networking (slirp4netns/pasta open the tap device).
+  Without it, run nested containers with `--network=host` or `--network=none`. On the host:
+  `ls -l /dev/net/tun` and `modprobe tun` if it is missing.
+- **No masked or read-only `/proc` submounts in the dsh container — the podman 5.x requirement
+  that is easy to miss.** crun mounts a fresh `/proc` inside every nested container, and the
+  kernel only allows that inside a user namespace when the container's own `/proc` is fully
+  visible. Docker's/Podman's default masked and read-only paths (`/proc/kcore`, `/proc/sys`, …)
+  break that, and the nested container fails with `crun: mount proc to proc: Operation not
+  permitted`. Clear them on the outer container: Podman `--security-opt unmask=ALL`
+  (Quadlet `Unmask=ALL`), Docker `--security-opt systempaths=unconfined`. The same flags keep
+  `/proc/sys` writable, which the nested network setup needs.
+- `CAP_SYS_ADMIN` + `CAP_NET_ADMIN` are *not* needed by the rootless flow itself (its user
+  namespace carries the capabilities) — they only matter for the rootful fallback below.
 
 | Host runtime | Working configuration |
 |---|---|
-| Docker (default, no userns) | `--cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --device /dev/fuse`, or `--privileged`; optionally `--sysctl net.ipv4.ping_group_range="0 2147483647"` so `ping` works as the non-root runtime user |
-| Docker with `userns-remap` | as above (the remapped userns fixes file ownership, not the missing capability) |
-| Podman (rootless host) | `--userns=keep-id`; the inner podman then runs with the capabilities of the container's own user namespace — use `sudo podman …` inside, or add `--cap-add=CAP_SYS_ADMIN` for unprivileged `podman …` |
-| Podman (rootful host) | `--cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --device /dev/fuse --security-opt seccomp=unconfined --security-opt apparmor=unconfined`, or `--privileged`. **Do not use `--userns=keep-id` here**: as root, keep-id overrides the image's `USER` and runs the container as root, so dsh data lands in `/root/.dsh` (container layer, lost on recreate) instead of the `/home/dsh` volume |
-| Quadlet | `UserNS=keep-id` on a rootless host; on a rootful host `AddCapability=CAP_SYS_ADMIN CAP_NET_ADMIN`, `AddDevice=-/dev/fuse`, `SeccompProfile=unconfined`, `PodmanArgs=--security-opt apparmor=unconfined` (the native `AppArmor=` key needs podman ≥ 5.8; `PodmanArgs=--privileged` replaces the whole set) — see `examples/dsh.container` |
+| Docker (default, no userns) | `--cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --device /dev/fuse --device /dev/net/tun`, or `--privileged` |
+| Docker with `userns-remap` | same as above (the remapped userns fixes file ownership, not the missing visibility) |
+| Podman (rootless host) | `--userns=keep-id --security-opt unmask=ALL --security-opt seccomp=unconfined --device /dev/fuse --device /dev/net/tun`; then run `podman run …` as the `dsh` user inside — no `sudo` needed |
+| Podman (rootful host) | `--security-opt unmask=ALL --cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --device /dev/fuse --device /dev/net/tun --security-opt seccomp=unconfined --security-opt apparmor=unconfined`, or `--privileged`. **Do not use `--userns=keep-id` here**: as root, keep-id overrides the image's `USER` and runs the container as root, so dsh data lands in `/root/.dsh` (container layer, lost on recreate) instead of the `/home/dsh` volume |
+| Quadlet | `Unmask=ALL` (native key, podman 5.x; older podman: `PodmanArgs=--security-opt unmask=ALL`), `AddCapability=CAP_SYS_ADMIN CAP_NET_ADMIN`, `AddDevice=-/dev/fuse`, `AddDevice=-/dev/net/tun`, `SeccompProfile=unconfined`, `PodmanArgs=--security-opt apparmor=unconfined` (the native `AppArmor=` key needs podman ≥ 5.8; `PodmanArgs=--privileged` replaces the whole set) — see `examples/dsh.container` |
 
 Verify inside the running container (see also the `XDG_RUNTIME_DIR` note above):
 
@@ -316,19 +336,19 @@ Verify inside the running container (see also the `XDG_RUNTIME_DIR` note above):
 docker exec dsh bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); podman run --rm docker.io/library/alpine:3.20 echo nested-ok'
 ```
 
-`CAP_NET_ADMIN` covers the inner network setup and `/dev/fuse` the `fuse-overlayfs` storage driver.
 Every one of these flags weakens the container boundary (see [security.md](security.md)) — enable
-them only where nested containers are actually needed.
-
-Compose/Quadlet snippets are pre-commented in `examples/compose.yaml` and `examples/dsh.container`.
-Docker Desktop (macOS/Windows) does not support nested user namespaces at all — in-container
-podman is a Linux-host feature.
+them only where nested containers are actually needed. Compose/Quadlet snippets are pre-commented
+in `examples/compose.yaml` and `examples/dsh.container`. Docker Desktop (macOS/Windows) does not
+support nested user namespaces at all — in-container podman is a Linux-host feature.
 
 Fallbacks when the host cannot provide the above:
 
-- **`sudo podman ...`** (rootful inside the container) needs no `newuidmap` — it needs
-  `CAP_SYS_ADMIN` and `/dev/fuse`, which either `--privileged` or an explicit
-  `--cap-add=CAP_SYS_ADMIN` (Quadlet `AddCapability=CAP_SYS_ADMIN`) supplies.
+- **`sudo podman ...`** (rootful inside the container) skips `newuidmap` entirely, but it still
+  needs the unmasked `/proc` and `/dev/fuse` above, and nested containers then hit the outer
+  container's own limits: `/sys/fs/cgroup` is read-only (add `--cgroups=disabled`) and the default
+  bridge network needs a writable `/proc/sys` (use `--network=host`/`--network=none`). Creating
+  device nodes inside the nested container can additionally be denied by the outer container's
+  device cgroup policy. Prefer the rootless flow wherever the host allows user namespaces.
 - **`podman --storage-driver vfs ...`** works without `/dev/fuse` (skips fuse-overlayfs) at the
   cost of speed and disk space.
 

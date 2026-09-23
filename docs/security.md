@@ -115,24 +115,26 @@ entry or use an additional isolation layer (user namespace, VM, etc.).
 
 ## In-container rootless podman
 
-The image installs podman (with `crun`, `fuse-overlayfs`, `uidmap`) and configures subuid/subgid for
-uid 1000, and it prepares the runtime environment itself: the entrypoint provisions a writable
-`XDG_RUNTIME_DIR` (rootless podman cannot start without one), and the image sets
-`_CONTAINERS_USERNS_CONFIGURED=1` so the inner podman **skips user-namespace creation** instead of
-calling `newuidmap` — which cannot work inside a default Docker container (uid 1000 has no
-CAP_SETUID, and the default seccomp profile may block `unshare`). It therefore creates the nested
-container's mount/PID/network namespaces inside the *current* user namespace, which is why a
-rootful host has to grant the capabilities for that (see the host flags below).
+The image installs podman (with `crun`, `fuse-overlayfs`, `slirp4netns`, `uidmap`) and configures
+subuid/subgid for uid 1000 (exactly one range per file — duplicates break `newuidmap`), and it
+prepares the runtime environment itself: the entrypoint provisions a writable
+`XDG_RUNTIME_DIR` (rootless podman cannot start without one), and
+`/etc/containers/containers.conf` presets `slirp4netns` as the rootless network command and
+empties `default_sysctls`. The inner podman runs the **standard rootless flow** — it creates its
+own user namespace with `unshare` + `newuidmap`; the image deliberately does *not* set
+`_CONTAINERS_USERNS_CONFIGURED`, which on podman 5.x would skip that step and leave the runtime
+half-initialized (nil-pointer panics on every store-touching command).
 
-Whether `podman run` actually succeeds still depends on the host: nested user namespaces and
-`/dev/fuse` must be allowed, and because the inner podman skips creating its own user namespace it
-needs `CAP_SYS_ADMIN` in the namespace it runs in — supplied by the container's own user namespace
-on a rootless host (`--userns=keep-id`, then `sudo podman …` inside), or granted explicitly on
-Docker / rootful Podman (`--cap-add=CAP_SYS_ADMIN --cap-add=CAP_NET_ADMIN --device /dev/fuse
---security-opt seccomp=unconfined --security-opt apparmor=unconfined`, or `--privileged`); Docker
+Whether `podman run` actually succeeds still depends on the host: unprivileged user namespaces and
+`/dev/fuse` must be allowed (plus `/dev/net/tun` for default rootless networking), the seccomp
+profile must permit the inner `unshare(2)`, and — the podman 5.x requirement — the container's
+`/proc` must not carry masked or read-only submounts, because crun mounts a fresh `/proc` inside
+the nested container and the kernel only allows that in a user namespace when `/proc` is fully
+visible (`--security-opt unmask=ALL`, Quadlet `Unmask=ALL`, Docker
+`--security-opt systempaths=unconfined`); Docker
 Desktop does not support it at all. Treat in-container podman as an experimental
 in-container dev tool, not a guaranteed isolation primitive — and note that the host flags which
-enable it (`--privileged`, `CAP_SYS_ADMIN`, unconfined seccomp) weaken the container boundary
+enable it (`--privileged`, unconfined seccomp, the unmasked `/proc`) weaken the container boundary
 itself, so enable them only when nested containers are actually needed. See
 [deployment.md](deployment.md) § In-container podman for the full host matrix and the
 rootful/`vfs` fallbacks.

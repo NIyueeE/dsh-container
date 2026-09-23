@@ -12,8 +12,10 @@
 #      DSH_WEB_PORT 传给 dsh-web(内部管道变量, 非用户配置面)。
 #   4. 容器内 podman 运行期环境: provision XDG_RUNTIME_DIR(rootless podman
 #      必须能写它; 容器无 login session, /run/user/$UID 默认不存在且 /run 属
-#      root, 用免密 sudo 建好; _CONTAINERS_USERNS_CONFIGURED=1 由镜像 ENV
-#      提供)。宿主侧还需的 /dev/fuse、seccomp 条件见 docs/deployment.md。
+#      root, 用免密 sudo 建好; 镜像刻意不导出 _CONTAINERS_USERNS_CONFIGURED
+#      —— podman 5.x 下它会让内层 podman 跳过 userns 创建而运行时半初始化,
+#      之后每条命令 nil panic)。宿主侧还需的 /dev/fuse、/dev/net/tun、
+#      unmask /proc 条件见 docs/deployment.md "In-container podman"。
 #   5. exec dsh-web —— dsh web 的启动/监督、会话 cookie 的就绪等待与 Caddy
 #      反代全部由 dsh-web 托管(会话 cookie 自举由容器适配插件在 dsh 进程内
 #      完成, 见 container/plugin/ 与 container/dsh-web.sh)。
@@ -72,9 +74,8 @@ export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 # 状态、pause 进程、API socket 都放这里), 缺失或不可写会直接启动失败。容器无
 # login session, /run/user/$UID 默认不存在, 且 /run 属 root —— 用免密 sudo
 # 建好并交给当前用户; sudo 不可用时退到 /tmp 下的自有目录(podman 对 tmpfs
-# 无硬性要求, 0700 自有目录即可)。镜像 ENV 的 _CONTAINERS_USERNS_CONFIGURED=1
-# 已让内层 podman 跳过创建用户命名空间(免 newuidmap 失败; 于是它只能在当前
-# userns 里建命名空间 —— rootful 宿主因此需要 CAP_SYS_ADMIN, 见 docs/deployment.md),
+# 无硬性要求, 0700 自有目录即可)。内层 podman 走标准 rootless 流程(unshare
+# + newuidmap, 依赖 subuid/subgid 无重复行), 不跳过 userns 创建 ——
 # exec shell 的兜底导出在 /etc/bash.bashrc。
 if [ "$(id -u)" = 0 ]; then
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run}"

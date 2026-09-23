@@ -42,7 +42,7 @@ sudo systemctl enable --now dsh.service
 | 基础镜像 | `debian:13-slim`(已钉版本,可用 `BASE_IMAGE` 构建参数覆盖) |
 | 工具链 | Node.js 22 LTS、pnpm、uv、Rust/cargo(含 rustfmt/clippy)、git + git-lfs、build-essential、Caddy、podman + crun、gh——镜像持有的真实二进制,随镜像升级 |
 | agent 常用工具 | ripgrep、fd、python3、zip、openssh-client、tmux、sqlite3、vim.tiny/nano、less、rsync、wget、tree、htop、tzdata、patch——全部烘干进系统层,全新容器开箱即用、无需重新下载(运行期 `apt install` 会随容器重建丢失) |
-| 嵌套容器 | 容器内( rootless )podman 已预配置 `XDG_RUNTIME_DIR` 与 userns 环境变量;宿主运行时需允许嵌套用户命名空间 + `/dev/fuse`,且当容器自身没有用户命名空间时(Docker 默认、rootful Podman)还需授予 `CAP_SYS_ADMIN`/`CAP_NET_ADMIN`——见 [docs/deployment.md](docs/deployment.md) § In-container podman |
+| 嵌套容器 | 容器内( rootless )podman 已预配置 `XDG_RUNTIME_DIR`、subuid/subgid 与网络/sysctl 默认值;宿主运行时需允许非特权用户命名空间 + `/dev/fuse` + `/dev/net/tun`,且不得对容器的 `/proc` 加 masked/只读子挂载(`--security-opt unmask=ALL`、Quadlet `Unmask=ALL`、Docker `systempaths=unconfined`)——见 [docs/deployment.md](docs/deployment.md) § In-container podman |
 | dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本);运行期无自动更新 |
 | 暴露方式 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`),可选 basic auth |
 | 守护 | `dsh web` 退出自动重启;`docker exec dsh dsh-restart` 手动重启 |

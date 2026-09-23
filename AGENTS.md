@@ -67,17 +67,21 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 3. Parses `--port <N>` / `--port=<N>` (default 3080) and rejects `0` and `3081`.
 4. Prepares the in-container podman runtime environment: provisions `XDG_RUNTIME_DIR`
    (`/run/user/<uid>` via passwordless sudo, `/tmp` fallback) — rootless podman cannot start
-   without a writable runtime dir — while the image ENV `_CONTAINERS_USERNS_CONFIGURED=1`
-   makes the inner podman skip user-namespace creation (podman's `becomeRootInUserNS` returns
-   early on that variable) instead of calling `newuidmap`, which cannot work in a default Docker
-   container. `/etc/bash.bashrc` re-exports
-   `XDG_RUNTIME_DIR` for **interactive** `docker exec` shells. The host must still allow nested
-   namespaces + `/dev/fuse`, and because inner podman then creates the nested mount/PID/network
-   namespaces in the *current* namespace, any host where the container does not own a user
-   namespace (Docker default, rootful Podman) must grant `CAP_SYS_ADMIN` (+`CAP_NET_ADMIN`) or use
-   `--privileged` — a rootless host gets those capabilities from its own user namespace
-   (`--userns=keep-id`, then `sudo podman …` inside); see `docs/deployment.md` § In-container
-   podman.
+   without a writable runtime dir. The image deliberately does **not** set
+   `_CONTAINERS_USERNS_CONFIGURED`: on podman 5.x that variable makes the inner podman skip
+   user-namespace creation while its runtime still requires it (`euid != 0` → `needsUserns`), so
+   the image store and network backend are never initialized and every store-touching command
+   panics on a nil pointer (verified on 5.4.2). The inner podman therefore runs the standard
+   rootless flow (`unshare` + setuid `newuidmap` over the subuid range — which requires
+   `/etc/subuid`/`/etc/subgid` to carry the `dsh` range exactly **once**; duplicate lines make
+   the kernel reject the overlapping mapping with `Invalid argument`, which was the original
+   reason the variable was introduced). `/etc/bash.bashrc` re-exports
+   `XDG_RUNTIME_DIR` for **interactive** `docker exec` shells. The host must still allow
+   unprivileged (nested) user namespaces + `/dev/fuse` (+`/dev/net/tun` for rootless networking)
+   and — the podman 5.x requirement — must not mask or read-only the container's `/proc`
+   submounts (`--security-opt unmask=ALL` / `systempaths=unconfined`), otherwise crun cannot
+   mount `/proc` inside the nested container (`mount proc: Operation not permitted`); see
+   `docs/deployment.md` § In-container podman.
 5. `dsh-web` then brings up the whole service stack (it is the container's supervisor — see
    `container/dsh-web.sh`): it starts `dsh web` on `127.0.0.1:$DSH_WEB_PORT` (output mirrored into
    the container log) mounted with the container-adapt plugin overlay
@@ -172,15 +176,18 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 - **`dsh` has passwordless sudo** via the `sudo` group (`%sudo ALL=(ALL) NOPASSWD:ALL`). This is
   intentional for a development container, but it means uid 1000 can reach root; treat the
   container root as reachable by the agent.
-- **podman is installed for in-container rootless work, with subuid/subgid configured, plus the
-  runtime-side preparation: `crun`, an entrypoint-provisioned `XDG_RUNTIME_DIR`, and
-  `_CONTAINERS_USERNS_CONFIGURED=1`** (inner podman skips user-namespace creation instead of
-  calling `newuidmap`, which cannot work in a default Docker container). Nested containers still
-  depend on the host Docker/Podman seccomp and user-namespace settings (and `/dev/fuse`), and on
-  any host where the container has no user namespace of its own (Docker default, rootful Podman)
-  the container additionally needs `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` (or `--privileged`) because
-  inner podman creates the nested namespaces in the current one — docs must not promise that
-  `podman run` always works inside this image.
+- **podman is installed for in-container rootless work, with subuid/subgid configured (the `dsh`
+  range exactly once per file), plus the runtime-side preparation: `crun`, an entrypoint-provisioned
+  `XDG_RUNTIME_DIR`, a `containers.conf` preset (`slirp4netns` as the rootless network command,
+  `default_sysctls` emptied — Debian's `ping_group_range` default fatally fails inside nested
+  rootless containers), and a `storage.conf` that sets only `mount_program`** (pinning
+  `driver = "overlay"` next to it breaks rootful podman config loading on 5.4.2: `runroot must be
+  set`). Do **not** set `_CONTAINERS_USERNS_CONFIGURED` anywhere: on podman 5.x it makes the inner
+  podman skip user-namespace creation while its runtime still needs it, and every store-touching
+  command then panics on a nil pointer (item 4 above). Nested containers still depend on the host
+  Docker/Podman seccomp and user-namespace settings, `/dev/fuse`, `/dev/net/tun`, and an unmasked
+  `/proc` (podman 5.x: crun cannot mount proc inside the nested container otherwise) — docs must
+  not promise that `podman run` always works inside this image.
 - **Ports**: exposed/external port is `3081`; `127.0.0.1:3080` is dsh's internal port only. Keep
   them distinct everywhere. The proxy binds `0.0.0.0:3081` because it differs from dsh's port —
   do not reintroduce container-IP binding tricks. The examples publish it on host loopback

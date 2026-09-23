@@ -51,11 +51,15 @@
 #     sqlite3、vim/nano、less、rsync、wget、tree、htop、tzdata、patch 等)与
 #     crun 同样进系统层: 容器内 sudo apt install 落在可写层, 重建即丢, 常用
 #     工具必须构建期烘干(见 docs/deployment.md "内置工具" 一节)
-#   - 容器内 rootless podman 的运行期环境: 镜像 ENV 导出
-#     _CONTAINERS_USERNS_CONFIGURED=1(内层 podman 复用外层 userns, 免
-#     newuidmap 失败), entrypoint provision XDG_RUNTIME_DIR(/run/user/$UID,
-#     无 login session 时缺失会导致 rootless podman 直接失败),
-#     /etc/bash.bashrc 给 docker exec 的交互 shell 兜底导出
+#   - 容器内 rootless podman 的运行期环境: /etc/subuid、/etc/subgid 各自只有
+#     一行 dsh 区间(重复行使 newuidmap 写出重叠映射, 内核 EINVAL),
+#     entrypoint provision XDG_RUNTIME_DIR(/run/user/$UID, 无 login session
+#     时缺失会导致 rootless podman 直接失败), /etc/bash.bashrc 给 docker exec
+#     的交互 shell 兜底导出; /etc/containers/containers.conf 预设 rootless
+#     网络后端为 slirp4netns 并清空 default_sysctls(嵌套场景写 /proc/sys
+#     必败)。绝不再导出 _CONTAINERS_USERNS_CONFIGURED: podman 5.x 下它使
+#     rootless 侧跳过 userns 创建而 store/network 不初始化, 之后每条命令
+#     nil panic(实测 5.4.2), 详见 docs/deployment.md "In-container podman"
 #   - 随后以 `dsh web` 启动 Web UI, 监听 127.0.0.1:3080
 #     (上游 tag 与 main 均拒绝 --host 0.0.0.0: 上游有意为之的安全设计)
 #   - 遥测默认关闭: entrypoint 导出 DSH_TELEMETRY_MODE=DISABLED(可覆盖),
@@ -181,14 +185,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #    /etc/bash.bashrc 追加 XDG_RUNTIME_DIR 兜底导出 —— docker exec 的交互
 #    shell 不经过 entrypoint(那里已为 pid1 进程树 provision /run/user/$UID),
 #    交互式 bash 自动导出同样默认值, 保证 podman 在 exec 会话里同样可用。
+#    subuid/subgid 必须幂等: Debian 的 useradd 建用户时会自动分配从属 ID 区间,
+#    再无条件 echo 一行会得到重复项 —— newuidmap 据此构造出重叠映射, 内核以
+#    Invalid argument 拒绝写入 uid_map, rootless podman 连用户命名空间都建不了。
 # ---------------------------------------------------------------------------
 RUN groupadd --gid $USER_GID $USERNAME \
     && useradd --uid $USER_UID --gid $USER_GID -m -s /bin/bash $USERNAME \
     && usermod -aG sudo $USERNAME \
     && echo '%sudo ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME \
-    && echo "$USERNAME:100000:65536" >> /etc/subuid \
-    && echo "$USERNAME:100000:65536" >> /etc/subgid \
+    && grep -q "^$USERNAME:100000:65536$" /etc/subuid || echo "$USERNAME:100000:65536" >> /etc/subuid \
+    && grep -q "^$USERNAME:100000:65536$" /etc/subgid || echo "$USERNAME:100000:65536" >> /etc/subgid \
     && mkdir -p /home/dsh/.dsh /home/dsh/.cargo /home/dsh/.local/bin /home/dsh/.local/share/pnpm \
     && chown -R $USER_UID:$USER_GID /home/dsh/.dsh /home/dsh/.cargo /home/dsh/.local \
     && cat >> /etc/bash.bashrc <<'EOF'
@@ -203,18 +210,22 @@ fi
 EOF
 
 # ---------------------------------------------------------------------------
-# 3. 配置嵌套 Podman(fuse-overlayfs + 宽松 policy)
+# 3. 配置嵌套 Podman
+#    storage.conf: 只设 mount_program、不钉死 driver —— podman 自动探测到
+#    overlay 时挂载程序同样生效(rootless 在无 userns overlay 支持的内核上走
+#    fuse-overlayfs); 而 "driver=overlay + mount_program 但不给
+#    runroot/graphroot" 会让 rootful podman 加载配置即失败
+#    (podman 5.4.2 实测: "runroot must be set"), rootless 侧反而正常。
+#    containers.conf: 默认 rootless 网络后端固定为 slirp4netns(镜像不装
+#    pasta, 而 podman 5 首选 pasta, 缺失即报错); default_sysctls 清空 ——
+#    Debian 默认的 net.ipv4.ping_group_range 写入在嵌套 rootless 容器里必然
+#    失败(内层 /proc/sys 只读, crun 写 sysctl 失败即容器创建失败)。
 # ---------------------------------------------------------------------------
 RUN mkdir -p /etc/containers \
-    && if [ -f /etc/containers/storage.conf ]; then \
-         sed -i \
-           -e 's|^#mount_program|mount_program|' \
-           -e 's|^mount_program.*|mount_program = "/usr/bin/fuse-overlayfs"|' \
-           /etc/containers/storage.conf; \
-       else \
-         printf '[storage]\ndriver = "overlay"\n\n[storage.options]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
-           > /etc/containers/storage.conf; \
-       fi \
+    && printf '[storage.options]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
+         > /etc/containers/storage.conf \
+    && printf '[containers]\ndefault_sysctls = []\n\n[network]\ndefault_rootless_network_cmd = "slirp4netns"\n' \
+         > /etc/containers/containers.conf \
     && echo '{"default": [{"type": "insecureAcceptAnything"}]}' > /etc/containers/policy.json
 
 # ---------------------------------------------------------------------------
@@ -345,16 +356,16 @@ RUN apt-get update
 WORKDIR /home/dsh
 EXPOSE 3081
 
-# 容器内 podman(主要是 rootless): _CONTAINERS_USERNS_CONFIGURED=1 告诉内层
-# podman "用户命名空间已由外层配置好", 直接复用 —— 外层没配 userns 时(默认
-# docker bridge 部署)内层自建 userns 要调 newuidmap, 容器里的 uid 1000 缺
-# CAP_SETUID 且常被 seccomp 拦, 会直接失败; 置 1 后 podman 退化为单 uid
-# 模式, 常见镜像开箱可用, 外层已正确配置 userns(podman --userns=keep-id /
-# docker userns-remap)时同样正确。置空则恢复内层自建 userns 行为。
+# 容器内 podman(rootless): 走标准 rootless 流程(unshare + setuid newuidmap,
+# 前提是 subuid/subgid 各自只有一行 dsh 区间, 见上文步骤 2), 因此绝不能
+# 导出 _CONTAINERS_USERNS_CONFIGURED —— podman 5.x 下它让内层 podman 跳过
+# userns 创建, 而 makeRuntime 仍按 euid!=0 走 needsUserns 分支: store 与
+# network 后端从不初始化, 之后每条命令都是 nil 解引用 panic(实测 5.4.2;
+# 该变量早年为绕开 newuidmap 失败而加, 而失败的真正原因是 subuid 重复行)。
 # XDG_RUNTIME_DIR 由 entrypoint provision /run/user/$UID(以及 /etc/bash.bashrc
 # 给 exec shell 兜底), 不进 ENV 是因为它依赖运行期 uid。宿主侧还需的
-# /dev/fuse、seccomp 等条件见 docs/deployment.md "容器内 podman"。
-ENV _CONTAINERS_USERNS_CONFIGURED=1
+# /dev/fuse、/dev/net/tun、unmask /proc 等条件见 docs/deployment.md
+# "In-container podman"。
 
 # Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:$DSH_WEB_PORT;
 # healthcheck 同时要求 dsh 和代理可响应。dsh web 对无会话的根请求返回 401,

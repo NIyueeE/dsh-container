@@ -178,16 +178,22 @@ fi
   git lfs version
 ' || die "built-in tool check failed"
 
-# 容器内 rootless podman 运行期环境: entrypoint 为 pid1 进程树 provision
-# XDG_RUNTIME_DIR(rootless podman 必须能写它, 否则直接启动失败);
-# _CONTAINERS_USERNS_CONFIGURED=1 由镜像 ENV 提供(pid1 与 exec 会话都继承),
-# 让内层 podman 复用外层 userns, 免 newuidmap 失败。
+# 容器内 rootless podman 运行期契约(podman 5.4.2 实测):
+# XDG_RUNTIME_DIR 由 entrypoint provision; /etc/subuid、/etc/subgid 各自必须
+# 只有一行 dsh 区间(重复行使 newuidmap 写出重叠映射, 内核 EINVAL, rootless
+# podman 建不了 userns); 镜像不再导出 _CONTAINERS_USERNS_CONFIGURED=1 ——
+# podman 5.x 下该变量让 rootless 侧跳过 userns 创建而 store/network 不初始化,
+# 之后每条命令 nil panic; containers.conf 预设 slirp4netns + 空 default_sysctls。
 "$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < /proc/1/environ | grep -Fx "XDG_RUNTIME_DIR=/run/user/1000"' \
   || die "entrypoint did not export XDG_RUNTIME_DIR=/run/user/1000"
 "$DOCKER" exec "$cid" sh -c 'test -d /run/user/1000 && test -O /run/user/1000' \
   || die "XDG_RUNTIME_DIR not provisioned (or not owned by the runtime user)"
-"$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < /proc/1/environ | grep -Fx "_CONTAINERS_USERNS_CONFIGURED=1"' \
-  || die "podman userns env (_CONTAINERS_USERNS_CONFIGURED=1) not set for pid1"
+"$DOCKER" exec "$cid" sh -c 'test "$(grep -c "^dsh:100000:65536$" /etc/subuid)" = 1 && test "$(grep -c "^dsh:100000:65536$" /etc/subgid)" = 1' \
+  || die "subuid/subgid must carry the dsh range exactly once (duplicates break newuidmap)"
+"$DOCKER" exec "$cid" sh -c '! tr "\0" "\n" < /proc/1/environ | grep -Fxq "_CONTAINERS_USERNS_CONFIGURED=1"' \
+  || die "_CONTAINERS_USERNS_CONFIGURED must NOT be set (breaks podman 5.x rootless)"
+"$DOCKER" exec "$cid" sh -c 'grep -q "^default_rootless_network_cmd = \"slirp4netns\"$" /etc/containers/containers.conf' \
+  || die "containers.conf must preset the rootless network command to slirp4netns"
 
 # 分层布局: 工具链是镜像系统层真二进制(/usr/local/bin, /opt/rust),
 # 卷上只有可写缓存与自装区 —— 路径解析与读写边界都必须成立。

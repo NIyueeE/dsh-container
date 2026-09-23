@@ -44,21 +44,25 @@ services:
     # started inside the container. Mounting /var/run/docker.sock is equally
     # high-risk. Only enable either for trusted workloads.
     # privileged: true
-    # Optional: in-container (rootless) podman. The image ships crun, provisions
-    # XDG_RUNTIME_DIR and skips inner user-namespace creation, but the host
-    # runtime still has to allow nested namespaces + fuse, and the inner podman
-    # needs CAP_SYS_ADMIN in the namespace it runs in. Uncomment what your host
-    # needs (Docker default / rootful Podman need the two caps; a rootless Podman
-    # host only needs --userns=keep-id and `sudo podman ...` inside):
+    # Optional: in-container (rootless) podman. The image prepares the rootless
+    # flow (subuid/subgid, crun, fuse-overlayfs, slirp4netns); the host still has
+    # to allow nested user namespaces (unconfined seccomp), fuse, the tun device
+    # for rootless networking, and — podman 5.x requirement — an unmasked /proc.
+    # Uncomment what your host needs:
     #   security_opt:
-    #     - seccomp=unconfined     # Docker's default seccomp may block nested
-    #     - apparmor=unconfined    # userns/unshare; --privileged also works
+    #     - seccomp=unconfined     # Docker's default seccomp may block the inner unshare
+    #     - apparmor=unconfined    # only on AppArmor hosts
+    #     - systempaths=unconfined # clear /proc masks (Docker spelling; Podman: unmask=ALL)
+    #     # no-new-privileges would block setuid newuidmap — do NOT combine
     #   devices:
     #     - /dev/fuse:/dev/fuse    # fuse-overlayfs storage driver
+    #     - /dev/net/tun:/dev/net/tun  # rootless networking (host needs the tun module)
     #   cap_add:
-    #     - CAP_SYS_ADMIN          # create the nested mount/PID/net namespaces
-    #     - CAP_NET_ADMIN          # configure the nested network
-    # Without /dev/fuse, `podman --storage-driver vfs ...` still works (slower).
+    #     - CAP_SYS_ADMIN          # only for the rootful (`sudo podman`) fallback
+    #     - CAP_NET_ADMIN
+    # Without /dev/net/tun, `podman run --network=host ...` still works (the
+    # default rootless networking needs the tap device). Without /dev/fuse,
+    # `podman --storage-driver vfs ...` still works (slower).
     # Enabling these weakens the container boundary — see docs/security.md.
     # See docs/deployment.md "In-container podman".
     # Optional: change dsh's internal port (the exposed port stays 3081).
