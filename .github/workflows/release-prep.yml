@@ -803,7 +803,7 @@ jobs:
       - name: Fetch the agent reasoning log
         if: needs.prep.result == 'failure'
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: agent-reasoning
           path: /tmp/agent-reasoning
