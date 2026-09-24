@@ -378,9 +378,11 @@ jobs:
     steps:
       # 镜像构建 + 冒烟通过后才创建 Release 页面;
       # 页面 tag 使用官方仓库 tag(如 dsh-v0.1.2-alpha.3)。
-      # 发布说明 = 本镜像自己的升级/适配说明 + 上游同名 tag 的 release notes
-      # (折叠引用, 上游是各版本迁移细节的权威); generate_release_notes 追加
-      # 本仓库的提交清单。
+      # 发布说明只有上游同名 tag 的 release notes(折叠引用, 上游是各版本迁移细节的
+      # 权威)、上游链接与 generate_release_notes 追加的本仓库提交清单;
+      # 本镜像自己的升级/适配说明不在这里逐版重复 —— 持久文档见
+      # docs/releasing.md § Release notes 与 § Upgrading data volumes to the
+      # image-owned toolchain、docs/deployment.md § 4。
       - name: Compose release notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -388,57 +390,21 @@ jobs:
         run: |
           set -euo pipefail
           body="$RUNNER_TEMP/release-body.md"
-          cat > "$body" <<'EOF'
-          > **Upgrading an existing data volume:** a release may migrate data under `~/.dsh`
-          > **forward** — session-log format, settings/preset storage, provider configuration. The
-          > upstream notes quoted below are the authority on what this version changes. Migration is
-          > one-way: **do not roll the image back** to an older `dsh-v*` tag after upgrading a volume.
-          >
-          > **Upgrading a volume created before the image-owned-toolchain layout:** the image
-          > owns the whole toolchain as a system layer (uv/pnpm in `/usr/local/bin`,
-          > Rust toolchains in `/opt/rust`, dsh in `/opt/deepseek-harness`); `/home/dsh` holds only
-          > data and caches. The one writable exception is rustup's home `/opt/rust/rustup`, which
-          > rustup must write at runtime — it is built `dsh`-owned and the entrypoint repairs its
-          > ownership on every start. Toolchain copies seeded into older volumes are inert (PATH prefers the
-          > image binaries) but waste space — remove them manually inside the container if desired:
-          >
-          > ```bash
-          > rm -rf ~/.local/bin/uv ~/.local/bin/uvx ~/.local/bin/pnpm \
-          >        ~/.local/share/pnpm/lib/node_modules/pnpm ~/.local/share/pnpm/bin/pnpm
-          > # only if you keep no custom toolchains (~/.rustup is ~1GB):
-          > rm -rf ~/.rustup ~/.cargo/bin/cargo ~/.cargo/bin/rustc ~/.cargo/bin/rustdoc \
-          >        ~/.cargo/bin/rustup ~/.cargo/bin/rust-gdb ~/.cargo/bin/rust-lldb \
-          >        ~/.cargo/bin/rust-lldb-server
-          > ```
-          >
-          > Caches (`~/.cargo/registry`, `~/.local/share/uv`, the pnpm store) and all dsh data stay
-          > on the volume unchanged. Logging in no longer needs the token URL: the proxy
-          > bootstraps the dsh session automatically, and authentication is Caddy's job — enable
-          > `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` for any non-loopback exposure.
-          >
-          > **Container adaptation:** this image keeps its hack surface as small as upstream allows —
-          > the browser-side `isLoopback` bundle patch, the session-cookie bootstrap plugin (the
-          > cookie file is state, reconciled into Caddy on content change), and hiding the
-          > headless-hostile settings-document button by wrapping `settingsController.describe`
-          > (plus the provider `documentPath` flip on pre-v0.1.7 tags). See
-          > `docs/upstream-contract.md` § Simplification triggers; adaptation commits are listed
-          > below, and the decision record (Adaptation review) lives in the release-prep tracker
-          > issue for this tag or in the § Adaptation review log when the tag skipped that path.
-          EOF
+          : > "$body"
           # 上游 release notes: 取不到(无 Release 页/接口失败)就只留链接, 不让发版失败。
           # 注意必须用 if 判断退出码: gh api 失败时会把错误 JSON 打到 stdout,
           # 只看输出是否为空会把报错当说明引用进来。
           if upstream="$(gh api "repos/${UPSTREAM_REPO}/releases/tags/${GITHUB_REF_NAME}" --jq .body 2>/dev/null)" \
               && [ -n "$upstream" ]; then
             {
-              printf '\n<details>\n<summary>Upstream <code>%s</code> release notes (quoted)</summary>\n\n' "$GITHUB_REF_NAME"
+              printf '<details>\n<summary>Upstream <code>%s</code> release notes (quoted)</summary>\n\n' "$GITHUB_REF_NAME"
               printf '%s\n' "$upstream"
-              printf '\n</details>\n'
+              printf '\n</details>\n\n'
             } >> "$body"
           else
             echo "note: no upstream release notes found for ${GITHUB_REF_NAME}; linking only" >&2
           fi
-          printf '\n---\n\nUpstream release: https://github.com/%s/releases/tag/%s\n' \
+          printf -- '---\n\nUpstream release: https://github.com/%s/releases/tag/%s\n' \
             "$UPSTREAM_REPO" "$GITHUB_REF_NAME" >> "$body"
 
       - name: Create Release

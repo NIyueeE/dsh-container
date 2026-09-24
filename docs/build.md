@@ -62,8 +62,8 @@ happens.
 Older images seeded toolchain copies into the volume (`~/.local/bin` uv/uvx, the pnpm prefix under
 `~/.local/share/pnpm`, rustup proxies in `~/.cargo/bin`). Those are inert — PATH prefers the
 image-owned binaries and they can never shadow them — but waste space; remove them manually to
-reclaim `~/.rustup`'s ~1GB. The commands ship in each release note (see also
-[releasing.md](releasing.md)).
+reclaim `~/.rustup`'s ~1GB. The commands live in
+[releasing.md](releasing.md) § Upgrading data volumes to the image-owned toolchain.
 
 The image's browser-side compatibility patch (`container/plugin/scripts/patch-client.js`) is
 intentionally applied at build time and again before every `dsh web` start rather than baked into

@@ -83,13 +83,18 @@ To run a different dsh version, publish/use an image built from that upstream ta
 
 **Upgrading from v0.2.x images:** those images npm-installed dsh into the persisted volume
 (`~/.local`). The stale copy is inert — PATH is image-first, so the image-provided dsh always
-wins — but it wastes space and is confusing; remove it manually with the commands from the
-release notes. Toolchain copies seeded
-into volumes by even older images are likewise inert (PATH prefers the image-owned binaries);
-remove them manually to reclaim space (see the release notes). After upgrading and
+wins — but it wastes space and is confusing; remove it manually with the commands in
+[releasing.md](releasing.md) § Upgrading data volumes to the image-owned toolchain. Toolchain
+copies seeded into volumes by even older images are likewise inert (PATH prefers the image-owned
+binaries); remove them the same way to reclaim space. After upgrading and
 restarting the container, verify with `docker exec dsh dsh --version` (or `podman exec dsh dsh
 --version`) — it must print the version matching the image tag. To inspect an image's provenance
 stamp: `docker exec dsh cat /etc/dsh-container/provenance.json`.
+
+**Volume migration is one-way.** A release may migrate data under `~/.dsh` **forward** —
+session-log format, settings/preset storage, provider configuration. The upstream release notes
+quoted on each Release page are the authority on what a version changes. Do not roll the image
+back to an older `dsh-v*` tag after upgrading a volume.
 
 - **Quadlet** already sets `Pull=newer` (pulls on restart when a newer remote image exists) and
   `AutoUpdate=registry`; combine with `systemctl enable --now podman-auto-update.timer` to

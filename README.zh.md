@@ -59,7 +59,7 @@ sudo systemctl enable --now dsh.service
 - **隐藏"打开配置文件"按钮** —— 上游该操作没有无桌面兜底,在容器里会 spawn `xdg-open` 扑空;插件让 `settings/describe` 报告 `hasDocument: false`,按钮按上游自身 UI 逻辑不再渲染。设置项持久化在挂载卷的 `~/.dsh` 下(上游 v0.1.7+ 按 profile 存于 `~/.dsh/profiles/<profile>/cordis.patch.yml`;旧版 `settings.yaml` 只导入一次)。
 - **浏览器侧 `isLoopback` 补丁** —— `scripts/patch-client.js` 让设置/凭据页可经代理使用(镜像构建时与每次 `dsh web` 启动前应用)。
 
-插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分并在 release note 中说明(见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。
+插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分(体现在该次发布的 commit 列表中,见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。
 
 ## 网络与安全
 

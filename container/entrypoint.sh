@@ -7,7 +7,8 @@
 #      挂载)只放数据与缓存: dsh 数据 ~/.dsh(上游默认, 不设 DSH_HOME)、
 #      CARGO_HOME=~/.cargo(registry/cache 与 cargo install 自装工具)、
 #      uv/pnpm 数据 ~/.local/share/{uv,pnpm}。PATH 镜像优先(/usr/local/bin
-#      最前), 卷上遗留的旧副本遮蔽不了镜像内版本(手动清理见 release notes)。
+#      最前), 卷上遗留的旧副本遮蔽不了镜像内版本(手动清理见
+#      docs/releasing.md § Upgrading data volumes to the image-owned toolchain)。
 #   3. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081), 经
 #      DSH_WEB_PORT 传给 dsh-web(内部管道变量, 非用户配置面)。
 #   4. 容器内 podman 运行期环境: provision XDG_RUNTIME_DIR(rootless podman

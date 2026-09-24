@@ -214,7 +214,7 @@ fi
 ' || die "toolchain/user-layer layout check failed"
 
 # 旧卷工具副本不得遮蔽镜像真二进制: 种入旧 uv 后 PATH 镜像优先仍解析到
-# /usr/local/bin/uv(清理不进镜像, 手动步骤见 release notes)。
+# /usr/local/bin/uv(清理不进镜像, 手动步骤见 docs/releasing.md)。
 "$DOCKER" exec "$cid" sh -c 'home="$(getent passwd "$(id -u)" | cut -d: -f6)"; printf "#!/bin/sh\necho \"uv 0.0.1 (fake-old)\"\n" > "$home/.local/bin/uv" && chmod +x "$home/.local/bin/uv"'
 "$DOCKER" exec "$cid" sh -c 'test "$(command -v uv)" = "/usr/local/bin/uv"' \
   || die "a stale volume uv copy shadows the image-provided uv"

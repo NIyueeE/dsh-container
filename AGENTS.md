@@ -22,7 +22,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
-| `.github/workflows/image.yml` | CI: build + smoke test always — **except** commits whose diff is only `*.md`/`LICENSE` (classified from the real push/PR diff, fail-closed, never for `dsh-v*` tags), which take a docs-only lane that still runs every validation step plus a relative-link check; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags). Tag builds additionally run `tests/contract.sh` as a publish gate (the only contract check a manually pushed tag gets) and compose the Release body from this image's upgrade notes + the upstream release notes quoted in a `<details>` block |
+| `.github/workflows/image.yml` | CI: build + smoke test always — **except** commits whose diff is only `*.md`/`LICENSE` (classified from the real push/PR diff, fail-closed, never for `dsh-v*` tags), which take a docs-only lane that still runs every validation step plus a relative-link check; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags). Tag builds additionally run `tests/contract.sh` as a publish gate (the only contract check a manually pushed tag gets) and compose the Release body from the upstream release notes quoted in a `<details>` block plus the auto-generated commit list — this image's own upgrade guidance lives in the docs, not on every Release page |
 | `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`. It closes a tracker issue only once that tag's push has actually produced an `image.yml` run (a tag that never triggered the pipeline keeps the issue open with a hint). It also runs a **release health check** on our newest `dsh-v*` tag: a latest `image.yml` run that is missing, failed, or cancelled opens a "Release pipeline not published" issue, closed automatically once a run succeeds (the safety net for manually pushed tags, which skip release-prep) |
 | `.github/workflows/release-prep.yml` | Automated release preparation: contract check → code-level diff triage (`tests/triage-diff.sh` admits the agent only on drift or adaptation-surface hits; fence drift and mis-dispatched tags fail fast) → dsh headless agent (drift repair + adaptation review, exits early with `NO_ACTION_NEEDED` when there is nothing to do — upstream changes that make a hack redundant are deleted, see `docs/upstream-contract.md` § Simplification triggers; its model/provider config is passed as a load-time `--patch` overlay, **never** as the flat `$DSH_HOME/settings.yaml`, which dsh v0.1.7+ only imports *after* the loader settles — too late for a fresh Actions home, the 2026-09-22 `dsh-v0.1.7-alpha.2` prep failure) → build + smoke on the repaired tree → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
 | `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
@@ -56,14 +56,15 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
     git-lfs, crun) are baked into the system layer too: runtime `apt install` writes the
     container's writable layer and is lost on recreation, so persistent tools belong in the image,
     not in a runtime install. Toolchain copies and the npm-installed dsh that pre-source-build
-   images (v0.2.x) seeded into volumes are inert (shadowed by PATH); manual cleanup commands
-   ship in the release notes. The entrypoint
-   also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's OTel feedback uploader
-   (upstream default `FEEDBACK_ONLY` — exports the session prefix on explicit feedback) never
-   uploads unless the user opts in. That switch covers the **OTel path only**: upstream mounts
-   `session-log-deepseek` with `enabled: true`, so session-log suffixes are attached to DeepSeek
-   API requests by default — the image leaves that upstream behavior alone and documents it in
-   `docs/security.md`; do not describe the image as "no data leaves the container".
+    images (v0.2.x) seeded into volumes are inert (shadowed by PATH); manual cleanup
+    commands live in `docs/releasing.md` § Upgrading data volumes to the image-owned
+    toolchain. The entrypoint also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's
+    OTel feedback uploader (upstream default `FEEDBACK_ONLY` — exports the session prefix on
+    explicit feedback) never uploads unless the user opts in. That switch covers the **OTel path
+    only**: upstream mounts `session-log-deepseek` with `enabled: true`, so session-log suffixes
+    are attached to DeepSeek API requests by default — the image leaves that upstream behavior
+    alone and documents it in `docs/security.md`; do not describe the image as "no data leaves the
+    container".
 3. Parses `--port <N>` / `--port=<N>` (default 3080) and rejects `0` and `3081`.
 4. Prepares the in-container podman runtime environment: provisions `XDG_RUNTIME_DIR`
    (`/run/user/<uid>` via passwordless sudo, `/tmp` fallback) — rootless podman cannot start

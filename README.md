@@ -69,8 +69,9 @@ image at `/opt/dsh-container-plugin` and mounted into the web profile via `dsh -
   through the proxy (applied at image build and before every `dsh web` start).
 
 This plugin is the single adaptation maintenance point. When upstream ships an API that makes part
-of it redundant, the release pipeline deletes that part automatically and says so in the release
-notes (see [docs/upstream-contract.md](docs/upstream-contract.md) § Simplification triggers).
+of it redundant, the release pipeline deletes that part automatically — the removal shows up in
+that release's commit list (see [docs/upstream-contract.md](docs/upstream-contract.md)
+§ Simplification triggers).
 
 ## Networking & security
 

@@ -35,17 +35,19 @@ Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/
 
 ### Release notes
 
-The Release page body is composed at publish time by the `release` job:
+The Release page body is composed at publish time by the `release` job and contains only:
 
-1. this image's own upgrade guidance (volume migration is one-way — do not roll the image back;
-   the pre-toolchain-layout cleanup commands; the current adaptation surface),
-2. the upstream release notes for the same tag, quoted verbatim in a collapsed `<details>` block
+1. the upstream release notes for the same tag, quoted verbatim in a collapsed `<details>` block
    (fetched through the GitHub API; if the upstream tag has no Release page, only the link is
    emitted),
-3. GitHub's auto-generated commit list for this repository (`generate_release_notes`).
+2. GitHub's auto-generated commit list for this repository (`generate_release_notes`).
 
 The upstream notes are the authority on per-version migrations (session-log format, settings/preset
-storage, provider configuration) — this repository deliberately does not restate them per release.
+storage, provider configuration) — this repository deliberately does not restate them per release,
+and does not repeat this image's own upgrade guidance on every Release page. That guidance is
+durable documentation instead: [deployment.md](deployment.md) § 4 (the one-way volume rule) and
+[§ Upgrading data volumes to the image-owned toolchain](#upgrading-data-volumes-to-the-image-owned-toolchain)
+below (the pre-toolchain-layout cleanup commands).
 
 ### Tag alignment
 
@@ -136,8 +138,8 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    ...), it deletes the hack instead of keeping
    it, and reports the outcome in an "Adaptation review" section. It pushes a `release-prep/<tag>`
    branch and posts its report to the tracker issue — that report is the adaptation decision
-   record for the tag; the changes themselves appear in the release note's commit list, and the
-   release body points readers at the adaptation surface. The agent's inputs are pre-fetched and
+   record for the tag, and the changes themselves appear in the release's auto-generated commit
+   list. The agent's inputs are pre-fetched and
    it is expected to work fully offline (no network is needed); the sandbox is file-effect
    containment, not an egress boundary.
 3. **verify** — checks out the repair branch (if any), builds the image from the new upstream tag
@@ -236,8 +238,7 @@ The image carries the whole toolchain (uv/pnpm in `/usr/local/bin`, Rust toolcha
 Volumes created by older images still hold seeded toolchain copies (`~/.local/bin` uv/uvx, the
 pnpm prefix under `~/.local/share/pnpm`, rustup proxies in `~/.cargo/bin`, and the `~/.rustup`
 tree). They are inert — PATH prefers the image-owned binaries and they can never shadow them — but
-waste space (~1GB for `~/.rustup`). Remove them manually inside the container if desired; the same
-text ships in each release note:
+waste space (~1GB for `~/.rustup`). Remove them manually inside the container if desired:
 
 ```bash
 rm -rf ~/.local/bin/uv ~/.local/bin/uvx ~/.local/bin/pnpm \
