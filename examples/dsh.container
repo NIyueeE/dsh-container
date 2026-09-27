@@ -61,6 +61,9 @@ PodmanArgs=--security-opt apparmor=unconfined   # only on AppArmor hosts;
 # /dev/fuse, `podman --storage-driver vfs ...` still works (slower).
 # Enabling any of this weakens the container boundary — see docs/security.md.
 # See docs/deployment.md "In-container podman" for the full host matrix.
+# Resource limits (--memory/--cpus) are NOT enforced inside nested containers
+# regardless of these flags (cgroup v2 constraint) — see docs/deployment.md
+# § In-container podman.
 # Restart dsh web without restarting the container:
 #   podman exec dsh dsh-restart
 # Persist the whole user home. User state and user-installed tools survive

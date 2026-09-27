@@ -188,7 +188,16 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   command then panics on a nil pointer (item 4 above). Nested containers still depend on the host
   Docker/Podman seccomp and user-namespace settings, `/dev/fuse`, `/dev/net/tun`, and an unmasked
   `/proc` (podman 5.x: crun cannot mount proc inside the nested container otherwise) — docs must
-  not promise that `podman run` always works inside this image.
+  not promise that `podman run` always works inside this image. **Nested containers never enforce
+  cgroup resource limits** (`--memory`/`--cpus` are silently ignored): cgroup v2's
+  no-internal-process rule plus the container's own cgroup-namespace root (where every
+  `docker exec`/healthcheck process lands) makes it impossible from inside the image. A relay
+  topology (empty the ns root, move the stack into a child cgroup, enable controllers at the root,
+  point podman at the relay via a `/usr/local/bin/podman` wrapper) was implemented and measured:
+  limits did apply (OOM kill + `cpu.max` verified), but the kernel then rejects every process
+  placement into the ns root with `EBUSY`, which breaks `docker exec` and the healthcheck — the
+  change was reverted. Do not re-attempt that design; the honest limitation is documented in
+  `docs/deployment.md` § In-container podman.
 - **Ports**: exposed/external port is `3081`; `127.0.0.1:3080` is dsh's internal port only. Keep
   them distinct everywhere. The proxy binds `0.0.0.0:3081` because it differs from dsh's port —
   do not reintroduce container-IP binding tricks. The examples publish it on host loopback

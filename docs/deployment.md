@@ -363,6 +363,28 @@ development convenience, not an isolation boundary — the host flags that enabl
 (`--privileged`, unconfined seccomp) weaken the container boundary itself, so turn them on only
 when nested containers are actually needed (see [security.md](security.md)).
 
+### Resource limits inside nested containers
+
+`--memory`, `--cpus`, `--pids-limit` and friends are **not enforced** inside nested containers:
+`podman run --memory 64m ...` starts and runs, but the limit is silently ignored, and no compose
+or Quadlet flag changes that. The reason is a cgroup v2 rule rather than a configuration gap: a
+cgroup can either host member processes or distribute controllers to its children, never both.
+Every process of this container — including everything `docker exec`, the healthcheck and the dsh
+agent place into it — lives in the root of the container's cgroup namespace, so that root can
+never enable controllers, and every cgroup libpod could create below it inherits the same
+restriction.
+
+The image deliberately does not work around this by emptying and re-seeding the namespace root
+(relaying the stack into a child cgroup so the root can distribute controllers). That variant was
+implemented and measured end to end: it does make nested `--memory` OOM-kill correctly, but it
+also makes the kernel reject every process placement into the namespace root (`EBUSY`), which
+breaks `docker exec`, the healthcheck and any host-side `run`/`attach` for as long as it is
+enabled — an unacceptable trade for unflagged resource limits. Lifting the constraint requires
+host-side setup instead: running the outer container with `--cgroupns=host` plus a delegated,
+controller-enabled cgroup subtree that the `dsh` user owns. No in-image change can provide that,
+so the docs promise the graceful degradation (containers run, limits are ignored) rather than
+limits that only work on some hosts.
+
 ## 8. Offline use
 
 The running image does not contact the npm registry, and there is no boot-time dsh update to
