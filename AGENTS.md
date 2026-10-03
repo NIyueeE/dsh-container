@@ -18,7 +18,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + session-cookie wait + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
-| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`) bootstraps the session cookie inside the dsh process and hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`, plus a `documentPath` flip on pre-v0.1.7 tags; upstream's own UI never renders it); `scripts/patch-client.js` applies the browser-side `isLoopback` patch to the built bundle (build-time and before every start) |
+| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`) bootstraps the session cookie inside the dsh process, hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`, plus a `documentPath` flip on pre-v0.1.7 tags; upstream's own UI never renders it), injects `globalThis.__DSH_TRANSPORT__={ownsHost:true}` into the served index (upstream's own transport-owner declaration; its only consumer is the client `isLoopback`), and serves the build-time-extracted images from `/container-assets/*`; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -115,11 +115,11 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 6. `dsh-web` supervises `dsh web`: if it exits or crashes it is restarted automatically, and the
    session cookie survives restarts because dsh's signing secret is persisted in the volume (the
    plugin reuses the old cookie while it stays valid). The container has no
-   browser, so `dsh-web` appends `--no-open` unless the caller already passed it. Before every
-   `dsh web` launch, `dsh-web` runs `node /opt/dsh-container-plugin/scripts/patch-client.js`, an
-   idempotent build-artifact patch for upstream's browser-side loopback gate (settings/credentials;
-   upstream's `trustedHosts` covers only the server-side fence). Inside the container,
-   `dsh-restart` can be used to restart dsh web without restarting the whole container.
+   browser, so `dsh-web` appends `--no-open` unless the caller already passed it. Inside the
+   container, `dsh-restart` can be used to restart dsh web without restarting the whole container.
+   The plugin also owns the two served-side adaptations: the index tap that injects
+   `__DSH_TRANSPORT__` (contract item 1) and the `/container-assets/*` route for the extracted
+   images; both are registered through `ctx.effect`, so they dispose with the plugin.
 
 ### Hard constraints from upstream dsh (do not fight these)
 
@@ -139,11 +139,14 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control, and dsh's own
   fence still guards direct `3080` access from same-network containers (that port is not
   published).
-- **Upstream's browser code still gates settings/credentials on `location.hostname`**, so the Caddy
-  header rewrite alone is not enough for the settings UI. `scripts/patch-client.js` (in
-  `container/plugin/`) makes the browser treat a proxied remote session as loopback; it is
-  best-effort and skips with a warning if upstream changes the bundle strings. (No `index.html`
-  modification is needed — upstream ships its own insecure-context `randomUuid()` in
+- **Upstream's browser code still gates settings/credentials on the page authority**, so the Caddy
+  header rewrite alone is not enough for the settings UI: the browser computes
+  `isLoopback` from `location.hostname` unless a shell declares itself the transport owner. The
+  container-adapt plugin therefore injects `globalThis.__DSH_TRANSPORT__={ownsHost:true}` into the
+  served index (upstream's own declaration for a shell that owns the Host — the desktop shell and
+  the worker-preview tunnel use it the same way; its only consumer is that `isLoopback`
+  computation). No upstream build artifact is modified for this. (No `index.html` rewrite beyond
+  that injection is needed — upstream ships its own insecure-context `randomUuid()` in
   `@deepseek-ai/dsh-util-crypto`.)
 - **`settings/openSettingsDocument` has no headless fallback upstream** (unlike preset/workspace
   opens, which check `canOpenPath`): the plugin keeps the button out of the UI entirely — it wraps
@@ -264,9 +267,9 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
    `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` set, the same flow must return **401 without basic
    credentials and succeed with them**, and setting only one auth variable must exit nonzero.
    Always test inside the built image (the dev machine may lack `caddy`).
-6. If you touched the client patch, run the `patch-client.js` validate step: extract the
-   `plugins/??@deepseek-ai/dsh-client-connection/client.js&rev=...` URL from the served index
-   (document-relative since upstream v0.1.7; the absolute `/plugins/??...` form on older tags —
-   `tests/smoke.sh` accepts both) and
-   verify it contains the `isLoopback` patch (there is no `index.html` modification anymore — no
-   polyfill is injected).
+6. If you touched the container-adapt plugin (index tap, `/container-assets` route, or one of the
+   three build-time post-processing scripts), run `node tests/plugin-unit.mjs` (pure node, no
+   image) and, in the built image, the smoke assertions: the served index carries the
+   `__DSH_TRANSPORT__` injection right after `<head>`, the served combined bundle inlines no image
+   ≥ 100 KiB, `/container-assets/<hash>` answers with `image/*` + `immutable`, and the delivered
+   build record matches the delivered artifacts.

@@ -62,15 +62,16 @@ done
 FATAL_IDS="server.request_fence"
 
 # 适配面: 上游路径前缀(正则)。命中任一即需要 agent 做语义审查。
-# - packages/client/connection/        isLoopback 补丁锚点 + /api 围栏 + authenticatedUrl
+# - packages/client/connection/        ownsHost 声明(isLoopback 的唯一消费点) + /api 围栏 + authenticatedUrl
 # - packages/api/settings-controller/  settings describe/documentPath 契约
 # - packages/client/ui-settings-general/  SettingsDocumentAction 渲染门
-# - packages/bundle/web-app/           web CLI 契约(--port/--no-open 在
-#                                      src/startup.ts)与登录 URL 宣告
-#                                      (src/index.ts authenticatedUrl)
+# - packages/bundle/web-app/           webserver 配置面(compression 等) + web CLI 契约
+#                                      (--port/--no-open 在 src/startup.ts)与登录 URL
+#                                      宣告(src/index.ts authenticatedUrl)
+# - packages/client/web/               索引渲染与注入落点(tapIndex 契约)
 # - apps/cli/src/                      launcher 根 flag(--patch/--profile)
 # - packages/bundle/base/              遥测默认值等 bundle 层契约
-SURFACE_PAT='^(packages/client/connection/|packages/api/settings-controller/|packages/client/ui-settings-general/|packages/bundle/web-app/|apps/cli/src/|packages/bundle/base/)'
+SURFACE_PAT='^(packages/client/connection/|packages/api/settings-controller/|packages/client/ui-settings-general/|packages/bundle/web-app/|packages/client/web/|apps/cli/src/|packages/bundle/base/)'
 
 ancestor=no
 [ "$STATUS" = "behind" ] && ancestor=yes

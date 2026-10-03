@@ -4,7 +4,15 @@
 //      headless 兜底(会 spawn 原生文本编辑器命令扑空)—— 让 settings/describe
 //      报告 hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身
 //      逻辑(status !== 'ready' → 不渲染)让按钮整个消失, 不引入任何浏览器侧
-//      代码。
+//      代码;
+//   3. 声明本页的传输层归属: 往服务端索引注入
+//      __DSH_TRANSPORT__ = { ownsHost: true }。容器里的页面由 Caddy 反代提供,
+//      代理已把 Host/Origin 改写成回环并注入会话 cookie —— 正是上游该契约描述的
+//      "自己拥有 Host 的 shell"。上游唯一消费点是 connection 的 isLoopback,
+//      置真后设置/凭据页在非回环 authority 上可用(替代旧的构建产物字符串补丁);
+//   4. 提供构建期抽出的客户端图片(/container-assets/<内容哈希>.<ext>): 见
+//      scripts/extract-inline-assets.js —— 上游把 8 张引导插画内联成 base64,
+//      占合并包 49%, 抽成文件后只在真正进入该页时才请求。
 //
 // 上游核对(机制随版本演化, 两条路都保留):
 //   - dsh-v0.1.7-alpha.1 起: settings-controller 的 describe() 硬编码
@@ -35,8 +43,10 @@
 // 自举最终失败只记录日志、不阻止 dsh web 启动: 文件缺失时 dsh-web 会在有界
 // 等待后 fail-fast; 文件已存在时监督器继续用现有内容服务(不因一次自举失败
 // 杀掉容器, 避免重启策略下的崩溃循环)。
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { createReadStream, existsSync } from 'node:fs'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 
 export const name = 'dsh-container-adapt'
 export const inject = ['webServer', 'connection', 'settings', 'settingsController']
@@ -44,6 +54,21 @@ export const inject = ['webServer', 'connection', 'settings', 'settingsControlle
 /** dsh-web 约定存放会话 cookie 的目录(与 container/dsh-web.sh 一致)。 */
 const RUNTIME_DIR = process.env.DSH_CADDY_RUNTIME_DIR ?? '/tmp/dsh-caddy'
 const COOKIE_FILENAME = 'session-cookie'
+
+/** 抽图产物目录与路由前缀(与 scripts/extract-inline-assets.js 的默认输出一致, 镜像布局固定)。 */
+const ASSET_ROUTE = '/container-assets'
+const ASSET_DIR = '/opt/dsh-container-plugin/assets'
+
+/** 只接受抽图脚本写出的内容哈希文件名 —— 这条正则本身就是路径穿越防护。 */
+const ASSET_NAME = /^[0-9a-f]{16,64}\.(?:png|jpe?g|webp|gif)$/
+const ASSET_TYPES = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+}
+const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable'
 
 /** 自举重试次数与间隔(覆盖端口就绪窗口与瞬时网络/写盘失败)。 */
 const BOOTSTRAP_RETRIES = 5
@@ -177,6 +202,54 @@ function forceNoSettingsDocument(controller) {
   console.log('[dsh-container-adapt] settings describe wrapped: hasDocument forced to false')
 }
 
+/**
+ * 注入传输层归属声明。上游契约(packages/client/connection/src/client/index.ts):
+ * `__DSH_TRANSPORT__` 由"自己拥有 Host 的 shell"设置, 唯一消费点是
+ * `isLoopback: transport?.ownsHost === true || …`; 上游桌面 shell
+ * (apps/web/src/main.ts)与 worker 预览页(experimental/webworker-runtime)都这么用。
+ * 本容器里 Caddy 代理就是那个 shell(改写 Host/Origin + 注入会话 cookie), 置真后
+ * 设置/凭据页在非回环 authority 上可用 —— 取代旧的构建产物字符串补丁。
+ *
+ * 纯 html→html 变换(tapIndex 契约): 插在 <head> 之后, 内联脚本先于
+ * `type="module"` 的 bundle 执行, connection 插件 apply 时已能读到。找不到
+ * <head> 时原样返回(上游若改文档结构则退化成"没注入", 由 smoke 断言发现)。
+ * @param {string} html - 服务端渲染出的索引 HTML。
+ * @returns {string} 注入后的 HTML。
+ */
+function injectTransportGlobal(html) {
+  const at = html.indexOf('<head>')
+  if (at === -1) return html
+  return `${html.slice(0, at + 6)}<script>globalThis.__DSH_TRANSPORT__={ownsHost:true}</script>${html.slice(at + 6)}`
+}
+
+/**
+ * 提供构建期抽出的客户端图片(见 scripts/extract-inline-assets.js)。只认内容哈希
+ * 文件名, 命中即流式返回整文件并带 immutable 缓存头(与 dsh 给 /plugins/* 的策略
+ * 一致); 图片本身是压缩格式, webserver 的 gzip 中间件按 content-type 跳过。
+ * @returns {(req: object, res: object) => Promise<void>} webServer 前缀路由处理器。
+ */
+function createAssetHandler() {
+  return async (req, res) => {
+    const path = new URL(req.url ?? '/', 'http://container-assets').pathname.slice(ASSET_ROUTE.length + 1)
+    if (!ASSET_NAME.test(path)) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found')
+      return
+    }
+    const file = join(ASSET_DIR, path)
+    try {
+      const info = await stat(file)
+      res.writeHead(200, {
+        'content-type': ASSET_TYPES[path.slice(path.lastIndexOf('.') + 1).toLowerCase()],
+        'content-length': info.size,
+        'cache-control': ASSET_CACHE_CONTROL,
+      })
+      await pipeline(createReadStream(file), res)
+    } catch {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found')
+    }
+  }
+}
+
 /** 挂载: 自举不阻塞插件激活(失败由 dsh-web 的等待超时兜底)。 */
 export function apply(ctx) {
   // 1) 会话 cookie 自举。
@@ -194,4 +267,18 @@ export function apply(ctx) {
     Object.defineProperty(ctx.settings, 'documentPath', { value: undefined })
   }
   forceNoSettingsDocument(ctx.settingsController)
+
+  // 3) 传输层声明与抽图路由都注册为 effect: webServer.register()/tapIndex() 都
+  //    返回 disposer, 插件卸载时自动撤销(上游 gateway 注册 mux 路由同款写法)。
+  ctx.effect(
+    () => ctx.webServer.tapIndex(injectTransportGlobal),
+    'container-adapt: __DSH_TRANSPORT__ ownsHost injection',
+  )
+  if (!existsSync(ASSET_DIR)) {
+    console.warn(`[dsh-container-adapt] ${ASSET_DIR} is missing; extracted client images will 404`)
+  }
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'prefix', path: ASSET_ROUTE, handler: createAssetHandler() }),
+    'container-adapt: extracted client image route',
+  )
 }

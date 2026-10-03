@@ -10,7 +10,7 @@ container/
   dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the session cookie, runs the Caddy proxy, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
   healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
-  plugin/                # container-adapt plugin: cookie bootstrap + settings-document button hide + patch-client.js, at /opt/dsh-container-plugin
+  plugin/                # container-adapt plugin at /opt/dsh-container-plugin: cookie bootstrap, settings-document button hide, __DSH_TRANSPORT__ index injection, /container-assets route; scripts/ holds the three build-time post-processing steps (extract inline images, esbuild minify, build-record refresh)
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)

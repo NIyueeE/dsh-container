@@ -80,9 +80,10 @@ found_in() { # <rel-root> <fixed-string> -> 0/1
     -e "$2" "$ROOT/$1" >/dev/null 2>&1
 }
 
-# critical: 前端补丁锚点的源形态 —— container/plugin/scripts/patch-client.js
-# 的候选串由它编译而来。
-# 源码里两个特征同时成立才认为补丁锚点未漂移(connection/src/client/index.ts)。
+# critical: 传输层声明的源锚点。
+# 源码锚点: connection 的 isLoopback 计算必须仍带 ownsHost 分支 —— 容器适配插件
+# 往服务端索引注入 __DSH_TRANSPORT__={ownsHost:true}, 其唯一消费点就是这一行; 若
+# 上游改名/去掉该分支, 注入即失去意义(行为级断言在 smoke 的索引注入检查)。
 if [ -f "$ROOT/packages/client/connection/src/client/index.ts" ]; then
   f="$ROOT/packages/client/connection/src/client/index.ts"
   if grep -qF 'isLoopbackHostname(pageLocation.hostname)' "$f" \
@@ -96,21 +97,6 @@ if [ -f "$ROOT/packages/client/connection/src/client/index.ts" ]; then
 else
   echo "MISS connection.isLoopback.source (packages/client/connection/src/client/index.ts not found)"
   MISSED+=("connection.isLoopback.source"); miss=$((miss + 1))
-fi
-
-# critical: 编译产物里的补丁候选串(若上游把 lib/ 提交进仓库才存在;
-# 源码构建时该文件由 pnpm build 生成, 此时 SKIP, 由 smoke 做行为级验证)。
-if [ -f "$ROOT/packages/client/connection/lib/client.js" ]; then
-  if grep -qF 'isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),' \
-      "$ROOT/packages/client/connection/lib/client.js"; then
-    echo "PASS connection.isLoopback.built"
-    pass=$((pass + 1))
-  else
-    echo "MISS connection.isLoopback.built (built candidate string not found)"
-    MISSED+=("connection.isLoopback.built"); miss=$((miss + 1))
-  fi
-else
-  echo "SKIP connection.isLoopback.built (lib/ not committed; verified behaviorally by smoke)"
 fi
 
 # critical: /api 信任围栏 —— Caddy 头改写放行的前提是围栏仍按 HTTP 头
@@ -203,10 +189,10 @@ else
 fi
 
 # warn: 上游新增的 trustedHosts 只作用于服务端请求围栏(见
-# container/plugin/scripts/patch-client.js 头注), 出现不算漂移, 但提醒
-# 审阅者确认浏览器侧补丁仍然必需。
+# docs/upstream-contract.md 契约 item 1 与 item 3), 出现不算漂移, 但提醒
+# 审阅者确认浏览器侧仍需要那条件传输层声明。
 if found_in "." "trustedHosts"; then
-  echo "WARN web.trusted_hosts (trustedHosts present upstream; confirm client-side patch still required)"
+  echo "WARN web.trusted_hosts (trustedHosts present upstream; confirm the transport-owner injection is still required)"
   warn=$((warn + 1))
 else
   echo "SKIP web.trusted_hosts (not present upstream)"

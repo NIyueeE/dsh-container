@@ -23,7 +23,7 @@ New upstream tag: **$NEW_TAG** (also exported as environment variable `NEW_TAG`)
 | `/tmp/upstream` | Shallow checkout of upstream dsh at `$NEW_TAG` |
 | `/tmp/upstream-diff.json` | GitHub compare payload (previous release tag → `$NEW_TAG`), or a single-commit view if no previous tag existed |
 | `tests/contract.sh` | The executable form of the contract (the check that reported drift) |
-| `container/plugin/` | The single adaptation point: `index.js` (cookie bootstrap, settings-document button hide via the provider `documentPath` flip), `overlay.yml` (single plugin include), `scripts/patch-client.js` (browser-side `isLoopback` patch) |
+| `container/plugin/` | The single adaptation point: `index.js` (cookie bootstrap, settings-document button hide via the provider `documentPath` flip, the `__DSH_TRANSPORT__` index injection, the `/container-assets` route), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
 | `tests/smoke.sh` | Behavioral gate (read-only for you — docker is not available in your environment) |
 
 Environment: `IS_ANCESTOR=yes` when the compare payload shows `$NEW_TAG` is *behind* the previously
@@ -42,9 +42,12 @@ or these paths were hit). Focus your review on those paths and the § Simplifica
    cosmetic edits.
 1. **Minimal repair; prefer deletion over patching.** When a Simplification trigger fires,
    deleting the hack (and its contract item / smoke assertions / docs) is the preferred change.
-   Otherwise the typical fix is updating the candidate strings in
-   `container/plugin/scripts/patch-client.js` (and the comment block documenting the verified
-   upstream revision).
+   Otherwise the typical fix is re-anchoring the contract item in `container/plugin/` — the
+   `__DSH_TRANSPORT__` injection (its anchor is the `ownsHost` arm in
+   `packages/client/connection/src/client/index.ts`) or one of the three build-time
+   post-processing steps. Rewriting upstream build artifacts is not an option: the only code that
+   runs after `build:official` is `container/plugin/scripts/`, and it must leave a matching
+   `.dsh-build` record behind.
 2. **Follow the update protocol** in `docs/upstream-contract.md` § Update protocol. Items 2–4
    (request fence, `--port`, `--no-open`) define the image's security posture: if those drifted,
    make **no changes at all** — even if a workaround seems straightforward — and end your report

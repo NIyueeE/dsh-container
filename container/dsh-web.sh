@@ -116,12 +116,6 @@ trap cleanup TERM INT EXIT
 # 见上游 args.ts rejectParentOptions —— 必须用 --profile web 形式)。
 start_dsh_web() {
   : > "$LOG"
-  # 每次启动前重打浏览器端兼容补丁(幂等, 已打过则跳过): 构建产物在系统层
-  # /opt/deepseek-harness, 镜像构建时已打, 运行时再打一次兜底。
-  if [ -f /opt/dsh-container-plugin/scripts/patch-client.js ]; then
-    node /opt/dsh-container-plugin/scripts/patch-client.js \
-      || echo "[dsh-web] patch-client failed; continuing" >&2
-  fi
   dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web "${WEB_ARGS[@]}" >>"$LOG" 2>&1 &
   CHILD_PID=$!
   echo "$CHILD_PID" > "$PIDFILE"

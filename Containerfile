@@ -35,10 +35,19 @@
 #     兜底(会 spawn xdg-open 扑空), 插件把 settings provider 实例的
 #     documentPath 置为 undefined, describe 即返回 hasDocument:false,
 #     按钮按上游自身逻辑不渲染(不引入浏览器侧代码, 也不提供下载端点);
-#     浏览器端 isLoopback 门(location.hostname 限制设置/凭据页)由插件包
-#     内的构建期脚本 scripts/patch-client.js 在镜像构建与每次启动前修补
-#     (上游 trustedHosts 只作用于服务端围栏, 浏览器侧仍需此补丁);
-#     幂等且版本漂移时警告跳过。不再注入 randomUUID polyfill: 上游自带
+#     浏览器端 isLoopback 门(location.hostname 限制设置/凭据页)由插件在服务端
+#     索引里注入 __DSH_TRANSPORT__={ownsHost:true} 解决 —— 这是上游给"自己拥有
+#     Host 的 shell"预留的声明(桌面 shell 与 worker 预览页同款), 唯一消费点就是
+#     connection 的 isLoopback, 因此不再需要改写上游构建产物;
+#     构建期后处理三件套(都在 plugin/scripts/, 顺序固定):
+#       1. extract-inline-assets.js 把 >=100 KiB 的内联 data URL 图片抽成真实
+#          文件(8 张引导插画占合并包 49%, 且每个用户只用得到 1 张), 由插件的
+#          /container-assets 路由按内容哈希 + immutable 提供;
+#       2. minify-client.mjs 用 esbuild(--minify --keep-names) 逐包压缩客户端
+#          产物(上游不压缩), 冷启动 JS 体积与解析量大幅下降;
+#       3. refresh-build-record.mjs 用上游自己的 writeClientBuildRecord() 重算
+#          .dsh-build 摘要(前两步改了字节, 否则 readClientBuildRecord 会失败)。
+#     三步都 fail-fast。不再注入 randomUUID polyfill: 上游自带
 #     不依赖 secure context 的 randomUuid()(util-crypto)
 #   - 分层(hermes-agent 模式): 工具链全部是镜像所有的系统层真二进制 —— uv/pnpm
 #     与 rustup 代理在 /usr/local/bin、rust 工具链树在 /opt/rust、dsh 在
@@ -322,6 +331,8 @@ RUN set -eux; \
 
 # ---------------------------------------------------------------------------
 # 10. 从源码构建 dsh(系统层 /opt/deepseek-harness; 构建产物与镜像绑定)
+#     产物后处理顺序固定: 抽图 -> minify -> 重写构建记录(详见文件头说明)。
+#     esbuild 是构建期专用工具: 装进一次性前缀, 用完在同一层删除, 不进最终镜像。
 # ---------------------------------------------------------------------------
 RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     set -eux; \
@@ -329,8 +340,13 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     cd /opt/deepseek-harness; \
     pnpm install --frozen-lockfile --store-dir /root/.pnpm-store; \
     pnpm run build:official; \
+    npm install --global --prefix /tmp/dsh-build-tools --no-fund --no-audit esbuild@0.25.12; \
+    node /opt/dsh-container-plugin/scripts/extract-inline-assets.js --root /opt/deepseek-harness; \
+    node /opt/dsh-container-plugin/scripts/minify-client.mjs --root /opt/deepseek-harness --esbuild /tmp/dsh-build-tools/bin/esbuild; \
+    node --disable-warning=ExperimentalWarning --experimental-strip-types \
+      /opt/dsh-container-plugin/scripts/refresh-build-record.mjs /opt/deepseek-harness; \
+    rm -rf /tmp/dsh-build-tools; \
     ln -sfn /opt/deepseek-harness/apps/cli/lib/bin.js /usr/local/bin/dsh; \
-    node /opt/dsh-container-plugin/scripts/patch-client.js; \
     chown -R dsh:dsh /opt/deepseek-harness; \
     mkdir -p /etc/dsh-container; \
     # -c 紧凑输出: 冒烟测试按 '"image":"ghcr.io/niyueee/dsh-container"' 精确 grep

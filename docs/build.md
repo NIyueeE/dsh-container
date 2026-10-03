@@ -65,10 +65,12 @@ image-owned binaries and they can never shadow them — but waste space; remove 
 reclaim `~/.rustup`'s ~1GB. The commands live in
 [releasing.md](releasing.md) § Upgrading data volumes to the image-owned toolchain.
 
-The image's browser-side compatibility patch (`container/plugin/scripts/patch-client.js`) is
-intentionally applied at build time and again before every `dsh web` start rather than baked into
-the user layer: the patch target lives in the system layer and resets on image upgrades, so it must
-be reapplied on every boot. It skips gracefully if upstream changes the bundle strings.
+The image post-processes the client artifacts after `pnpm run build:official`, inside the build
+layer: they live in the system layer and reset on image upgrades, so they must be regenerated on
+every build. Large inline images are extracted to files served by the container-adapt plugin
+(`/container-assets/*`), the client bundles are minified with a pinned esbuild, and the upstream
+`.dsh-build` client build record is refreshed afterwards so it keeps matching the delivered
+artifacts. All three steps are fail-fast; see `container/plugin/scripts/`.
 
 ## Example
 

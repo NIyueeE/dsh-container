@@ -49,7 +49,7 @@ the image. There is no login step: the proxy bootstraps the dsh session automati
 | dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable); no runtime auto-update |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`) with optional basic auth |
 | Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |
-| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): session-cookie bootstrap inside dsh, headless-hostile "Open config file" button hidden (`describe` reports no local document), browser-side `isLoopback` patch script |
+| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): session-cookie bootstrap inside dsh, headless-hostile "Open config file" button hidden (`describe` reports no local document), upstream's `__DSH_TRANSPORT__` transport-owner declaration injected into the served index (remote settings/credentials), and `/container-assets/*` serving the build-time-extracted images |
 | Observability | OCI labels, `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`), passwordless sudo; `/home/dsh` is the persisted user layer |
 
@@ -65,8 +65,16 @@ image at `/opt/dsh-container-plugin` and mounted into the web profile via `dsh -
   report `hasDocument: false`, so the button never renders (upstream's own UI logic). Settings
   persist on the mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them per profile in
   `~/.dsh/profiles/<profile>/cordis.patch.yml`; the legacy `settings.yaml` is imported once).
-- **Browser-side `isLoopback` patch** — `scripts/patch-client.js` makes settings/credentials work
-  through the proxy (applied at image build and before every `dsh web` start).
+- **Transport-owner declaration** — upstream's browser code computes `isLoopback` from
+  `location.hostname` unless a shell declares itself the transport owner. The plugin injects
+  `globalThis.__DSH_TRANSPORT__={ownsHost:true}` into the served index — the same declaration
+  upstream's desktop shell and worker-preview tunnel use — so settings/credentials work through
+  the proxy with no change to upstream build artifacts.
+- **Payload post-processing** — three build-time steps run after `pnpm run build:official`:
+  images inlined at ≥ 100 KiB are extracted to `/container-assets/<content-hash>` (served
+  `immutable` by the plugin, fetched only when the screen that uses them opens), the client
+  bundles are minified with esbuild, and the `.dsh-build` record is refreshed so it keeps
+  matching the delivered artifacts.
 
 This plugin is the single adaptation maintenance point. When upstream ships an API that makes part
 of it redundant, the release pipeline deletes that part automatically — the removal shows up in
@@ -86,17 +94,16 @@ that release's commit list (see [docs/upstream-contract.md](docs/upstream-contra
   inside the dsh process at startup and the proxy injects the session cookie into every proxied
   request; browsers never see a token.
 - **Streams, payload & caching** — SSE/WebSocket pass through unbuffered (verified against Caddy
-  2.6) and dsh's 2 s heartbeat survives the hop; a cold page load is **≈5.7 MiB gzip** (≈12.3 MiB
-  raw — upstream ships the client bundles unminified). The index is `no-store` while the
-  content-hashed `/assets/*` tree is served `immutable`, so repeat visits are cheap.
+  2.6) and dsh's 2 s heartbeat survives the hop. The client bundles are post-processed at build
+  time, so a cold page load is **≈1.5 MiB gzip** instead of ≈5.7 MiB: the combined client-plugin
+  bundle drops from 5.07 MiB to ≈0.9 MiB gzip (images inlined at ≥ 100 KiB are extracted and
+  fetched only when their screen opens, and the bundles are minified). The index is `no-store`
+  while the content-hashed `/assets/*` tree is served `immutable`, so repeat visits are cheap.
 - **Telemetry off by default** — the entrypoint sets `DSH_TELEMETRY_MODE=DISABLED`, so the OTel
   feedback uploader never sends anything unless you opt back in. Separate from it, upstream's
   DeepSeek session-log contributor is **on by default** and attaches session-log suffixes to
   DeepSeek API requests — see [docs/security.md](docs/security.md) for what it sends and how to
   turn it off.
-- **Client patch** — the container-adapt plugin's `patch-client.js` makes settings/credentials
-  usable through the proxy (applied at build time and before every `dsh web` start; if upstream
-  changes the bundle strings it warns and skips instead of blocking startup).
 - **Extra args** — pass `dsh web` arguments through the container command, e.g.
   `["--port", "8080"]` (internal port only; exposed port stays `3081`).
 

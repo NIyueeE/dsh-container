@@ -64,21 +64,6 @@ die() {
   exit 1
 }
 
-# 从首页 HTML 提取 connection 客户端 bundle URL 并归一化为绝对路径。
-# 上游 v0.1.7 起 index 注入的是"相对文档"的引用(client-modules 的
-# comboReference 切掉了开头 /, 配合 document-relative app routes), 更早的
-# tag 用 /plugins/??... 绝对形式; 两种都接受, 统一补上前导 / 供 curl 使用。
-extract_connection_bundle_url() {
-  local html="$1" url
-  url="$(grep -oE "plugins/\?\?@deepseek-ai/dsh-client-connection/client\.js&rev=[^\"' ]+" \
-    <<<"$html" | head -n1 || true)"
-  case "$url" in
-    ''|/*) ;;
-    *) url="/$url" ;;
-  esac
-  printf '%s' "$url"
-}
-
 # 桥接 + 端口映射, 与默认部署方式一致(对外端口 3081)。
 cid="$("$DOCKER" run -d --rm --name dsh-smoke -p 3081:3081 \
   -e DSH_HOME=/tmp/dsh-smoke-home \
@@ -293,31 +278,56 @@ dl_gone="$(curl -s -D - -o /dev/null http://127.0.0.1:3081/download/settings.yam
 printf '%s' "$dl_gone" | grep -qi 'content-disposition: attachment' \
   && die "removed download endpoint still serves /download/settings.yaml"
 
-# 前端兼容补丁: upstream dsh 以(相对文档的) plugins/??<id>/client.js&rev=...
-# 形式在首页注入 bundle URL(v0.1.7 前是 /plugins/??... 绝对形式), 提取
-# connection 的单包 URL 后验证补丁。
-connection_bundle_url="$(extract_connection_bundle_url "$index_html")"
-[ -n "$connection_bundle_url" ] \
-  || die "connection client bundle URL not found in served index"
-connection_bundle="$(curl -fsS "http://127.0.0.1:3081${connection_bundle_url}")" \
-  || die "fetching the connection client bundle failed"
-[[ "$connection_bundle" == *'isLoopback: true, // dsh-container remote-proxy patch'* ]] \
-  || die "served connection bundle lacks the isLoopback patch"
-[[ "$connection_bundle" != *'isLoopback: pageLocation === void 0'* ]] \
-  || die "old isLoopback gate still present in the served bundle"
-[[ "$connection_bundle" != *'isLoopback: transport?.ownsHost === true'* ]] \
-  || die "old isLoopback gate still present in the served bundle"
-
-# 非回环 Host 头模拟远程浏览器: Caddy 改写后同样可用。bundle 是静态资源,
-# 不经过 /api 围栏, 无需携带会话 cookie。
-bundle_alt="$(curl -fsS -H 'Host: dsh.test' "http://127.0.0.1:3081${connection_bundle_url}")" \
-  || die "fetching the connection bundle with Host: dsh.test failed"
-[[ "$bundle_alt" == *'isLoopback: true, // dsh-container remote-proxy patch'* ]] \
-  || die "Host: dsh.test bundle lacks the isLoopback patch"
-# 容器适配插件(container/plugin/)必须随镜像安装: 会话 cookie 自举由插件
-# 在 dsh 进程内完成, 浏览器端补丁脚本也在插件包内。
-"$DOCKER" exec "$cid" sh -c 'test -f /opt/dsh-container-plugin/index.js && test -f /opt/dsh-container-plugin/overlay.yml && test -f /opt/dsh-container-plugin/scripts/patch-client.js' \
+# 传输层声明: 容器适配插件把 __DSH_TRANSPORT__={ownsHost:true} 注入服务端索引
+# (替代旧的构建产物字符串补丁)。它是 <head> 里的内联脚本 —— 先于 type="module"
+# 的 bundle 执行, connection 插件的 isLoopback 才读得到(上游唯一消费点)。位置不必
+# 紧贴 <head>(上游自己的 base 注入也在那一段, 两个 tap 的插入顺序会互换)。
+transport_injection='<script>globalThis.__DSH_TRANSPORT__={ownsHost:true}</script>'
+[[ "$index_html" == *"$transport_injection"* ]] \
+  || die "served index lacks the __DSH_TRANSPORT__ ownsHost injection"
+[[ "${index_html%%</head>*}" == *"$transport_injection"* ]] \
+  || die "the transport injection is not inside <head> (it would run after the module scripts)"
+# 非回环 Host 头模拟远程浏览器: 注入与 Host 无关(代理改写后同样可用)。
+index_alt_host="$(curl -fsS -H 'Host: dsh.test' http://127.0.0.1:3081/)" \
+  || die "GET / with Host: dsh.test failed"
+[[ "${index_alt_host%%</head>*}" == *"$transport_injection"* ]] \
+  || die "Host: dsh.test index lacks the transport injection in <head>"
+# 容器适配插件(container/plugin/)必须随镜像安装: 会话 cookie 自举、传输层注入、
+# 抽图路由与三个构建期后处理脚本都在插件包内。
+"$DOCKER" exec "$cid" sh -c 'test -f /opt/dsh-container-plugin/index.js && test -f /opt/dsh-container-plugin/overlay.yml && test -f /opt/dsh-container-plugin/scripts/extract-inline-assets.js && test -f /opt/dsh-container-plugin/scripts/minify-client.mjs && test -f /opt/dsh-container-plugin/scripts/refresh-build-record.mjs && test -d /opt/dsh-container-plugin/assets' \
   || die "container-adapt plugin files missing in the image"
+
+# 客户端产物: 内联大图必须已抽成 /container-assets/<内容哈希> 文件, 产物必须已
+# 压缩(minify 后处理)。合并包是 settings-account 所在的那个 57 模块 combo。
+combo_url="$(grep -oE "plugins/\?\?[^\"' ]*" <<<"$index_html" | grep -m1 'dsh-client-ui-settings-account' || true)"
+case "$combo_url" in
+  ''|/*) ;;
+  *) combo_url="/$combo_url" ;;
+esac
+[ -n "$combo_url" ] || die "settings-account combo bundle URL not found in served index"
+combo_body="$(mktemp)"
+combo_bytes="$(curl -fsS --compressed -o "$combo_body" -w '%{size_download}' "http://127.0.0.1:3081${combo_url}")" \
+  || die "fetching the combined client bundle failed"
+# >=100 KiB 的内联图片 = 至少 133000 个 base64 字符: 抽图后处理一旦没跑就会命中。
+if grep -qE 'data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]{133000,}' "$combo_body"; then
+  die "served client bundle still inlines a large base64 image (extract-inline-assets did not run)"
+fi
+# 上游若自己改为 emit 文件, /container-assets 引用会消失 —— 那是正常演进, 只在下游
+# 真有引用时验证路由; 但"大图内联"永远不允许回归(上面的断言)。
+asset_path="$(grep -oE '/container-assets/[0-9a-f]{16,64}\.(png|jpeg|jpg|webp|gif)' "$combo_body" | head -n1 || true)"
+if [ -n "$asset_path" ]; then
+  asset_headers="$(curl -fsS -D - -o /dev/null "http://127.0.0.1:3081${asset_path}")" \
+    || die "GET ${asset_path} (extracted client image) failed"
+  printf '%s' "$asset_headers" | grep -qi 'content-type: image/' \
+    || die "${asset_path} is not served with an image content type"
+  printf '%s' "$asset_headers" | grep -qi 'cache-control: public, max-age=31536000, immutable' \
+    || die "${asset_path} lacks the immutable Cache-Control header"
+fi
+# minify 断言: 压缩后合并包实测约 0.9 MiB gzip(未压缩基线为 5.06 MiB), 上限留 3 倍
+# 余量。上游显著增长或 minify 步骤被跳过时会在这里失败 —— 那正是需要重新测量的信号。
+[ "$combo_bytes" -lt 3145728 ] \
+  || die "combined client bundle is ${combo_bytes} bytes gzipped; expected < 3 MiB (re-measure if upstream grew)"
+rm -f "$combo_body"
 
 # dsh web 守护/重启: dsh-restart 后由 dsh-web 重新拉起, 新进程会打印
 # 新 token; 等新 token 出现后重新登录, 再验证页面与补丁仍然可用。
@@ -371,15 +381,8 @@ index_restart="$(curl -fsS -b "$cookie_relogin" http://127.0.0.1:3081/)" \
   || die "GET / after restart failed"
 [[ "$index_restart" == *'<title>DeepSeek Harness</title>'* ]] \
   || die "served index.html after restart lacks the expected title"
-bundle_restart_url="$(extract_connection_bundle_url "$index_restart")"
-[ -n "$bundle_restart_url" ] \
-  || die "connection bundle URL not found in served index after restart"
-bundle_restart="$(curl -fsS "http://127.0.0.1:3081${bundle_restart_url}")" \
-  || die "fetching the connection bundle after restart failed"
-[[ "$bundle_restart" == *'isLoopback: true, // dsh-container remote-proxy patch'* ]] \
-  || die "connection bundle after restart lacks the isLoopback patch"
-[[ "$bundle_restart" != *'isLoopback: pageLocation === void 0'* ]] \
-  || die "old isLoopback gate reappeared after restart"
+[[ "${index_restart%%</head>*}" == *"$transport_injection"* ]] \
+  || die "transport injection missing from the index <head> after dsh web restart"
 
 # basic auth 模式: 未带 basic 凭据 401; 带凭据后 token 换 cookie(303),
 # 之后 root 与特权 API 均 200。

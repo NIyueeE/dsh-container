@@ -8,8 +8,8 @@ name: Release prep
 #              agent(dsh 数据在独立 HOME, 模型配置由 secrets 生成成装载期
 #              --patch 覆盖层 —— 不能写扁平的 settings.yaml, 见 prep 步骤注释,
 #              模型走自建中转的 openai-responses 端点): 读上游 diff + 契约文档,
-#              最小化修复(通常是 container/plugin/scripts/
-#              patch-client.js 的候选串); 每次发布(含无漂移)都对照契约文档
+#              最小化修复(通常是 container/plugin/ 的传输层注入或构建期
+#              后处理锚点); 每次发布(含无漂移)都对照契约文档
 #              § Simplification triggers 审视上游新能力, 能干掉 hack 就删掉
 #              (适配层随上游演进保持最小); 结果推 release-prep/<tag> 分支,
 #              报告(含 Adaptation review 段)贴到 tracker issue —— 该报告即

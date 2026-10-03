@@ -139,13 +139,11 @@ to set for remote access, and the proxy injects a dsh session cookie minted at c
 **basic auth (`DSH_PROXY_USER` / `DSH_PROXY_PASSWORD`) is the access control**: anyone who can
 reach port `3081` gets a fully authenticated session (see [security.md](security.md)).
 
-Upstream dsh's browser code still gates the settings/credentials pages on
-`window.location.hostname`, so the Caddy rewrite alone would not make those pages usable in a
-remote browser. The image's container-adapt plugin (`/opt/dsh-container-plugin`, mounted via
-`dsh --patch`) applies the browser-side `isLoopback` patch through its build-time script
-(`scripts/patch-client.js`, also re-run before every `dsh web` start): it treats proxied
-remote browsers as loopback. The patch is idempotent and best-effort — if an upstream dsh version
-changes the bundle strings, it warns and skips instead of blocking startup. The same plugin
+Upstream dsh's browser code still gates the settings/credentials pages on the page authority, so the
+Caddy rewrite alone would not make those pages usable in a remote browser. The image's
+container-adapt plugin (`/opt/dsh-container-plugin`, mounted via `dsh --patch`) injects
+`globalThis.__DSH_TRANSPORT__={ownsHost:true}` into the served index — upstream's own declaration
+for a shell that owns the Host, whose only consumer is the client's `isLoopback`. The same plugin
 bootstraps the session cookie inside the dsh process (token → cookie, reusing a still-valid
 cookie), replacing the old supervisor-side exchange.
 
@@ -461,9 +459,10 @@ methods are additionally hard-pinned to loopback by upstream dsh). The in-contai
 (which rewrites `Host`/`Origin` to loopback) fixes this: remote browsers pass every endpoint. If
 you still see 403, verify you are running an image that contains the Caddy proxy and that the
 browser reaches the published port `3081`. If the settings page instead shows `settings are
-unavailable in this browser`, verify the image contains the container-adapt plugin with its
-browser-side patch script (`/opt/dsh-container-plugin/scripts/patch-client.js`, and that `dsh web`
-was restarted after an update).
+unavailable in this browser`, the served index must carry the
+`__DSH_TRANSPORT__={ownsHost:true}` injection — check that the image contains the container-adapt
+plugin (and that `dsh web` was restarted after an update); an outer proxy that rewrites or strips
+the index body would remove it.
 
 **Podman rootless + bind mounts**
 If you bind-mount a host directory at `/home/dsh`, make sure it is owned by your uid and
@@ -514,31 +513,35 @@ other sources are DevTools' *Emulate CSS media feature prefers-reduced-motion* a
 **Remote access feels slow**
 The proxy is not the bottleneck: WebSocket streams pass through unchanged and dsh's 2 s heartbeat
 arrives with a constant 2001 ms gap (verified through Caddy 2.6 and through an nginx front-end
-configured as above). Transfer size dominates. A cold page load is **≈5.7 MiB gzip (≈12.3 MiB
-uncompressed) across eight requests**; the largest single request is the combined client-plugin
-bundle `plugins/??…` — **5.07 MiB gzip, 10.4 MiB raw, 57 modules** (upstream serves these client
-bundles unminified). Measured over a rate-limited 2 Mbit/s path, that one request takes **20.7 s**
-(≈5 s at 10 Mbit/s). Treat the first load in a fresh browser, after a hard refresh, or after an
-image upgrade as a multi-megabyte download, and everything else as warm.
+configured as above). Transfer size dominates, and this image shrinks it at build time: a cold page
+load is **≈1.5 MiB gzip across eight requests**, against ≈5.7 MiB gzip (≈12.3 MiB raw) for
+upstream's unprocessed payload. Three post-processing steps run after `pnpm run build:official`:
+images inlined at ≥ 100 KiB are extracted to `/container-assets/<content-hash>`, the client bundles
+are minified with esbuild, and the `.dsh-build` record is refreshed to match. The largest remaining
+request is the combined client-plugin bundle `plugins/??…` at **≈0.9 MiB gzip (≈2.9 MiB raw, 57
+modules)**, down from 5.07 MiB gzip (10.4 MiB raw); on a rate-limited 2 Mbit/s path that request
+drops from 20.7 s to ≈3.5 s.
 
 Caching decides whether a repeat visit is nearly free or pays again:
 
 - `/` and `/index.html` are `no-store`: the index is the dynamic boot manifest.
 - The combined bundle and the plugin chunks carry `immutable` plus a `rev` derived from each
   artifact's mtime/ctime/size — so an image upgrade, or even a metadata-only rewrite of those
-  files, invalidates them and the browser re-downloads the full ~5 MiB.
+  files, invalidates them and the browser re-downloads the bundle.
 - The Vite-hashed `/assets/*` tree gets no cache header from dsh itself; this image's proxy adds
   `Cache-Control: public, max-age=31536000, immutable`, so a repeat navigation re-fetches only the
   index (≈6 KiB gzip) instead of ~475 KiB of shell assets.
+- The extracted images (≈3.7 MiB in total) are requested only when the account-onboarding screen
+  that uses them opens, and are `immutable` from then on.
 
 Server-side, dsh re-gzips the combined bundle on every request (there is no compressed-output
-cache): measured ≈0.2 s of CPU per cold request on a 20-core host, proportionally more on a small
-one. On a weak client, the ~10 MiB of unminified JavaScript also has to be parsed before the UI
-becomes interactive. With basic auth enabled, Caddy caches a verified credential, so steady-state
-requests cost ~2–3 ms — but the first request after a Caddy restart or cache expiry pays one full
-bcrypt verification (measured **1.47 s** at the default cost 14, longer on a slow host), which is
-why opening the UI can stall for a second or two right after startup. For anything beyond the LAN,
-put an authenticated TLS reverse proxy in front.
+cache): ≈0.2 s of CPU per cold request on a 20-core host before post-processing, proportionally
+less at the smaller payload; upstream's unminified JavaScript also costs the client more parse time
+than the minified output shipped here. With basic auth enabled, Caddy caches a verified credential,
+so steady-state requests cost ~2–3 ms — but the first request after a Caddy restart or cache expiry
+pays one full bcrypt verification (measured **1.47 s** at the default cost 14, longer on a slow
+host), which is why opening the UI can stall for a second or two right after startup. For anything
+beyond the LAN, put an authenticated TLS reverse proxy in front.
 
 If agent output stops updating in the UI while `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` is enabled,
 the browser may not be attaching the basic-auth credentials to the WebSocket handshake (UA

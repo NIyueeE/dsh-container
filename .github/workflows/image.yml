@@ -125,38 +125,19 @@ jobs:
           print('README parity OK')
           PY
 
-      - name: browser-side patch (patch-client.js) is idempotent and warns on drift
+      - name: container-adapt plugin contract (transport injection + extracted-asset route)
         run: |
           set -euo pipefail
-          tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
-          mkdir -p \
-            "$tmp/dsh/packages/client/connection/lib"
-          cat > "$tmp/dsh/packages/client/connection/lib/client.js" <<'EOF'
-          const handle = {
-            api,
-            isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
-          };
-          EOF
-          node container/plugin/scripts/patch-client.js --dsh-root "$tmp/dsh" >/dev/null
-          node container/plugin/scripts/patch-client.js --dsh-root "$tmp/dsh" >/dev/null
-          grep -q 'isLoopback: true, // dsh-container remote-proxy patch' \
-            "$tmp/dsh/packages/client/connection/lib/client.js"
-          if grep -q 'isLoopback: pageLocation === void 0' \
-            "$tmp/dsh/packages/client/connection/lib/client.js"; then
-            echo "old isLoopback gate still present after patch" >&2
-            exit 1
-          fi
-          if grep -q 'isLoopback: transport?.ownsHost === true' \
-            "$tmp/dsh/packages/client/connection/lib/client.js"; then
-            echo "old isLoopback gate still present after patch" >&2
-            exit 1
-          fi
-          # Version drift must not fail the supervisor: warn and skip with exit 0.
-          cat > "$tmp/dsh/packages/client/connection/lib/client.js" <<'EOF'
-          const handle = { api, isLoopback: somethingElse };
-          EOF
-          node container/plugin/scripts/patch-client.js --dsh-root "$tmp/dsh" >/dev/null 2>&1
+          # 纯 node、无依赖: 断言 __DSH_TRANSPORT__ 注入的位置契约(紧跟 <head>,
+          # 先于 shell 的 module script)与 /container-assets 路由行为(immutable、
+          # 拒绝路径穿越与未知名)。真实镜像上的端到端断言在 tests/smoke.sh。
+          node tests/plugin-unit.mjs
+          # 构建期后处理脚本的语法; 真正执行需要完整 dsh checkout 与 esbuild,
+          # 由镜像构建(Containerfile 第 10 步)与 smoke 断言覆盖。
+          node --check container/plugin/index.js
+          node --check container/plugin/scripts/extract-inline-assets.js
+          node --check container/plugin/scripts/minify-client.mjs
+          node --check container/plugin/scripts/refresh-build-record.mjs
 
       - name: Validate compose example
         run: docker compose -f examples/compose.yaml config --quiet

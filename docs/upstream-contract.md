@@ -13,8 +13,8 @@ dsh**. It has three consumers:
   surface. Fence drift and mis-dispatched older tags fail the run without an agent.
 - The release-prep agent (`.github/workflows/release-prep.yml`) — when drift is detected (or the
   surface is hit), the agent reads this document, compares it against the upstream diff, and
-  repairs this repository (usually by updating the patch anchors in
-  `container/plugin/scripts/patch-client.js`), or exits early with `NO_ACTION_NEEDED`.
+  repairs this repository (usually by re-anchoring the transport-signal injection or the build-time
+  post-processing in `container/plugin/`), or exits early with `NO_ACTION_NEEDED`.
 
 Behavioral assertions (login flow, fence responses, proxy behavior) are enforced end-to-end by
 `tests/smoke.sh` after the image is built. The two layers are complementary: contract.sh decides
@@ -28,7 +28,7 @@ affected enforcement point in `container/*.sh`.
 
 | # | Item | Upstream location (`dsh-v0.1.5-alpha.1`) | Why this image needs it | Enforcement |
 |---|---|---|---|---|
-| 1 | Browser-side `isLoopback` gate compiled from `isLoopback: transport?.ownsHost === true \|\| pageLocation === undefined \|\| isLoopbackHostname(pageLocation.hostname)` | `packages/client/connection/src/client/index.ts:227` | `container/plugin/scripts/patch-client.js` rewrites the built form (`pageLocation === void 0`) to `isLoopback: true` so remote browsers can use settings/credentials; if the expression changes shape the patch silently skips | `contract.sh connection.isLoopback.source` (static) + smoke bundle assertions (behavioral) |
+| 1 | Client transport-owner declaration: `installConnection` computes `isLoopback: transport?.ownsHost === true \|\| pageLocation === undefined \|\| isLoopbackHostname(pageLocation.hostname)`, and `__DSH_TRANSPORT__` is documented as the shell that owns the Host | `packages/client/connection/src/client/index.ts` (`ClientTransportHooks.ownsHost`, `installConnection`) | The container-adapt plugin injects `globalThis.__DSH_TRANSPORT__={ownsHost:true}` into the served index, so a remote browser through the Caddy proxy gets the privileged surface (`isLoopback`) — the same declaration upstream's desktop shell (`apps/web/src/main.ts`) and worker-preview tunnel (`packages/experimental/webworker-runtime/src/client/index.ts`) use. `ownsHost` has exactly one consumer (this `isLoopback` computation), so a partial transport object (no `rpc`/`fetch`/`openStream`/`streamBaseUrl`) keeps the browser HTTP+WebSocket carrier and the document-relative stream URL | `contract.sh connection.isLoopback.source` (static) + `tests/plugin-unit.mjs` (injection position) + smoke index-injection assertions |
 | 2 | Header-based `/api` trust fence (checks `Host`/loopback/`trustedHosts`, `Origin`, `sec-fetch-site`) | `packages/client/connection/src/api-request-trust.ts` | The Caddy proxy rewrites `Host`/`Origin` to loopback and is the only exposure path; the whole remote-access design assumes the fence inspects headers, never TCP source | `contract.sh server.request_fence` + smoke 200/401 assertions on `/api/settings/describe` |
 | 3 | `dsh web` accepts `--port` | `apps/cli` arg pass-through (spec in `apps/cli/tests/args.spec.ts`) | `container/entrypoint.sh` parses `--port` and forwards it; upstream rejects `--host 0.0.0.0` by design, which the image works with (loopback + proxy) | `contract.sh cli.port` |
 | 4 | `dsh web` accepts `--no-open` | same | `container/dsh-web.sh` appends `--no-open` (the container has no browser) | `contract.sh cli.no-open` |
@@ -44,16 +44,17 @@ Notes:
   `agentPreset.*`, `host.pickDirectory`/`host.openPath`, `llm.discoverModels`) that the fence pins
   to loopback via an empty trust list. Their reachability through the proxy is verified
   behaviorally by smoke, not by a string check.
-- `connection.isLoopback.built` (the exact built candidate string) is checked only when the
-  upstream checkout contains `packages/client/connection/lib/client.js`; source builds compile
-  `lib/` during image build, so the built form is verified by smoke against the served bundle.
+- The index injection — not a built bundle — carries item 1, so no built-form string is pinned:
+  the client bundles are upstream artifacts after this image's build post-processing (large inline
+  images extracted, esbuild minification), which is also why the delivered build record must match
+  the delivered artifacts (`refresh-build-record.mjs` after both steps).
 
 ## Warning-level items (never fail the check)
 
 | Item | Meaning when present |
 |---|---|
 | `web.token_url` (`token=` in source) | Informational; the one-time login URL flow is verified behaviorally by smoke (token extraction → `303` cookie exchange → session works) |
-| `web.trustedHosts` | Server-side only (item 3): non-loopback authorities accepted by the fence. Does not affect the browser-side gate patched by item 1, but the agent should confirm that during drift review |
+| `web.trustedHosts` | Server-side only (item 3): non-loopback authorities accepted by the fence. Does not affect the client `isLoopback` computation carried by item 1's injection, but the agent should confirm that during drift review |
 
 ## Behavioral contract (verified by `tests/smoke.sh`, not statically checkable)
 
@@ -72,15 +73,20 @@ Notes:
    `/index.html` — and both must carry `Cache-Control: no-store` (the served index is the dynamic
    boot manifest: its inline bundle URLs and `rev` change every image upgrade, so a cached entry
    would run the old frontend against the new server).
-3. The served connection bundle contains the `isLoopback: true` patch and no longer contains the
-   original gate — including after `dsh-restart`. `index.html` is served untouched (upstream ships
-   its own insecure-context `randomUuid()`; no polyfill is injected).
-4. `settings/describe` reports `hasDocument: false` (the plugin wraps the controller's `describe`,
+3. The served index (both entry paths) carries `globalThis.__DSH_TRANSPORT__={ownsHost:true}`
+   immediately after `<head>` — before the shell's module script — including after `dsh-restart`,
+   so the browser computes `isLoopback: true` with no change to upstream artifacts. Nothing else in
+   the document is rewritten (upstream ships its own insecure-context `randomUuid()`; no polyfill is
+   injected).
+4. The served client bundles are minified and contain no inline image ≥ 100 KiB: the eight account
+   onboarding illustrations are served from `/container-assets/<content-hash>` with `immutable`
+   caching, and the delivered `.dsh-build` record matches the delivered artifacts.
+5. `settings/describe` reports `hasDocument: false` (the plugin wraps the controller's `describe`,
    and flips the provider's `documentPath` on pre-v0.1.7 tags), so the browser never renders the
    "Open settings document" button;
    `/download/settings.yaml` is served by nothing — the path falls through to the SPA fallback
    (HTML, never an attachment).
-5. Data lives at upstream's default `~/.dsh`; the agent workspace is the process cwd
+6. Data lives at upstream's default `~/.dsh`; the agent workspace is the process cwd
    (`$HOME` in the container).
 
 ## Anticipated tightening scenarios
@@ -96,7 +102,7 @@ who owns the response — review it whenever upstream ships a breaking release.
 | New explicit trust switch / deployment-mode env | `contract.sh` (new form of item 2) | agent aligns entrypoint/contract once the contract is updated | agent + contract update |
 | CLI flags / ports / login-flow changes | `contract.sh` items 3–4 → MISS | agent reports HOLD (security posture, no workaround) | human |
 | Fence moves to transport-level trust (unix socket, `SO_PEERCRED`, shared secret) | `contract.sh` item 2 → MISS; behaviorally the smoke 200/401 assertions fail | verify fails → release refused → diagnostics on the tracker issue | human (redesign: Caddy mTLS / unix socket, or an upstream trusted-proxy proposal) |
-| Client bundle integrity checks (SRI / startup checksum) | smoke bundle assertions (static checks may pass — the source form is unchanged) | verify fails → release refused | human (patch script must maintain checksums) |
+| Client bundle integrity checks (SRI / startup checksum) | smoke payload assertions (static checks may pass — the source form is unchanged) | verify fails → release refused | human (the build post-processing must preserve or recompute whatever the check covers) |
 | Session cookie bound to client fingerprint | smoke session assertions | verify fails → release refused | human |
 | Bundling/minification makes anchor strings unstable | `contract.sh` MISS (existing mechanism) | agent derives the new built form | agent |
 
@@ -126,7 +132,8 @@ in the release note (the commits themselves) and the tracker issue (the Adaptati
 
 | Our adaptation | Upstream change that simplifies it | How to detect | Simplification action |
 |---|---|---|---|
-| `patch-client.js` (browser `isLoopback` gate patch) | Browser-side code starts honoring `trustedHosts`/a configurable loopback list (e.g. trust authorities flow into `window.__DSH_BOOT__` or the connection bundle) | grep upstream `packages/client/connection/src/client/index.ts` for `trustedHosts`/config inputs next to `isLoopback` | Delete the patch script, contract item 1, and the smoke bundle assertions |
+| `__DSH_TRANSPORT__` injection (the plugin's index tap) | Upstream's browser code honors a configurable/trusted authority source (e.g. trust authorities flow into the connection bundle, or `trustedHosts` reaches the client) | grep upstream `packages/client/connection/src/client/index.ts` for `trustedHosts`/config inputs next to `isLoopback` | Delete the tap, contract item 1, and the injection assertions in `tests/plugin-unit.mjs` + `tests/smoke.sh` |
+| Build post-processing: `extract-inline-assets.js` (large inline images → served files) + `minify-client.mjs` (esbuild) | Upstream emits large image assets as files instead of inlining them, or minifies its own client bundles | grep an upstream client bundle for `data:image/…;base64` blobs; check the client build config for a minifier | Drop the now-redundant script + its Containerfile step and relax the matching smoke assertion (the "no inline image ≥ 100 KiB" assertion stays as long as it holds) |
 | Plugin session-cookie bootstrap | Upstream ships a headless session mechanism (static cookie file / `--session-cookie`-style flag / pre-seeded signing secret) | grep upstream CLI flags and connection startup for non-browser auth entry points | Drop the bootstrap half of the plugin; align `dsh-web.sh` waiting with the official protocol |
 | Hidden settings-document button (`describe` wrapper in the plugin; `documentPath` flip on pre-v0.1.7 tags) | Upstream adds a headless fallback for `openSettingsDocument` (`{opened:false, path}` like `openAgentPresetDirectory`), a config knob to hide the action, or moves the document into the right-sidebar preview (`dsh-resource://file/...` infrastructure already exists) | read upstream `settings-controller` return types and `SettingsDocumentAction` client code | Delete the wrapper (`forceNoSettingsDocument`) and the `documentPath` flip from the plugin; adjust contract item 7 and the smoke describe assertions |
 | Caddy `Host`/`Origin` rewrite + cookie injection | Upstream allows `--host 0.0.0.0` **and** ships its own auth/TLS — not expected (CLI explicitly rejects it by design) | `contract.sh` CLI checks | No action (expected to stay) |
@@ -146,16 +153,22 @@ table below instead, so the decision record still exists.
 
 | Tag | Scope | Outcome |
 |---|---|---|
-| `dsh-v0.1.7-alpha.1` | 1299-commit diff vs `dsh-v0.1.6-alpha.2`; all five simplification triggers re-checked by hand (`tests/contract.sh`: 9 pass / 0 miss / 1 warn) | **No simplification fires.** The `isLoopback` patch is still required (v0.1.7 added `trustedHosts` server-side only); the `documentPath` flip stays for pre-v0.1.7 tags, which this repository still builds; no headless `openSettingsDocument` fallback landed; `DSH_TELEMETRY_MODE` still gates `session-telemetry-otel`; upstream still rejects `--host 0.0.0.0`. Two gaps found and closed: the index is also served at `/index.html` (the Caddy `@index` rule now matches both entries) and the telemetry mapping had no static anchor (contract item 8) |
+| `dsh-v0.1.7-alpha.1` | 1299-commit diff vs `dsh-v0.1.6-alpha.2`; all five simplification triggers re-checked by hand (`tests/contract.sh`: 9 pass / 0 miss / 1 warn) | **No simplification fires.** The browser-side loopback gate was still patched at that time (v0.1.7 added `trustedHosts` server-side only; the mechanism since became the `__DSH_TRANSPORT__` injection, see contract item 1); the `documentPath` flip stays for pre-v0.1.7 tags, which this repository still builds; no headless `openSettingsDocument` fallback landed; `DSH_TELEMETRY_MODE` still gates `session-telemetry-otel`; upstream still rejects `--host 0.0.0.0`. Two gaps found and closed: the index is also served at `/index.html` (the Caddy `@index` rule now matches both entries) and the telemetry mapping had no static anchor (contract item 8) |
 
 ## Update protocol
 
 When `contract.sh` reports drift for a new upstream tag:
 
 1. Read the upstream diff (or checkout) and identify which contract item changed and why.
-2. If it is item 1: derive the new built-form string and update the candidate list in
-   `container/plugin/scripts/patch-client.js` (keep old candidates if they are merely extended, and
-   keep the header note about the verified upstream revision).
+2. If it is item 1: re-anchor the injection against the new transport contract — the tap lives in
+   `container/plugin/index.js`, its static anchor is the `ownsHost` arm in
+   `packages/client/connection/src/client/index.ts`, and its behavioral anchors are the served-index
+   assertions in `tests/smoke.sh` and `tests/plugin-unit.mjs`. If the source expression keeps
+   `ownsHost` but the client reads the global at a different moment, move the injection instead of
+   reaching for an artifact patch: rewriting upstream build artifacts is **not** part of this
+   repository's adaptation surface. The only thing that runs after `build:official` is the
+   post-processing in `container/plugin/scripts/` (image extraction → minification → build-record
+   refresh), and it must leave a matching record behind.
 3. If it is item 2–8: do **not** improvise a workaround; report the drift for human review — these
    define the image's security posture or the plugin's upstream API surface.
 4. Update this document and `tests/contract.sh` so both describe the new reality.

@@ -128,14 +128,15 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    `dsh` agent (the dsh CLI shipped in this image; the prep job runs in the
    image of the previous release tag, and its model config arrives as a load-time `--patch`
    overlay rather than a flat `settings.yaml` — see the secrets table below), reviews the pre-fetched
-   upstream diff and checkout against the contract, and applies a minimal repair (typically new
-   candidate strings in `container/plugin/scripts/patch-client.js`); drift in security-defining
+   upstream diff and checkout against the contract, and applies a minimal repair (typically
+   re-anchoring the `container/plugin/` transport-signal injection or one of its build-time
+   post-processing steps); drift in security-defining
    contract items is reported, never worked around. On **every** run — drift or not — it also
    checks the § Simplification triggers table in
    [upstream-contract.md](upstream-contract.md) against the upstream diff: when an upstream
-   change makes one of this image's hacks redundant (browser-side loopback gate, cookie
+   change makes one of this image's hacks redundant (the transport-owner injection, cookie
    bootstrap, settings-document button hide via the `describe` wrapper / `documentPath` flip,
-   ...), it deletes the hack instead of keeping
+   inline-image extraction, client minification, ...), it deletes the hack instead of keeping
    it, and reports the outcome in an "Adaptation review" section. It pushes a `release-prep/<tag>`
    branch and posts its report to the tracker issue — that report is the adaptation decision
    record for the tag, and the changes themselves appear in the release's auto-generated commit
