@@ -498,6 +498,19 @@ the `dsh.profile.bundles` list (keep the default `@deepseek-ai/dsh-base` /
 `dsh-restart`. The entrypoint does not rewrite profile manifests automatically — user data on the
 volume is never modified behind your back.
 
+**Some animations look static**
+dsh honours the OS/browser `prefers-reduced-motion` preference (85 stylesheets gate animation on
+it): under `reduce` the running indicator falls back to a still icon, the run shimmer disappears,
+most panel/dialog transitions become instant, and JS-driven animations render their end state. This
+is upstream accessibility behaviour, not a proxy or container effect — and a *stable* subset of
+animations being static points here, whereas streams that freeze mid-run and recover after a reload
+point at the proxy path instead (see "External reverse proxy with TLS (WAN)"). Chromium browsers
+expose no setting for it: on Windows the value mirrors the system "Animation effects" toggle
+(`SPI_GETCLIENTAREAANIMATION`), so Edge reports `reduce` whenever that is off — Remote Desktop
+sessions commonly are. Confirm with `matchMedia('(prefers-reduced-motion: reduce)').matches`; the
+other sources are DevTools' *Emulate CSS media feature prefers-reduced-motion* and a
+`--force-prefers-reduced-motion` launch flag (`edge://version` prints the command line).
+
 **Remote access feels slow**
 The proxy is not the bottleneck: WebSocket streams pass through unchanged and dsh's 2 s heartbeat
 arrives with a constant 2001 ms gap (verified through Caddy 2.6 and through an nginx front-end
