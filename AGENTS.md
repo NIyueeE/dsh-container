@@ -102,7 +102,10 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    every proxied request, and marks **both** index entries (`/` and `/index.html` — upstream's two
    supported entry paths) `Cache-Control: no-store` because the served index is the dynamic boot
    manifest (UI assets are gzip-compressed by dsh's own webserver; Caddy does not
-   re-compress). Browsers never handle the token; authentication
+   re-compress). It additionally marks the Vite-hashed `/assets/*` tree `Cache-Control: public,
+   max-age=31536000, immutable`: dsh sends no cache header for that tree at all, so without it the
+   browser re-fetches ~475 KiB of shell assets on every navigation (the `/plugins/??…` combo and
+   chunk routes already carry `immutable` from dsh itself, and must not be re-declared here). Browsers never handle the token; authentication
    is Caddy's job: `DSH_PROXY_USER` + `DSH_PROXY_PASSWORD` add basic auth (Caddyfile `basicauth`
    directive on the distro caddy 2.6 — renamed `basic_auth` upstream in 2.7; password bcrypt-hashed
    via `caddy hash-password`, fed over stdin). Setting only one auth variable is a startup error,

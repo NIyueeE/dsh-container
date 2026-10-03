@@ -16,7 +16,10 @@
 #      (basic auth / 网络暴露面)。
 #   3. 启动 Caddy 反代监听 0.0.0.0:3081: 把 Host/Origin 改写为回环后转发到
 #      127.0.0.1:$DSH_WEB_PORT, 并注入会话 cookie(UI 资源压缩由上游 dsh 的
-#      webserver 自带 gzip 承担, Caddy 不再重复压缩); 运行期崩溃自动重启
+#      webserver 自带 gzip 承担, Caddy 不再重复压缩); 另外补两条缓存策略:
+#      两个索引入口(/ 与 /index.html)no-store(动态启动清单), 内容哈希的
+#      /assets/* immutable(dsh 自己不发缓存头, 否则每次导航重下约 475 KiB);
+#      运行期崩溃自动重启
 #      (配置错误 fail-fast)。DSH_PROXY_USER + DSH_PROXY_PASSWORD 必须成对设置
 #      以启用 basic auth, 只设置一个直接退出。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080; 容器内默认追加
@@ -193,6 +196,14 @@ generate_caddyfile() {
 	# 浏览器缓存旧启动清单)。
 	@index path / /index.html
 	header @index Cache-Control "no-store"
+	# /assets/* 是 Vite 构建的内容哈希产物(assets/index-<hash>.js、vendor-<hash>.css
+	# 等)。dsh 自己不给这棵前缀树发任何缓存头(实测无 Cache-Control/ETag/
+	# Last-Modified), 浏览器每次导航都要重新下载约 475 KiB(gzip), WAN 上是秒级
+	# 开销; 文件名带内容哈希, 无需再验证即可长期缓存。只补这一棵前缀树 ——
+	# /plugins/??... 合并包与插件分片由 dsh 自己标了 immutable, 索引入口由
+	# @index 禁缓存, 这里都不碰。
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy 127.0.0.1:${WEB_PORT} {
 		header_up Host 127.0.0.1:${WEB_PORT}
 		header_up Origin http://127.0.0.1:${WEB_PORT}

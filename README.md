@@ -85,8 +85,10 @@ that release's commit list (see [docs/upstream-contract.md](docs/upstream-contra
 - **Session bootstrapped** — the container-adapt plugin exchanges dsh's one-time login token
   inside the dsh process at startup and the proxy injects the session cookie into every proxied
   request; browsers never see a token.
-- **Streams & compression** — SSE/WebSocket pass through unbuffered (verified against Caddy 2.6);
-  UI assets are gzip-compressed by dsh's own webserver (≈1.3 MB → ≈360 KB).
+- **Streams, payload & caching** — SSE/WebSocket pass through unbuffered (verified against Caddy
+  2.6) and dsh's 2 s heartbeat survives the hop; a cold page load is **≈5.7 MiB gzip** (≈12.3 MiB
+  raw — upstream ships the client bundles unminified). The index is `no-store` while the
+  content-hashed `/assets/*` tree is served `immutable`, so repeat visits are cheap.
 - **Telemetry off by default** — the entrypoint sets `DSH_TELEMETRY_MODE=DISABLED`, so the OTel
   feedback uploader never sends anything unless you opt back in. Separate from it, upstream's
   DeepSeek session-log contributor is **on by default** and attaches session-log suffixes to

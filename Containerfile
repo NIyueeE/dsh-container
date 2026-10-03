@@ -66,7 +66,10 @@
 #     dsh 的 OTel 反馈上传(上游默认 FEEDBACK_ONLY)不把会话数据发往
 #     harness-telemetry.deepseeksvc.com
 #   - Caddy 反向代理监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后转发到 dsh 的
-#     127.0.0.1:3080(UI 资源压缩由 dsh 自带 webserver 的 gzip 承担);
+#     127.0.0.1:3080(UI 资源压缩由 dsh 自带 webserver 的 gzip 承担); 并补两条
+#     缓存策略: / 与 /index.html 两个索引入口 no-store(动态启动清单),
+#     内容哈希的 /assets/* immutable(dsh 自己不发缓存头, 否则每次导航重下
+#     约 475 KiB);
 #     运行期崩溃自动重启。
 #     dsh 的 /api 信任围栏只检查 HTTP 头, 因此远程浏览器经代理
 #     也能通过全部接口(含设置/凭据等原本仅回环的方法); 安全边界随之转移到代理。

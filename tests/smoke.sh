@@ -135,6 +135,18 @@ index_html="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
 [[ "$index_html" == *'<title>DeepSeek Harness</title>'* ]] \
   || die "served index.html does not contain the expected title"
 
+# /assets/* 是 Vite 构建的内容哈希产物, 但 dsh 自己不给这棵树发任何缓存头
+# (实测无 Cache-Control/ETag/Last-Modified) —— 少了 Caddy 补的 immutable, 浏览器
+# 每次导航都要重下约 475 KiB 的 shell 资源。这里用索引里真正引用的第一个 assets
+# JS 条目验证: 路径可达(200) 且响应带 immutable 头。
+asset_path="$(printf '%s' "$index_html" | grep -o 'assets/[A-Za-z0-9._-]\+\.js' | head -n1)"
+[ -n "$asset_path" ] || die "served index references no hashed /assets JS entry"
+asset_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:3081/$asset_path")"
+[ "$asset_status" = "200" ] || die "GET /$asset_path returned $asset_status, expected 200"
+curl -sS -o /dev/null -D - "http://127.0.0.1:3081/$asset_path" \
+  | grep -qi 'cache-control: public, max-age=31536000, immutable' \
+  || die "GET /$asset_path lacks the immutable Cache-Control header (hashed asset caching not applied)"
+
 # HEALTHCHECK 本身也要能被 Docker 判为 healthy。
 health=""
 for _ in $(seq 1 40); do

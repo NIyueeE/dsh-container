@@ -169,13 +169,22 @@ an authenticated reverse proxy (nginx, Caddy, Traefik, ...). The proxy config ma
 mistakes silently break the Web UI's event streams while the page itself still loads:
 
 - **Missing WebSocket upgrade headers.** The UI streams agent events over WebSocket
-  (`/api/remote.mux`). dsh answers handshakes without `Upgrade`/`Connection`
-  with `426 Upgrade Required`, and proxies that strip these hop-by-hop headers (nginx's default)
-  kill the streams: agent output never updates, and the container journal fills with periodic
-  `aborting with incomplete response ... context canceled` errors.
-- **Buffering + short idle timeouts.** Streams that sit idle (agent thinking, no output) longer
-  than the proxy's read timeout get cut — with nginx's default `proxy_read_timeout 60s` that shows
-  up as an error roughly every minute. Disable response buffering and raise the timeouts.
+  (`/api/remote.mux`). Without `Upgrade`/`Connection` the handshake is answered with a plain
+  `404 Not Found` (older dsh tags answered `426 Upgrade Required`), and proxies that strip these
+  hop-by-hop headers (nginx's default) kill the streams outright. The page itself still loads and
+  renders — an unauthenticated `GET /` is a normal `200` — so the deployment *looks* healthy while
+  **every live element is frozen**: streaming output never appears, and running indicators, tool
+  spinners, job progress and approval prompts never update until a manual refresh. Measured through
+  a naive nginx in front of the container: `GET /` → `200`, `GET /api/remote.mux` → `404`, and
+  0 % of a 15 s probe window had a live event socket.
+- **Buffering + short idle timeouts.** dsh sends a WebSocket ping every 2 s, so a proxy that idles
+  streams out after 60 s (nginx's default `proxy_read_timeout 60s`) is already too aggressive:
+  a stream that sits quiet (agent thinking, no output) can still be cut, and an idle timeout
+  *shorter* than the heartbeat cuts every connection in a loop. Measured with `proxy_read_timeout 1s`:
+  7 disconnects in 15 s and ≈23 % of the time with no live socket — the UI intermittently freezes
+  for the reconnect window (0.5–10 s backoff), and the container log fills with periodic
+  `aborting with incomplete response ... context canceled` errors. Disable response buffering and
+  raise the timeouts well above the heartbeat (`proxy_read_timeout 3600s`).
 
 A minimal nginx example that works:
 
@@ -197,6 +206,23 @@ location / {
 
 Caddy and Traefik forward WebSocket upgrades and stream responses by default; with those you only
 need the raised idle timeouts (Caddy's defaults are already unlimited).
+
+Verify the whole path (outer proxy → container) in ten seconds — the handshake must come back
+`101 Switching Protocols`; `404` means an intermediary swallowed the upgrade headers, and a
+connection that opens but closes within a few seconds means an idle timeout below the 2 s
+heartbeat. Add your proxy's credentials when it authenticates:
+
+```sh
+# 101 = the event stream survives the hop; 404 = upgrade headers stripped; 401 = auth.
+curl -sS -i --max-time 5 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  http://your-host:3081/api/remote.mux | head -n 1
+```
+
+For a continuous check, connect a real WebSocket client and confirm a ping frame roughly every
+2 s with no disconnects over a minute — a client that only sees closes every couple of seconds is
+talking through a too-short read timeout, not to a broken container.
 
 ### Public deployment (nginx in front)
 
@@ -473,12 +499,34 @@ the `dsh.profile.bundles` list (keep the default `@deepseek-ai/dsh-base` /
 volume is never modified behind your back.
 
 **Remote access feels slow**
-The proxy itself does not buffer: SSE responses are flushed immediately and WebSocket streams pass
-through unchanged (verified against Caddy 2.6). The dominant remote-side factor is transfer size —
-UI assets are ~1.3 MB uncompressed, gzip-compressed by dsh's own webserver (≈360 KB).
-Remaining factors are inherent to the setup: `3081` is plain HTTP (no HTTP/2 multiplexing), every
-request costs one TCP round trip, and with basic auth enabled each request also pays one bcrypt
-check (~50–100 ms). For anything beyond the LAN, put an authenticated TLS reverse proxy in front.
+The proxy is not the bottleneck: WebSocket streams pass through unchanged and dsh's 2 s heartbeat
+arrives with a constant 2001 ms gap (verified through Caddy 2.6 and through an nginx front-end
+configured as above). Transfer size dominates. A cold page load is **≈5.7 MiB gzip (≈12.3 MiB
+uncompressed) across eight requests**; the largest single request is the combined client-plugin
+bundle `plugins/??…` — **5.07 MiB gzip, 10.4 MiB raw, 57 modules** (upstream serves these client
+bundles unminified). Measured over a rate-limited 2 Mbit/s path, that one request takes **20.7 s**
+(≈5 s at 10 Mbit/s). Treat the first load in a fresh browser, after a hard refresh, or after an
+image upgrade as a multi-megabyte download, and everything else as warm.
+
+Caching decides whether a repeat visit is nearly free or pays again:
+
+- `/` and `/index.html` are `no-store`: the index is the dynamic boot manifest.
+- The combined bundle and the plugin chunks carry `immutable` plus a `rev` derived from each
+  artifact's mtime/ctime/size — so an image upgrade, or even a metadata-only rewrite of those
+  files, invalidates them and the browser re-downloads the full ~5 MiB.
+- The Vite-hashed `/assets/*` tree gets no cache header from dsh itself; this image's proxy adds
+  `Cache-Control: public, max-age=31536000, immutable`, so a repeat navigation re-fetches only the
+  index (≈6 KiB gzip) instead of ~475 KiB of shell assets.
+
+Server-side, dsh re-gzips the combined bundle on every request (there is no compressed-output
+cache): measured ≈0.2 s of CPU per cold request on a 20-core host, proportionally more on a small
+one. On a weak client, the ~10 MiB of unminified JavaScript also has to be parsed before the UI
+becomes interactive. With basic auth enabled, Caddy caches a verified credential, so steady-state
+requests cost ~2–3 ms — but the first request after a Caddy restart or cache expiry pays one full
+bcrypt verification (measured **1.47 s** at the default cost 14, longer on a slow host), which is
+why opening the UI can stall for a second or two right after startup. For anything beyond the LAN,
+put an authenticated TLS reverse proxy in front.
+
 If agent output stops updating in the UI while `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` is enabled,
 the browser may not be attaching the basic-auth credentials to the WebSocket handshake (UA
 behavior); verify with a WebSocket client that sends `Authorization`, or terminate authentication
