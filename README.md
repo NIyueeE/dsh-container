@@ -95,8 +95,8 @@ that release's commit list (see [docs/upstream-contract.md](docs/upstream-contra
   request; browsers never see a token.
 - **Streams, payload & caching** — SSE/WebSocket pass through unbuffered (verified against Caddy
   2.6) and dsh's 2 s heartbeat survives the hop. The client bundles are post-processed at build
-  time, so a cold page load is **≈1.5 MiB gzip** instead of ≈5.7 MiB: the combined client-plugin
-  bundle drops from 5.07 MiB to ≈0.9 MiB gzip (images inlined at ≥ 100 KiB are extracted and
+  time, so a cold page load measured in a headless browser is **≈1.6 MiB on the wire** instead of
+  ≈5.8 MiB: the combined client-plugin bundle drops from 5.06 MiB to ≈1.0 MiB gzip (images inlined at ≥ 100 KiB are extracted and
   fetched only when their screen opens, and the bundles are minified). The index is `no-store`
   while the content-hashed `/assets/*` tree is served `immutable`, so repeat visits are cheap.
 - **Telemetry off by default** — the entrypoint sets `DSH_TELEMETRY_MODE=DISABLED`, so the OTel

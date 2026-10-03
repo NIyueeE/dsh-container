@@ -513,13 +513,22 @@ other sources are DevTools' *Emulate CSS media feature prefers-reduced-motion* a
 The proxy is not the bottleneck: WebSocket streams pass through unchanged and dsh's 2 s heartbeat
 arrives with a constant 2001 ms gap (verified through Caddy 2.6 and through an nginx front-end
 configured as above). Transfer size dominates, and this image shrinks it at build time: a cold page
-load is **≈1.5 MiB gzip across eight requests**, against ≈5.7 MiB gzip (≈12.3 MiB raw) for
-upstream's unprocessed payload. Three post-processing steps run after `pnpm run build:official`:
-images inlined at ≥ 100 KiB are extracted to `/container-assets/<content-hash>`, the client bundles
-are minified with esbuild, and the `.dsh-build` record is refreshed to match. The largest remaining
-request is the combined client-plugin bundle `plugins/??…` at **≈0.9 MiB gzip (≈2.9 MiB raw, 57
-modules)**, down from 5.07 MiB gzip (10.4 MiB raw); on a rate-limited 2 Mbit/s path that request
-drops from 20.7 s to ≈3.5 s.
+load measured in a headless browser is **≈1.6 MiB on the wire**, against ≈5.8 MiB for upstream's
+unprocessed payload (the client-plugin combos alone: 1187 KiB vs 5394 KiB). Three post-processing
+steps run after `pnpm run build:official`: images inlined at ≥ 100 KiB are extracted to
+`/container-assets/<content-hash>`, the client bundles are minified with esbuild (whitespace and
+syntax only — see below), and the `.dsh-build` record is refreshed to match. The largest remaining
+request is the combined client-plugin bundle `plugins/??…` at **≈1.0 MiB gzip (≈3.6 MiB raw, 57
+modules)**, down from 5.06 MiB gzip (10.0 MiB raw); on a rate-limited 2 Mbit/s path that request
+drops from ≈21 s to ≈4.2 s.
+
+The minifier deliberately stops short of renaming identifiers. dsh concatenates several client
+artifacts into **one response** (`plugins/??a/client.js,b/client.js…`) and the browser evaluates
+that as a single script, so every artifact's top-level declarations share one scope while the
+per-module factories run later — with identifiers renamed, a module body can call a *different*
+file's same-named helper and the whole client fails to boot (measured: 58 of 65 entries failed to
+activate with `--minify`, zero with `--minify-whitespace --minify-syntax`). Keeping upstream's
+identifiers costs ≈0.1 MiB gzip on this bundle and keeps the boot deterministic.
 
 Caching decides whether a repeat visit is nearly free or pays again:
 

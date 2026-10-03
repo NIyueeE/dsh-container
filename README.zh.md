@@ -67,7 +67,7 @@ sudo systemctl enable --now dsh.service
 - **端口模型**——`dsh web` 监听 `127.0.0.1:3080`(上游拒绝 `--host 0.0.0.0`);对外端口是 `3081`,示例默认发布在宿主回环地址。
 - **代理即安全边界**——Caddy 把 `Host`/`Origin` 改写为回环,远程浏览器因此通过 dsh 的 `/api` 信任围栏,包括原本仅限回环的设置/凭据接口。任何能访问 `3081` 的人都获得完全控制:请启用 basic auth(`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`,成对设置,否则守护脚本 dsh-web 拒绝启动)并保持端口防火墙关闭。
 - **会话自动引导**——容器适配插件在 dsh 进程内兑换一次性登录 token(启动时),代理再把会话 cookie 注入每个请求;浏览器不会接触 token。
-- **流、体积与缓存**——SSE/WebSocket 无缓冲直通(已对 Caddy 2.6 验证),dsh 的 2 秒心跳可穿过该跳。客户端 bundle 在构建期做了后处理,冷启动一次约 **1.5 MiB(gzip)** 而非约 5.7 MiB:57 模块合并包从 5.07 MiB 降到约 0.9 MiB gzip(≥ 100 KiB 的内联图片被抽出,只在打开对应界面时才取;bundle 同时被压缩)。索引 `no-store`,内容哈希的 `/assets/*` 由代理标 `immutable`,重复访问因此很便宜。
+- **流、体积与缓存**——SSE/WebSocket 无缓冲直通(已对 Caddy 2.6 验证),dsh 的 2 秒心跳可穿过该跳。客户端 bundle 在构建期做了后处理,无头浏览器实测冷启动整页约 **1.6 MiB(线上字节)** 而非约 5.8 MiB:57 模块合并包从 5.06 MiB 降到约 1.0 MiB gzip(≥ 100 KiB 的内联图片被抽出,只在打开对应界面时才取;bundle 只压空白与语法,不改标识符)。索引 `no-store`,内容哈希的 `/assets/*` 由代理标 `immutable`,重复访问因此很便宜。
 - **遥测默认关闭** —— entrypoint 设置 `DSH_TELEMETRY_MODE=DISABLED`,OTel 反馈上报在你显式打开前不会发送任何内容。与之独立的是上游的 DeepSeek 会话日志贡献者,它**默认开启**,会把会话日志后缀附加到 DeepSeek API 请求上——发送内容与关闭方式见 [docs/security.md](docs/security.md)。
 - **附加参数**——通过容器 command 透传 `dsh web` 参数,例如 `["--port", "8080"]`(仅改内部端口;对外端口仍为 `3081`)。
 

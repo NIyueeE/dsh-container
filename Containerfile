@@ -43,8 +43,10 @@
 #       1. extract-inline-assets.js 把 >=100 KiB 的内联 data URL 图片抽成真实
 #          文件(8 张引导插画占合并包 49%, 且每个用户只用得到 1 张), 由插件的
 #          /container-assets 路由按内容哈希 + immutable 提供;
-#       2. minify-client.mjs 用 esbuild(--minify --keep-names) 逐包压缩客户端
-#          产物(上游不压缩), 冷启动 JS 体积与解析量大幅下降;
+#       2. minify-client.mjs 用 esbuild(--minify-whitespace --minify-syntax) 逐包压缩
+#          客户端产物(上游不压缩), 冷启动 JS 体积与解析量大幅下降。**必须保留标识符**:
+#          同一 combo 里多个产物共享一个脚本作用域, 改名后模块 body 会调到别的文件
+#          的同名 helper, 客户端直接起不来(无头浏览器实测 58/65 插件激活失败);
 #       3. refresh-build-record.mjs 用上游自己的 writeClientBuildRecord() 重算
 #          .dsh-build 摘要(前两步改了字节, 否则 readClientBuildRecord 会失败)。
 #     三步都 fail-fast。不再注入 randomUUID polyfill: 上游自带

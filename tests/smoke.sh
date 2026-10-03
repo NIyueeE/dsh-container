@@ -326,7 +326,7 @@ if [ -n "$asset_path" ]; then
   printf '%s' "$asset_headers" | grep -qi 'cache-control: public, max-age=31536000, immutable' \
     || die "${asset_path} lacks the immutable Cache-Control header"
 fi
-# minify 断言: 压缩后合并包实测约 0.9 MiB gzip(未压缩基线为 5.06 MiB), 上限留 3 倍
+# minify 断言: 压缩后合并包实测约 1.0 MiB 线上字节(未处理基线为 5.06 MiB), 上限留 3 倍
 # 余量。上游显著增长或 minify 步骤被跳过时会在这里失败 —— 那正是需要重新测量的信号。
 [ "$combo_bytes" -lt 3145728 ] \
   || die "combined client bundle is ${combo_bytes} bytes gzipped; expected < 3 MiB (re-measure if upstream grew)"
