@@ -303,16 +303,28 @@ index_alt_host="$(curl -fsS -H 'Host: dsh.test' http://127.0.0.1:3081/)" \
 # 客户端产物: 内联大图必须已抽成 /container-assets/<内容哈希> 文件, 产物必须已
 # 压缩(minify 后处理)。合并包是 settings-account 所在的那个 57 模块 combo。
 combo_url="$(grep -oE "plugins/\?\?[^\"' ]*" <<<"$index_html" | grep -m1 'dsh-client-ui-settings-account' || true)"
+# 服务端渲染的索引把 URL 里的 & 转义成 &amp; —— 直接拿去 curl 会 404(参数名变成
+# "amp;rev")。注意 bash 的 ${var//pat/rep} 里替换串的 & 表示"匹配到的文本", 必须写成
+# \& 才是字面量 &, 否则等于没替换。
+combo_url="${combo_url//&amp;/\&}"
 case "$combo_url" in
   ''|/*) ;;
   *) combo_url="/$combo_url" ;;
 esac
 [ -n "$combo_url" ] || die "settings-account combo bundle URL not found in served index"
+case "$combo_url" in
+  *'&rev='*) ;;
+  *) die "extracted combo URL has no rev parameter (did the index escaping change?): ${combo_url:0:120}" ;;
+esac
 combo_body="$(mktemp)"
 combo_bytes="$(curl -fsS --compressed -o "$combo_body" -w '%{size_download}' "http://127.0.0.1:3081${combo_url}")" \
   || die "fetching the combined client bundle failed"
-# >=100 KiB 的内联图片 = 至少 133000 个 base64 字符: 抽图后处理一旦没跑就会命中。
-if grep -qE 'data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]{133000,}' "$combo_body"; then
+# 抽图阈值是"解码后 >= 100 KiB" = base64 载荷 >= 136536 字符(4*ceil(102400/3))。
+# 用 grep -oE + awk 而不是 `{136536,}` 这类巨大重复量词: 部分 grep(如 Debian 13 的
+# 3.11)对这种量词直接报 "Regular expression too big" 并以 2 退出, 而 if 会把非零
+# 当成"没命中", 断言就静默失效了。抽图后处理一旦没跑, 这里必然命中。
+if grep -oE 'base64,[A-Za-z0-9+/=]+' "$combo_body" \
+  | awk 'length($0) >= 136536 { hit = 1 } END { exit hit ? 0 : 1 }'; then
   die "served client bundle still inlines a large base64 image (extract-inline-assets did not run)"
 fi
 # 上游若自己改为 emit 文件, /container-assets 引用会消失 —— 那是正常演进, 只在下游
