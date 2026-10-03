@@ -56,6 +56,40 @@ print('README parity OK')
 PY
 ```
 
+## Verifying a processed payload in a headless browser
+
+The three post-processing steps rewrite upstream client artifacts, and dsh serves several of them
+concatenated into one response, so static checks are not enough — the payload has to boot in a real
+browser. The upstream workspace already ships Playwright; run the processed tree as an **isolated
+second instance** so the live one keeps serving the image's artifacts:
+
+```sh
+cp -a /opt/deepseek-harness /tmp/dsh-min                       # private copy of the install
+npm install --global --prefix /tmp/dsh-build-tools esbuild@0.25.12
+node /opt/dsh-container-plugin/scripts/extract-inline-assets.js --root /tmp/dsh-min
+node /opt/dsh-container-plugin/scripts/minify-client.mjs --root /tmp/dsh-min \
+  --esbuild /tmp/dsh-build-tools/bin/esbuild
+node --disable-warning=ExperimentalWarning --experimental-strip-types \
+  /opt/dsh-container-plugin/scripts/refresh-build-record.mjs /tmp/dsh-min
+
+# isolated instance from the copy: own HOME/DSH_HOME, own cookie dir via the overlay's
+# `config.runtimeDir` (see container/plugin/overlay.yml) — never the live /tmp/dsh-caddy
+node /tmp/dsh-min/apps/cli/lib/bin.js --patch /tmp/min-overlay.yml --profile web \
+  --port 3092 --no-open
+
+# browser: the vendored Playwright, then drive the page with the instance's session cookie
+node /opt/deepseek-harness/node_modules/.pnpm/playwright@1.61.1/node_modules/playwright/cli.js \
+  install --with-deps chromium
+```
+
+What must hold on the processed tree: zero console/page errors, **every** `__DSH_BOOT__.entries`
+entry activated (a partial boot logs `web boot: N entries did not activate`), the settings panel
+opening (that path depends on the injected `__DSH_TRANSPORT__` row), and the extracted
+`/container-assets/*.png` files fetching and decoding. A payload can pass `node --check` and the
+loader-registration self-check and still fail here: identifier-renaming minification did exactly
+that (58 of 65 entries failed, because concatenated artifacts share one script scope and renamed
+helpers collide across files — see `container/plugin/scripts/minify-client.mjs`).
+
 ## CI lanes
 
 `image.yml` classifies every push and pull request from its **real diff**:

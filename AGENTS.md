@@ -275,4 +275,8 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
    assertions: the served index carries the `__DSH_TRANSPORT__` row inside `<head>`, the plugin's
    own `ctx.logger` line reaches the container log, the served combined bundle inlines no image
    ≥ 100 KiB, `/container-assets/<hash>` answers with `image/*` + `immutable`, and the delivered
-   build record matches the delivered artifacts.
+   build record matches the delivered artifacts. **If you change the minification profile, also
+   verify a processed tree in a headless browser** (`docs/development.md` § Verifying a processed
+   payload in a headless browser): the client artifacts share one script scope once dsh
+   concatenates them, and renaming identifiers there breaks the boot in ways no static check
+   catches.
