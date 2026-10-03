@@ -3,13 +3,15 @@
 #   1. 启动 `dsh web`(输出写入日志文件并 tail 镜像到 stdout, 容器日志仍可见),
 #      退出/崩溃后自动重新拉起; 配合 `dsh-restart` 可在容器内部重启 dsh web。
 #      启动命令挂载镜像自带的容器适配插件 overlay(--patch, launcher flag,
-#      必须位于 `web` 之前): 会话 cookie 自举由插件在 dsh 进程内完成, 不再
-#      由本脚本 grep 日志 token + curl 交换。
+#      必须位于 `web` 之前): 会话 cookie 自举、传输层声明注入、(构建期抽出的)
+#      图片路由都在插件内完成, 不再由本脚本 grep 日志 token + curl 交换。
 #   2. 把插件写出的会话 cookie(/tmp/dsh-caddy/session-cookie)当状态读取:
 #      文件存在且非空 ⇔ 插件当前持有一个可用 cookie; 本脚本只在文件缺失时
 #      等待它出现, 之后每轮比较内容, 变了才重建 Caddyfile 并重启 Caddy ——
 #      没有 mtime 握手(复用旧 cookie 时插件不写盘, "必须看到一次写入"是错的
-#      同步信号)。dsh 的签名密钥持久化在数据卷
+#      同步信号)。这个路径是本脚本与插件的共享契约(插件侧 Config.runtimeDir
+#      默认值相同; 覆写插件配置就必须同步这里的 RUNTIME_DIR)。dsh 的签名密钥
+#      持久化在数据卷
 #      凭据库中, cookie 默认 30 天有效、跨进程/跨容器重启有效 —— 插件会复用
 #      仍被接受的旧 cookie, 不重复换取。dsh 自身的浏览器围栏
 #      (3080 直连无 cookie 仍 401)原样保留, 3081 上的鉴权由 Caddy 承担

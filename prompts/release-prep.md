@@ -23,7 +23,7 @@ New upstream tag: **$NEW_TAG** (also exported as environment variable `NEW_TAG`)
 | `/tmp/upstream` | Shallow checkout of upstream dsh at `$NEW_TAG` |
 | `/tmp/upstream-diff.json` | GitHub compare payload (previous release tag → `$NEW_TAG`), or a single-commit view if no previous tag existed |
 | `tests/contract.sh` | The executable form of the contract (the check that reported drift) |
-| `container/plugin/` | The single adaptation point: `index.js` (cookie bootstrap, settings-document button hide via the provider `documentPath` flip, the `__DSH_TRANSPORT__` index injection, the `/container-assets` route), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
+| `container/plugin/` | The single adaptation point: `index.js` (cookie bootstrap, settings-document button hide via the provider `documentPath` flip, the `__DSH_TRANSPORT__` index-injection row, the `/container-assets` route, the logger exporter), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
 | `tests/smoke.sh` | Behavioral gate (read-only for you — docker is not available in your environment) |
 
 Environment: `IS_ANCESTOR=yes` when the compare payload shows `$NEW_TAG` is *behind* the previously

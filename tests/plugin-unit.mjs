@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-// 容器适配插件的单元验证(无镜像、无网络): 断言两件"只靠代码就能钉住"的契约 ——
-//   1. 服务端索引注入 __DSH_TRANSPORT__={ownsHost:true}, 且位置在 <head> 之后
-//      (必须先于 type="module" 的 bundle 执行, connection 插件才读得到);
-//   2. /container-assets 路由按内容哈希服务抽出的图片(immutable 缓存头),
-//      并且拒绝未知名/路径穿越。
-// 端到端效果(真实浏览器/真实 dsh)由 tests/smoke.sh 在镜像里断言。
+// 容器适配插件的单元验证(无镜像、无网络): 断言"只靠代码就能钉住"的契约 ——
+//   1. 向上游的结构化索引注入表推的是标准行
+//      ({kind:'global', name:'__DSH_TRANSPORT__', value:{ownsHost:true}}), 由上游渲染
+//      进 <head>(必须先于 type="module" 的 bundle 执行, connection 插件才读得到);
+//   2. Config 是 Standard Schema 校验器: 默认值/覆写生效, 非法输入被拒;
+//   3. /container-assets 路由按内容哈希服务抽出的图片(immutable 缓存头),
+//      并且拒绝未知名/路径穿越;
+//   4. 日志走 ctx.logger, 且自接的 exporter 只放行本插件自己的行
+//      (本 profile 没有任何 console exporter, 少了它就等于没有日志);
+//   5. settings/describe 被包裹成 hasDocument:false。
+// 端到端效果(真实 dsh / 真实浏览器)由 tests/smoke.sh 在镜像里断言。
 // 用法: node tests/plugin-unit.mjs
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'

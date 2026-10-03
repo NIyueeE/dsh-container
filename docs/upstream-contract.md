@@ -160,8 +160,8 @@ table below instead, so the decision record still exists.
 When `contract.sh` reports drift for a new upstream tag:
 
 1. Read the upstream diff (or checkout) and identify which contract item changed and why.
-2. If it is item 1: re-anchor the injection against the new transport contract — the tap lives in
-   `container/plugin/index.js`, its static anchor is the `ownsHost` arm in
+2. If it is item 1: re-anchor the transport-signal declaration against the new contract — the row is
+   contributed by `container/plugin/index.js`, its static anchor is the `ownsHost` arm in
    `packages/client/connection/src/client/index.ts`, and its behavioral anchors are the served-index
    assertions in `tests/smoke.sh` and `tests/plugin-unit.mjs`. If the source expression keeps
    `ownsHost` but the client reads the global at a different moment, move the injection instead of

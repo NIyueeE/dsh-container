@@ -48,7 +48,7 @@ function flag(name, fallback) {
   return at >= 0 && process.argv[at + 1] !== undefined ? process.argv[at + 1] : fallback
 }
 
-const root = resolve(flag('root', process.env.DSH_CLIENT_PATCH_ROOT ?? DEFAULT_ROOT))
+const root = resolve(flag('root', DEFAULT_ROOT))
 const outDir = resolve(flag('out', DEFAULT_OUT))
 const minBytes = Number(flag('min-bytes', String(DEFAULT_MIN_BYTES)))
 if (!Number.isSafeInteger(minBytes) || minBytes < 1) {

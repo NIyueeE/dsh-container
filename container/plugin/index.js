@@ -56,11 +56,13 @@ export const name = 'dsh-container-adapt'
 export const inject = ['webServer', 'connection', 'settings', 'settingsController']
 
 /**
- * 会话 cookie 状态文件所在目录: 默认值与 `container/dsh-web.sh` 共享(监督器从同一
- * 路径读取)。它是**实例级**参数而非部署配置 —— 需要跑隔离实例(本机验证第二个
- * dsh web)时, 在 overlay 条目的 `config:` 里覆写, 而不是靠环境变量:
+ * 会话 cookie 状态文件所在目录: 默认值与 `container/dsh-web.sh` 的 `RUNTIME_DIR` 共享
+ * (监督器从同一路径读取)。它是**实例级**参数而非部署配置 —— 需要跑隔离实例(本机验证
+ * 第二个 dsh web)时, 在 overlay 条目的 `config:` 里覆写, 而不是靠环境变量:
  * 上游规则明确"a `DEFAULT_*` constant or test hook is not configurability",
  * 可变的实例参数应当是可校验的 `Config` 字段。
+ * 注意: 覆写它必须同时改 `dsh-web.sh` 的 `RUNTIME_DIR`, 否则监督器等不到 cookie 文件
+ * 会在有界等待后 fail-fast(这也是正式部署不传 config 的原因)。
  */
 const DEFAULT_RUNTIME_DIR = '/tmp/dsh-caddy'
 const COOKIE_FILENAME = 'session-cookie'

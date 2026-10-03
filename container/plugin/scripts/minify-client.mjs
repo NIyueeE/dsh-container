@@ -34,7 +34,9 @@ function flag(name, fallback) {
   return at >= 0 && process.argv[at + 1] !== undefined ? process.argv[at + 1] : fallback
 }
 
-const esbuild = flag('esbuild', process.env.DSH_ESBUILD ?? 'esbuild')
+// esbuild 可执行文件由调用方(Containerfile)显式传入固定版本的绝对路径; 缺省回退到
+// PATH 上的 esbuild, 便于本地手动跑。
+const esbuild = flag('esbuild', 'esbuild')
 const root = resolve(flag('root', DEFAULT_ROOT))
 
 const probe = spawnSync(esbuild, ['--version'], { encoding: 'utf8' })

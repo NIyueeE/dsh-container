@@ -18,6 +18,7 @@ tests/
   smoke.sh               # end-to-end image smoke test (CI + `just test`)
   contract.sh            # static upstream-contract check against a dsh-v* tag
   triage-diff.sh         # code-level agent admission gate for release-prep (diff triage)
+  plugin-unit.mjs        # container-adapt plugin contract (injection row, Config, route, logger)
 prompts/
   release-prep.md        # system prompt for the headless dsh release agent
 docs/

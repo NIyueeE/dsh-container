@@ -530,8 +530,9 @@ Caching decides whether a repeat visit is nearly free or pays again:
 - The Vite-hashed `/assets/*` tree gets no cache header from dsh itself; this image's proxy adds
   `Cache-Control: public, max-age=31536000, immutable`, so a repeat navigation re-fetches only the
   index (≈6 KiB gzip) instead of ~475 KiB of shell assets.
-- The extracted images (≈3.7 MiB in total) are requested only when the account-onboarding screen
-  that uses them opens, and are `immutable` from then on.
+- The extracted images (≈3.7 MiB in total) live under `/container-assets/*` (served by the
+  container-adapt plugin, not by Caddy's `/assets/*` rule) and are requested only when the
+  account-onboarding screen that uses them opens; they are `immutable` from then on.
 
 Server-side, dsh re-gzips the combined bundle on every request (there is no compressed-output
 cache): ≈0.2 s of CPU per cold request on a 20-core host before post-processing, proportionally
