@@ -14,6 +14,10 @@
 //      scripts/extract-inline-assets.js —— 上游把 8 张引导插画内联成 base64,
 //      占合并包 49%, 抽成文件后只在真正进入该页时才请求。
 //
+// 遵循上游插件规范: 导出 `name`/`inject`/`apply`/`Config`; 只用 inject 声明过的
+// 服务; 资源注册走 ctx.effect/ctx.on 的 disposer; 日志走 ctx.logger; 实例级可变
+// 参数是 Config 字段(从 overlay 条目的 config 传入), 不读环境变量。
+//
 // 上游核对(机制随版本演化, 两条路都保留):
 //   - dsh-v0.1.7-alpha.1 起: settings-controller 的 describe() 硬编码
 //     hasDocument: true, provider 接口(SettingsProvider → SettingsForms)已
@@ -45,15 +49,48 @@
 // 杀掉容器, 避免重启策略下的崩溃循环)。
 import { createReadStream, existsSync } from 'node:fs'
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
 export const name = 'dsh-container-adapt'
 export const inject = ['webServer', 'connection', 'settings', 'settingsController']
 
-/** dsh-web 约定存放会话 cookie 的目录(与 container/dsh-web.sh 一致)。 */
-const RUNTIME_DIR = process.env.DSH_CADDY_RUNTIME_DIR ?? '/tmp/dsh-caddy'
+/**
+ * 会话 cookie 状态文件所在目录: 默认值与 `container/dsh-web.sh` 共享(监督器从同一
+ * 路径读取)。它是**实例级**参数而非部署配置 —— 需要跑隔离实例(本机验证第二个
+ * dsh web)时, 在 overlay 条目的 `config:` 里覆写, 而不是靠环境变量:
+ * 上游规则明确"a `DEFAULT_*` constant or test hook is not configurability",
+ * 可变的实例参数应当是可校验的 `Config` 字段。
+ */
+const DEFAULT_RUNTIME_DIR = '/tmp/dsh-caddy'
 const COOKIE_FILENAME = 'session-cookie'
+
+/**
+ * 插件配置。Cordis 用 Standard Schema 校验(`resolveConfig()` 调
+ * `Config['~standard'].validate(config)`), 因此这里手写校验器即可, 插件不必
+ * 引入 schemastery 依赖(它只被 `--patch` 按绝对路径加载, 没有自己的 node_modules)。
+ */
+export const Config = {
+  '~standard': {
+    version: 1,
+    vendor: 'dsh-container',
+    /**
+     * 校验并补默认值。
+     * @param value - overlay 条目 `config:` 里的原始值(缺省时是 undefined)。
+     * @returns 校验后的配置, 或 Standard Schema 的 issues 列表。
+     */
+    validate(value) {
+      if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) {
+        return { issues: [{ message: 'dsh-container-adapt config must be an object' }] }
+      }
+      const runtimeDir = value?.runtimeDir ?? DEFAULT_RUNTIME_DIR
+      if (typeof runtimeDir !== 'string' || !runtimeDir.startsWith('/')) {
+        return { issues: [{ message: 'runtimeDir must be an absolute path' }] }
+      }
+      return { value: { runtimeDir } }
+    },
+  },
+}
 
 /** 抽图产物目录与路由前缀(与 scripts/extract-inline-assets.js 的默认输出一致, 镜像布局固定)。 */
 const ASSET_ROUTE = '/container-assets'
@@ -126,7 +163,7 @@ function firstCookieValue(setCookies) {
 
 /** 原子写入: 先写 .tmp 再 rename, 读方永远拿到完整内容或旧内容。 */
 async function writeCookieAtomically(cookieFile, cookie) {
-  await mkdir(RUNTIME_DIR, { recursive: true, mode: 0o700 })
+  await mkdir(dirname(cookieFile), { recursive: true, mode: 0o700 })
   const tmpFile = `${cookieFile}.tmp`
   await writeFile(tmpFile, cookie, { mode: 0o600 })
   await rename(tmpFile, cookieFile)
@@ -136,9 +173,9 @@ async function writeCookieAtomically(cookieFile, cookie) {
  * 进程内自举: 优先复用仍被接受的旧 cookie, 否则用进程启动 token 换取。
  * 整体带短重试; 所有异常向上抛给调用方记录。
  * @param ctx - 注入 webServer/connection 的 Cordis 上下文。
+ * @param cookieFile - 会话 cookie 状态文件路径(由 config.runtimeDir 决定)。
  */
-async function bootstrap(ctx) {
-  const cookieFile = join(RUNTIME_DIR, COOKIE_FILENAME)
+async function bootstrap(ctx, cookieFile) {
   const baseUrl = `http://127.0.0.1:${String(ctx.webServer.port)}`
 
   let lastError
@@ -149,7 +186,7 @@ async function bootstrap(ctx) {
       //    事件。dsh-web 只在文件缺失时等待、只在内容变化时重建 Caddy 配置,
       //    所以这里绝不能为了让"写入被观察到"而重写同样的内容。
       if (await reuseExistingCookie(baseUrl, cookieFile)) {
-        console.log('[dsh-container-adapt] reusing the still-valid session cookie')
+        ctx.logger.info('reusing the still-valid session cookie')
         return
       }
 
@@ -166,7 +203,7 @@ async function bootstrap(ctx) {
 
       // 3) 原子落盘。
       await writeCookieAtomically(cookieFile, cookie)
-      console.log('[dsh-container-adapt] session cookie minted from the login token')
+      ctx.logger.info('session cookie minted from the login token')
       return
     } catch (error) {
       lastError = error
@@ -182,15 +219,47 @@ async function bootstrap(ctx) {
 const DESCRIBE_WRAPPED = Symbol.for('dsh-container-adapt.describeWrapped')
 
 /**
+ * 日志可见性: 本镜像的 web profile 没有挂载 console exporter(vendored 的
+ * `@deepseek-ai/cordis-plugin-logger-console` 没有出现在任何 bundle 里), 因此
+ * `ctx.logger` 默认**什么都不输出**。而本镜像的运维面依赖这些行: dsh-web 把 dsh 的
+ * stdout 镜像进容器日志、smoke 断言据此判断自举成功、docs 的排障步骤也指向它。
+ * 这里用上游标准 API `ctx.logger.exporter()`(AppBoot 也这么接诊断 exporter)注册一个
+ * **只导出本插件日志**的 exporter —— 按 `message.name` 过滤, 不改动其它插件的输出;
+ * 调用点仍然全部走 `ctx.logger`。
+ * @param ctx - 插件上下文(其 logger 暴露 exporter 注册, disposer 随 fiber 自动撤销)。
+ */
+function exportOwnLogs(ctx) {
+  ctx.logger.exporter({
+    export: (message) => {
+      if (message.name !== name) return
+      const detail = message.args
+        .map((arg) => (arg instanceof Error ? arg.message : typeof arg === 'string' ? arg : JSON.stringify(arg)))
+        .join(' ')
+      process.stdout.write(`${new Date(message.ts).toISOString()} [${String(message.type)}] ${message.name}: ${detail}\n`)
+    },
+  })
+}
+
+/**
  * 强制 settings/describe 报告 hasDocument:false —— v0.1.7+ 上游已把它写死
- * 成 true, provider 侧无属性可翻, 只能包 controller 实例的 describe。
- * Gateway 调用路径: Reflect.get(callReceiver, 'describe') 取到的是实例自有
- * 属性(遮蔽原型方法), 再 Reflect.apply(method, receiver, args) 调用 —— 所以
- * 这里用普通函数 + apply 转发, this 与参数都保持原样。
+ * 成 true, provider 侧无属性可翻。
+ *
+ * 为什么是"遮蔽实例方法"这种写法: Cordis 没有"只改一个方法返回值"的标准入口 ——
+ * `ctx.intercept(name, config)` 只合并**服务配置**(不碰实现), `reflect.set(name,
+ * value)` 明确要求"调用方自己的 fiber 提供过该服务"(源码: `impl.fiber !==
+ * this.ctx.fiber` → throw "cannot set property ... in multiple fibers"), 而
+ * settingsController 由上游插件提供; 客户端渲染门也只读 describe 的
+ * `hasDocument`(SettingsDocumentAction: `status !== 'ready'` → 不渲染), 没有可注入
+ * 的客户端能力位。因此最小可行的偏离就是遮蔽这一个方法 —— 它成立是因为 Gateway
+ * 在 invoke 期动态取值再 `Reflect.apply`(见 packages/api/gateway/src/index.ts),
+ * 而不是靠实例属性缓存。上游一旦给出配置开关/headless 兜底, 这里就删掉
+ * (docs/upstream-contract.md § Simplification triggers)。
+ *
  * @param controller - settingsController 服务实例(dsh-web profile 必有;
  *    缺失时静默跳过, 不阻塞插件其余职责)。
+ * @param logger - 插件 ctx 的 logger。
  */
-function forceNoSettingsDocument(controller) {
+function forceNoSettingsDocument(controller, logger) {
   if (controller === undefined) return
   const original = controller.describe
   if (typeof original !== 'function' || original[DESCRIBE_WRAPPED]) return
@@ -199,28 +268,25 @@ function forceNoSettingsDocument(controller) {
   }
   Object.defineProperty(wrapped, DESCRIBE_WRAPPED, { value: true })
   Object.defineProperty(controller, 'describe', { value: wrapped, configurable: true })
-  console.log('[dsh-container-adapt] settings describe wrapped: hasDocument forced to false')
+  logger.info('settings describe wrapped: hasDocument forced to false')
 }
 
 /**
- * 注入传输层归属声明。上游契约(packages/client/connection/src/client/index.ts):
- * `__DSH_TRANSPORT__` 由"自己拥有 Host 的 shell"设置, 唯一消费点是
+ * 传输层归属声明: 结构化索引注入行。上游契约
+ * (packages/client/connection/src/client/index.ts)规定 `__DSH_TRANSPORT__` 由
+ * "自己拥有 Host 的 shell"设置, 唯一消费点是
  * `isLoopback: transport?.ownsHost === true || …`; 上游桌面 shell
- * (apps/web/src/main.ts)与 worker 预览页(experimental/webworker-runtime)都这么用。
+ * (apps/web/src/main.ts)与 worker 预览页(experimental/webworker-runtime)都这么用,
+ * 上游 connection 插件贡献 `__DSH_CONNECTION_RECOVERY__` 用的也是这一行类型。
  * 本容器里 Caddy 代理就是那个 shell(改写 Host/Origin + 注入会话 cookie), 置真后
  * 设置/凭据页在非回环 authority 上可用 —— 取代旧的构建产物字符串补丁。
  *
- * 纯 html→html 变换(tapIndex 契约): 插在 <head> 之后, 内联脚本先于
- * `type="module"` 的 bundle 执行, connection 插件 apply 时已能读到。找不到
- * <head> 时原样返回(上游若改文档结构则退化成"没注入", 由 smoke 断言发现)。
- * @param {string} html - 服务端渲染出的索引 HTML。
- * @returns {string} 注入后的 HTML。
+ * 用结构化的 `global` 行而不是 `tapIndex` 字符串变换: 后者是上游给"行表达不了的
+ * 标记"留的逃生门(见 host/webserver/src/injections.ts 头注), 而这一行本身就是
+ * JSON 可序列化数据 —— 由上游负责转义与摆放(渲染进 <head>、先于所有脚本行),
+ * 并且同样喂给 worker 静态渲染路径, 我们不再自己找 `<head>` 锚点。
  */
-function injectTransportGlobal(html) {
-  const at = html.indexOf('<head>')
-  if (at === -1) return html
-  return `${html.slice(0, at + 6)}<script>globalThis.__DSH_TRANSPORT__={ownsHost:true}</script>${html.slice(at + 6)}`
-}
+const TRANSPORT_GLOBAL_ROW = { kind: 'global', name: '__DSH_TRANSPORT__', value: { ownsHost: true } }
 
 /**
  * 提供构建期抽出的客户端图片(见 scripts/extract-inline-assets.js)。只认内容哈希
@@ -251,10 +317,13 @@ function createAssetHandler() {
 }
 
 /** 挂载: 自举不阻塞插件激活(失败由 dsh-web 的等待超时兜底)。 */
-export function apply(ctx) {
+export function apply(ctx, config) {
+  // 0) 日志可见性: 本 profile 无 console exporter, 自接一个(只导出本插件日志)。
+  exportOwnLogs(ctx)
+
   // 1) 会话 cookie 自举。
-  void bootstrap(ctx).catch((error) => {
-    console.error(`[dsh-container-adapt] session bootstrap failed: ${error instanceof Error ? error.message : String(error)}`)
+  void bootstrap(ctx, join(config.runtimeDir, COOKIE_FILENAME)).catch((error) => {
+    ctx.logger.error(`session bootstrap failed: ${error instanceof Error ? error.message : String(error)}`)
   })
 
   // 2) 隐藏"打开配置文件"按钮: 上游把 hasDocument 当作"本地文档可用"信号,
@@ -266,16 +335,19 @@ export function apply(ctx) {
   if ('documentPath' in ctx.settings) {
     Object.defineProperty(ctx.settings, 'documentPath', { value: undefined })
   }
-  forceNoSettingsDocument(ctx.settingsController)
+  forceNoSettingsDocument(ctx.settingsController, ctx.logger)
 
-  // 3) 传输层声明与抽图路由都注册为 effect: webServer.register()/tapIndex() 都
-  //    返回 disposer, 插件卸载时自动撤销(上游 gateway 注册 mux 路由同款写法)。
-  ctx.effect(
-    () => ctx.webServer.tapIndex(injectTransportGlobal),
-    'container-adapt: __DSH_TRANSPORT__ ownsHost injection',
-  )
+  // 3) 传输层声明: 向上游的结构化索引注入表推一行(上游 connection 插件贡献
+  //    __DSH_CONNECTION_RECOVERY__ 同款写法; 每次渲染索引时读取当前表, 因此这里
+  //    只需注册一次监听, ctx.on 的 disposer 随插件卸载自动撤销)。
+  ctx.on('webserver/index-inject', (table) => {
+    table.push({ ...TRANSPORT_GLOBAL_ROW })
+  })
+
+  // 4) 抽图路由: webServer.register() 返回 disposer, 用 ctx.effect 登记
+  //    (上游 gateway 注册 mux 路由同款写法)。
   if (!existsSync(ASSET_DIR)) {
-    console.warn(`[dsh-container-adapt] ${ASSET_DIR} is missing; extracted client images will 404`)
+    ctx.logger.warn(`${ASSET_DIR} is missing; extracted client images will 404`)
   }
   ctx.effect(
     () => ctx.webServer.register({ kind: 'prefix', path: ASSET_ROUTE, handler: createAssetHandler() }),

@@ -57,7 +57,7 @@ sudo systemctl enable --now dsh.service
 
 - **会话 cookie 自举** —— 插件在 dsh 进程内兑换一次性登录 token,写出 cookie 供代理注入;浏览器不会接触 token。
 - **隐藏"打开配置文件"按钮** —— 上游该操作没有无桌面兜底,在容器里会 spawn `xdg-open` 扑空;插件让 `settings/describe` 报告 `hasDocument: false`,按钮按上游自身 UI 逻辑不再渲染。设置项持久化在挂载卷的 `~/.dsh` 下(上游 v0.1.7+ 按 profile 存于 `~/.dsh/profiles/<profile>/cordis.patch.yml`;旧版 `settings.yaml` 只导入一次)。
-- **传输层归属声明** —— 除非某个 shell 声明自己拥有 Host,上游浏览器代码会按 `location.hostname` 判断 `isLoopback`。插件往服务端索引注入 `globalThis.__DSH_TRANSPORT__={ownsHost:true}`(与上游桌面 shell、worker 预览页同款声明),设置/凭据页因此可经代理使用,且**完全不改上游构建产物**。
+- **传输层归属声明** —— 除非某个 shell 声明自己拥有 Host,上游浏览器代码会按 `location.hostname` 判断 `isLoopback`。插件向上游的**结构化索引注入表**推一行 `__DSH_TRANSPORT__ = { ownsHost: true }`(与上游桌面 shell、worker 预览页同款声明),设置/凭据页因此可经代理使用,且**完全不改上游构建产物**。
 - **产物后处理** —— `pnpm run build:official` 之后跑三步:≥ 100 KiB 的内联图片抽成 `/container-assets/<内容哈希>`(由插件以 `immutable` 提供,只在真正打开对应界面时才取)、客户端 bundle 用 esbuild 压缩、刷新 `.dsh-build` 构建记录使其继续与交付产物一致。
 
 插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分(体现在该次发布的 commit 列表中,见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。

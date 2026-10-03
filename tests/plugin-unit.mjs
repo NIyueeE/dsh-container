@@ -14,18 +14,16 @@ import { Writable } from 'node:stream'
 
 const ASSET_DIR = '/opt/dsh-container-plugin/assets'
 
-/** 收集 apply() 注册的 effect, 并记录 tap 与路由处理器。 */
+/** 收集 apply() 注册的 effect / 事件监听 / 路由处理器 / exporter, 并记录日志。 */
 function createStubContext() {
   const effects = []
   const registrations = []
-  const taps = []
+  const listeners = new Map()
+  const exporters = []
+  const logs = []
   const ctx = {
     webServer: {
       port: 3080,
-      tapIndex: (transform) => {
-        taps.push(transform)
-        return () => taps.splice(taps.indexOf(transform), 1)
-      },
       register: (route) => {
         registrations.push(route)
         return () => registrations.splice(registrations.indexOf(route), 1)
@@ -34,13 +32,26 @@ function createStubContext() {
     connection: { authenticatedUrl: (url) => `${url}?token=stub` },
     settings: {},
     settingsController: { describe: () => ({ hasDocument: true }) },
+    logger: {
+      info: message => logs.push(['info', message]),
+      warn: message => logs.push(['warn', message]),
+      error: message => logs.push(['error', message]),
+      exporter: (exporter) => {
+        exporters.push(exporter)
+        return () => exporters.splice(exporters.indexOf(exporter), 1)
+      },
+    },
+    on: (event, handler) => {
+      listeners.set(event, handler)
+      return () => listeners.delete(event)
+    },
     effect: (callback, label) => {
       const disposer = callback()
       effects.push({ label, disposer })
       return disposer
     },
   }
-  return { ctx, effects, registrations, taps }
+  return { ctx, effects, registrations, listeners, exporters, logs }
 }
 
 /** 真 Writable 形态的假响应(路由用 stream.pipeline 写 body)。 */
@@ -75,18 +86,25 @@ async function callHandler(handler, url) {
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'dsh-plugin-unit-'))
-process.env.DSH_CADDY_RUNTIME_DIR = join(scratch, 'caddy')
 // 自举只读取这个 cookie 文件; 提前放一个"已被接受"的 cookie, 走复用路径(不发请求)。
 await mkdir(join(scratch, 'caddy'), { recursive: true })
 await writeFile(join(scratch, 'caddy', 'session-cookie'), 'dsh-auth-stub=value')
 
-const { ctx, registrations, taps } = createStubContext()
+const { ctx, registrations, listeners, exporters, logs } = createStubContext()
 const plugin = await import('../container/plugin/index.js')
 assert.equal(plugin.name, 'dsh-container-adapt', 'plugin name changed')
 assert.deepEqual(plugin.inject, ['webServer', 'connection', 'settings', 'settingsController'])
-plugin.apply(ctx)
 
-assert.equal(taps.length, 1, 'plugin must register exactly one index tap')
+// Config 走 Standard Schema(Cordis resolveConfig 直接调 '~standard'.validate)。
+assert.equal(plugin.Config['~standard'].version, 1, 'Config must be a Standard Schema v1 validator')
+assert.deepEqual(plugin.Config['~standard'].validate(undefined), { value: { runtimeDir: '/tmp/dsh-caddy' } })
+assert.deepEqual(plugin.Config['~standard'].validate({}), { value: { runtimeDir: '/tmp/dsh-caddy' } })
+assert.deepEqual(plugin.Config['~standard'].validate({ runtimeDir: '/tmp/x' }), { value: { runtimeDir: '/tmp/x' } })
+assert.ok(plugin.Config['~standard'].validate({ runtimeDir: 'relative/path' }).issues, 'relative runtimeDir must be rejected')
+assert.ok(plugin.Config['~standard'].validate('nope').issues, 'non-object config must be rejected')
+
+plugin.apply(ctx, { runtimeDir: join(scratch, 'caddy') })
+
 assert.equal(registrations.length, 1, 'plugin must register exactly one web route')
 assert.deepEqual(
   { kind: registrations[0].kind, path: registrations[0].path },
@@ -94,17 +112,42 @@ assert.deepEqual(
   'asset route must be the /container-assets prefix',
 )
 
-const tap = taps[0]
-const sample = '<!doctype html><html><head><meta charset="utf-8" /><script type="module" src="./assets/index-abc.js"></script></head><body></body></html>'
-const injected = tap(sample)
-const marker = '<script>globalThis.__DSH_TRANSPORT__={ownsHost:true}</script>'
-assert.ok(injected.includes(marker), 'index tap must inject the transport global')
-assert.ok(
-  injected.indexOf(marker) > injected.indexOf('<head>') && injected.indexOf(marker) < injected.indexOf('assets/index-abc.js'),
-  'injection must sit inside <head>, before the shell module script',
+// 传输层声明: 推进行表的是上游的标准行类型(kind: 'global'), 而不是 tapIndex 字符串变换。
+const injection = listeners.get('webserver/index-inject')
+assert.equal(typeof injection, 'function', 'plugin must subscribe to webserver/index-inject')
+const table = []
+injection(table)
+assert.deepEqual(
+  table,
+  [{ kind: 'global', name: '__DSH_TRANSPORT__', value: { ownsHost: true } }],
+  'the transport declaration must be a structured global row',
 )
-assert.equal(tap('<html><body>no head</body></html>'), '<html><body>no head</body></html>', 'missing <head> must pass through untouched')
-assert.equal(tap(sample), injected, 'index tap must be a pure function')
+
+// settings/describe 包装(遮蔽实例方法)与日志走 ctx.logger。
+assert.equal(ctx.settingsController.describe().hasDocument, false, 'describe must report no local document')
+assert.ok(logs.some(([, message]) => String(message).includes('describe wrapped')), 'wrap must be logged through ctx.logger')
+assert.ok(
+  logs.every(([, message]) => !String(message).startsWith('[dsh-container-adapt]')),
+  'log lines must not carry a hand-written prefix (the logger owns it)',
+)
+
+// 本 profile 没有 console exporter, 插件必须自接一个且只导出自己的行 —— 否则
+// docker logs / smoke 断言看不到任何插件日志。
+assert.equal(exporters.length, 1, 'plugin must attach exactly one logger exporter')
+const written = []
+const originalWrite = process.stdout.write.bind(process.stdout)
+process.stdout.write = chunk => { written.push(String(chunk)); return true }
+try {
+  exporters[0].export({ ts: 0, type: 'info', name: 'some-other-plugin', args: ['foreign line'] })
+  exporters[0].export({ ts: 0, type: 'info', name: 'dsh-container-adapt', args: ['own line'] })
+} finally {
+  process.stdout.write = originalWrite
+}
+assert.deepEqual(
+  written.map(line => line.includes('own line')),
+  [true],
+  'the exporter must forward this plugin\'s own lines and drop other plugins\' lines',
+)
 
 const handler = registrations[0].handler
 const missing = await callHandler(handler, '/container-assets/../../etc/passwd')
@@ -130,4 +173,4 @@ if (existsSync(ASSET_DIR)) {
 }
 
 await rm(scratch, { recursive: true, force: true })
-console.log('[plugin-unit] OK: transport injection position + asset route contract')
+console.log('[plugin-unit] OK: structured transport row + Config + asset route contract')

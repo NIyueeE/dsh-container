@@ -35,10 +35,10 @@
 #     兜底(会 spawn xdg-open 扑空), 插件把 settings provider 实例的
 #     documentPath 置为 undefined, describe 即返回 hasDocument:false,
 #     按钮按上游自身逻辑不渲染(不引入浏览器侧代码, 也不提供下载端点);
-#     浏览器端 isLoopback 门(location.hostname 限制设置/凭据页)由插件在服务端
-#     索引里注入 __DSH_TRANSPORT__={ownsHost:true} 解决 —— 这是上游给"自己拥有
-#     Host 的 shell"预留的声明(桌面 shell 与 worker 预览页同款), 唯一消费点就是
-#     connection 的 isLoopback, 因此不再需要改写上游构建产物;
+#     浏览器端 isLoopback 门(location.hostname 限制设置/凭据页)由插件向上游的
+#     结构化索引注入表推一行 __DSH_TRANSPORT__={ownsHost:true} 解决 —— 这是上游给
+#     "自己拥有 Host 的 shell"预留的声明(桌面 shell 与 worker 预览页同款), 唯一消费点
+#     就是 connection 的 isLoopback, 因此不再需要改写上游构建产物;
 #     构建期后处理三件套(都在 plugin/scripts/, 顺序固定):
 #       1. extract-inline-assets.js 把 >=100 KiB 的内联 data URL 图片抽成真实
 #          文件(8 张引导插画占合并包 49%, 且每个用户只用得到 1 张), 由插件的

@@ -43,12 +43,13 @@ Authentication therefore lives **only** in Caddy (basic auth, or the network exp
 Upstream dsh's browser code still gates the settings/credentials pages on the page authority, so the
 header rewrite and session injection alone would not make those pages usable in a remote browser.
 The container-adapt plugin (`/opt/dsh-container-plugin`, mounted via `dsh --patch`) handles this by
-injecting `globalThis.__DSH_TRANSPORT__={ownsHost:true}` into the served index — upstream's own
-declaration for a shell that owns the Host (the desktop shell and the worker-preview tunnel use it
-the same way; its only consumer is the client's `isLoopback`; upstream's `trustedHosts` covers only
-the server-side fence). Nothing in upstream's build output is modified for this. No `index.html`
-change beyond that injection is needed: upstream ships its own insecure-context `randomUuid()`
-(`@deepseek-ai/dsh-util-crypto`, lint-enforced), so plain-HTTP LAN works without a polyfill.
+contributing the `__DSH_TRANSPORT__ = { ownsHost: true }` row to upstream's structured
+index-injection table — upstream's own declaration for a shell that owns the Host (the desktop shell
+and the worker-preview tunnel use it the same way; its only consumer is the client's `isLoopback`;
+upstream's `trustedHosts` covers only the server-side fence). Nothing in upstream's build output is
+modified for this. No `index.html` change beyond that row is needed: upstream ships its own
+insecure-context `randomUuid()` (`@deepseek-ai/dsh-util-crypto`, lint-enforced), so plain-HTTP LAN
+works without a polyfill.
 
 The same plugin keeps the headless-hostile settings-document affordance out of the UI:
 upstream's "Open config file" would spawn the native text-editor command into nothing in a

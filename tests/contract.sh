@@ -82,8 +82,9 @@ found_in() { # <rel-root> <fixed-string> -> 0/1
 
 # critical: 传输层声明的源锚点。
 # 源码锚点: connection 的 isLoopback 计算必须仍带 ownsHost 分支 —— 容器适配插件
-# 往服务端索引注入 __DSH_TRANSPORT__={ownsHost:true}, 其唯一消费点就是这一行; 若
-# 上游改名/去掉该分支, 注入即失去意义(行为级断言在 smoke 的索引注入检查)。
+# 向上游的结构化索引注入表推 __DSH_TRANSPORT__={ownsHost:true} 行, 其唯一消费点
+# 就是这一行; 若上游改名/去掉该分支, 声明即失去意义(行为级断言在 smoke 的索引
+# 渲染检查与 tests/plugin-unit.mjs)。
 if [ -f "$ROOT/packages/client/connection/src/client/index.ts" ]; then
   f="$ROOT/packages/client/connection/src/client/index.ts"
   if grep -qF 'isLoopbackHostname(pageLocation.hostname)' "$f" \

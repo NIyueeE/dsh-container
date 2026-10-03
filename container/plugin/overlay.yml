@@ -4,9 +4,10 @@
 # 插件的运行期职责:
 #   - 会话 cookie 自举(Caddy 的会话注入依赖它);
 #   - 隐藏"打开配置文件"按钮(describe 的 hasDocument 翻转, 见 index.js 头注);
-#   - 往服务端索引注入 __DSH_TRANSPORT__={ownsHost:true}(上游的传输层归属声明,
-#     唯一消费点是客户端 isLoopback —— 取代旧的构建产物字符串补丁);
+#   - 向上游的结构化索引注入表推一行 __DSH_TRANSPORT__={ownsHost:true}(上游的传输层
+#     归属声明, 唯一消费点是客户端 isLoopback —— 取代旧的构建产物字符串补丁);
 #   - 以 /container-assets/* 提供构建期抽出的客户端图片(见 scripts/)。
+# 实例级可变参数(runtimeDir)走本条目下面的 config 字段, 不读环境变量。
 # 上游的 settings-controller 行保持挂载: 按钮隐藏后 openSettingsDocument
 # 没有 UI 入口, agent-preset 的打开路径上游自带 headless 回退, 不再需要
 # internals 接管, 因此 overlay 只有这一行插件 include。

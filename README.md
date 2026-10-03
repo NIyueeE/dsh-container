@@ -66,10 +66,10 @@ image at `/opt/dsh-container-plugin` and mounted into the web profile via `dsh -
   persist on the mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them per profile in
   `~/.dsh/profiles/<profile>/cordis.patch.yml`; the legacy `settings.yaml` is imported once).
 - **Transport-owner declaration** — upstream's browser code computes `isLoopback` from
-  `location.hostname` unless a shell declares itself the transport owner. The plugin injects
-  `globalThis.__DSH_TRANSPORT__={ownsHost:true}` into the served index — the same declaration
-  upstream's desktop shell and worker-preview tunnel use — so settings/credentials work through
-  the proxy with no change to upstream build artifacts.
+  `location.hostname` unless a shell declares itself the transport owner. The plugin contributes
+  the `__DSH_TRANSPORT__ = { ownsHost: true }` row to upstream's structured index-injection table
+  — the same declaration upstream's desktop shell and worker-preview tunnel use — so
+  settings/credentials work through the proxy with no change to upstream build artifacts.
 - **Payload post-processing** — three build-time steps run after `pnpm run build:official`:
   images inlined at ≥ 100 KiB are extracted to `/container-assets/<content-hash>` (served
   `immutable` by the plugin, fetched only when the screen that uses them opens), the client

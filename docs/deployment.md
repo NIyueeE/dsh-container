@@ -141,11 +141,11 @@ reach port `3081` gets a fully authenticated session (see [security.md](security
 
 Upstream dsh's browser code still gates the settings/credentials pages on the page authority, so the
 Caddy rewrite alone would not make those pages usable in a remote browser. The image's
-container-adapt plugin (`/opt/dsh-container-plugin`, mounted via `dsh --patch`) injects
-`globalThis.__DSH_TRANSPORT__={ownsHost:true}` into the served index — upstream's own declaration
-for a shell that owns the Host, whose only consumer is the client's `isLoopback`. The same plugin
-bootstraps the session cookie inside the dsh process (token → cookie, reusing a still-valid
-cookie), replacing the old supervisor-side exchange.
+container-adapt plugin (`/opt/dsh-container-plugin`, mounted via `dsh --patch`) contributes the
+`__DSH_TRANSPORT__ = { ownsHost: true }` row to upstream's structured index-injection table —
+upstream's own declaration for a shell that owns the Host, whose only consumer is the client's
+`isLoopback`. The same plugin bootstraps the session cookie inside the dsh process (token → cookie,
+reusing a still-valid cookie), replacing the old supervisor-side exchange.
 
 **The settings-document button is hidden** — "Open config file" (Settings) has no headless
 fallback upstream and would spawn `xdg-open` into nothing in a container. The plugin makes
@@ -459,10 +459,9 @@ methods are additionally hard-pinned to loopback by upstream dsh). The in-contai
 (which rewrites `Host`/`Origin` to loopback) fixes this: remote browsers pass every endpoint. If
 you still see 403, verify you are running an image that contains the Caddy proxy and that the
 browser reaches the published port `3081`. If the settings page instead shows `settings are
-unavailable in this browser`, the served index must carry the
-`__DSH_TRANSPORT__={ownsHost:true}` injection — check that the image contains the container-adapt
-plugin (and that `dsh web` was restarted after an update); an outer proxy that rewrites or strips
-the index body would remove it.
+unavailable in this browser`, the served index must carry the `__DSH_TRANSPORT__ = { ownsHost:
+true }` row — check that the image contains the container-adapt plugin (and that `dsh web` was
+restarted after an update); an outer proxy that rewrites or strips the index body would remove it.
 
 **Podman rootless + bind mounts**
 If you bind-mount a host directory at `/home/dsh`, make sure it is owned by your uid and

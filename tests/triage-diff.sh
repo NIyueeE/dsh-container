@@ -68,7 +68,7 @@ FATAL_IDS="server.request_fence"
 # - packages/bundle/web-app/           webserver 配置面(compression 等) + web CLI 契约
 #                                      (--port/--no-open 在 src/startup.ts)与登录 URL
 #                                      宣告(src/index.ts authenticatedUrl)
-# - packages/client/web/               索引渲染与注入落点(tapIndex 契约)
+# - packages/client/web/               索引渲染与结构化注入行落点(webserver/index-inject 契约)
 # - apps/cli/src/                      launcher 根 flag(--patch/--profile)
 # - packages/bundle/base/              遥测默认值等 bundle 层契约
 SURFACE_PAT='^(packages/client/connection/|packages/api/settings-controller/|packages/client/ui-settings-general/|packages/bundle/web-app/|packages/client/web/|apps/cli/src/|packages/bundle/base/)'

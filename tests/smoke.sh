@@ -243,9 +243,11 @@ dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
   '[ "$(stat -c %a /tmp/dsh-caddy/session-cookie)" = "600" ] && [ "$(stat -c %a /tmp/dsh-caddy/Caddyfile)" = "600" ]' \
   || die "session-cookie/Caddyfile permissions are not 0600"
 # 会话 cookie 由容器适配插件在 dsh 进程内自举(替代旧的 dsh-web token 交换):
-# 日志必须出现插件的自举记录。
-"$DOCKER" logs "$cid" 2>&1 | grep -F '[dsh-container-adapt]' \
-  || die "container-adapt plugin did not bootstrap the session cookie"
+# 日志必须出现插件的自举记录。插件走 ctx.logger, 但本 profile 没有任何 console
+# exporter, 因此插件自己注册了一个"只导出本插件日志"的 exporter(见 index.js) ——
+# 这一行同时钉住"日志确实落到了容器日志"。
+"$DOCKER" logs "$cid" 2>&1 | grep -E 'dsh-container-adapt.*session cookie (minted|reusing)' \
+  || die "container-adapt plugin did not bootstrap the session cookie (or its log line is not visible)"
 "$DOCKER" logs "$cid" 2>&1 | grep -F 'WARNING: the proxy listens on 0.0.0.0:3081 with NO authentication' \
   || die "no-auth proxy did not print the exposure warning"
 
@@ -278,11 +280,12 @@ dl_gone="$(curl -s -D - -o /dev/null http://127.0.0.1:3081/download/settings.yam
 printf '%s' "$dl_gone" | grep -qi 'content-disposition: attachment' \
   && die "removed download endpoint still serves /download/settings.yaml"
 
-# 传输层声明: 容器适配插件把 __DSH_TRANSPORT__={ownsHost:true} 注入服务端索引
-# (替代旧的构建产物字符串补丁)。它是 <head> 里的内联脚本 —— 先于 type="module"
-# 的 bundle 执行, connection 插件的 isLoopback 才读得到(上游唯一消费点)。位置不必
-# 紧贴 <head>(上游自己的 base 注入也在那一段, 两个 tap 的插入顺序会互换)。
-transport_injection='<script>globalThis.__DSH_TRANSPORT__={ownsHost:true}</script>'
+# 传输层声明: 容器适配插件向上游的结构化索引注入表推一行
+# __DSH_TRANSPORT__={ownsHost:true}(替代旧的构建产物字符串补丁)。上游把它渲染成
+# <head> 里的内联脚本 —— 先于 type="module" 的 bundle 执行, connection 插件的
+# isLoopback 才读得到(上游唯一消费点)。位置不必紧贴 <head>(上游自己的 base 与
+# 其它 global 行也在那一段, 行的先后由表顺序决定)。
+transport_injection='<script>globalThis["__DSH_TRANSPORT__"] = {"ownsHost":true}</script>'
 [[ "$index_html" == *"$transport_injection"* ]] \
   || die "served index lacks the __DSH_TRANSPORT__ ownsHost injection"
 [[ "${index_html%%</head>*}" == *"$transport_injection"* ]] \

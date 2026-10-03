@@ -43,7 +43,7 @@ or these paths were hit). Focus your review on those paths and the § Simplifica
 1. **Minimal repair; prefer deletion over patching.** When a Simplification trigger fires,
    deleting the hack (and its contract item / smoke assertions / docs) is the preferred change.
    Otherwise the typical fix is re-anchoring the contract item in `container/plugin/` — the
-   `__DSH_TRANSPORT__` injection (its anchor is the `ownsHost` arm in
+   `__DSH_TRANSPORT__` index-injection row (its anchor is the `ownsHost` arm in
    `packages/client/connection/src/client/index.ts`) or one of the three build-time
    post-processing steps. Rewriting upstream build artifacts is not an option: the only code that
    runs after `build:official` is `container/plugin/scripts/`, and it must leave a matching
