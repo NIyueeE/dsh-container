@@ -284,21 +284,88 @@ container never spends its first minutes downloading them:
 | Languages & runtimes | Node.js 22 LTS + npm/pnpm, uv, Rust/cargo with `rustfmt` + `clippy`, python3 (apt-managed; PEP 668 applies — prefer `uv run` / `uv pip` for project work), build-essential + libssl-dev for native builds |
 | Editors & pagers | `vim.tiny` (`vi`), `nano`, `less` |
 | Networking & debugging | `openssh-client`, `iputils-ping`, `iproute2` (`ss`/`ip`), `lsof`, `tree`, `htop` |
-| Packaging & extras | `zip`/`unzip`, `rsync`, `sqlite3`, `tmux`, `tzdata` |
+| Network diagnostics | `dig`/`nslookup`/`host` (`bind9-dnsutils`), `nc`, `socat`, `traceroute`, `iperf3` — this image's operational surface is mostly network plumbing (Caddy → dsh, plus nested podman's slirp4netns), so connectivity and bandwidth checks are first-class |
+| Files & processes | `file`, `ncdu`, `strace` — inspecting what a file is, what fills the volume, and where the `dsh-web`/Caddy/dsh trio is stuck |
+| Compression & data | `zstd`, `lz4`, `bc`, `moreutils`, `pv`, `uuid-runtime` |
+| Dev tooling | `just` (the repository's `justfile` recipes work inside the container, including `just build` via nested podman), `shellcheck` (the repository's lint gate runs in-container too) |
+| YAML / JSON | `yq` — installed with `uv tool install` (see below), not via apt |
+
+`tcpdump`, `iftop` and `mtr` are deliberately **not** installed: the container runs without
+`CAP_NET_RAW` (`CapEff` is `cap_net_admin,cap_sys_admin`), so the capture sockets cannot be opened
+and shipping them would only suggest they work. Add the capability on the host runtime if you need
+packet capture inside the container.
+
+### Installing tools that persist
 
 Anything installed **at runtime** with `sudo apt install` lands in the container's writable layer
 and is **lost when the container is recreated** (`--force-recreate`, image upgrade, Quadlet
 `AutoUpdate`) — it survives an in-place `docker restart` only. Install paths that persist instead
-(they live on the `/home/dsh` volume): `cargo install` (`~/.cargo/bin`), `uv tool install` /
-`uv pip` / uv-managed pythons (`~/.local`), `npm -g` / `pnpm add -g` (NPM and pnpm homes).
-`rustup component add` also writes the system layer and does not survive recreation — the
-frequently used components (`rustfmt`, `clippy`) are preinstalled. If you need a permanent
-apt-level tool, extend the image with a small child `Containerfile`
+(they live on the `/home/dsh` volume):
+
+| Path | Lands in | On `PATH` |
+|---|---|---|
+| `cargo install <crate>` | `~/.cargo/bin` | yes |
+| `uv tool install <pkg>` | `~/.local/share/uv/tools` + shims in `~/.local/bin` | yes |
+| `uv pip` / uv-managed pythons | `~/.local` | yes |
+| `npm -g` | `~/.local` (`NPM_CONFIG_PREFIX`) | yes |
+| `pnpm add -g` | `~/.local/share/pnpm` (`PNPM_HOME`) + executables in `$PNPM_HOME/bin` | yes |
+| `python3 -m pip install` | blocked by PEP 668 — use `uv pip` | — |
+
+`rustup component add` writes the system layer and does not survive recreation — the frequently
+used components (`rustfmt`, `clippy`) are preinstalled. If you need a permanent apt-level tool,
+extend the image with a small child `Containerfile`
 (`FROM ghcr.io/niyueee/dsh-container:latest`) and pin that image in the examples.
+
+`yq` is the one tool installed through `uv tool install` at build time, into the image-owned
+`/opt/uv-tools` (`/usr/local/bin/yq`, plus `tomlq`/`xq`). Three things are worth knowing:
+
+- It is the **Python `yq`** (kislyuk's, 4.x), not Mike Farah's Go `yq` — the two have different
+  syntax, and Debian 13's apt only packages this one. It shells out to `/usr/bin/jq` for JSON
+  processing, so `jq` is a runtime dependency (the image installs it) and `yq --version` prints a
+  second line with jq's version.
+- It upgrades **with the image**, and `uv tool upgrade yq` deliberately fails inside the container
+  (`/opt/uv-tools` is root-owned): this matches the image-owned toolchain model, where tools are
+  upgraded by upgrading the image, never by mutating the volume.
+- Installing your **own** `uv` tools at runtime is unaffected: `uv tool install` without
+  `UV_TOOL_DIR` uses `~/.local/share/uv/tools` on the volume (the image never sets that variable).
 
 The final image keeps a pre-warmed `/var/lib/apt/lists`, so `apt install` works without an update
 first — but that index is a snapshot from build time. If an install fails with a 404 or hash
 mismatch, run `sudo apt-get update` before retrying.
+
+### Global agent instructions
+
+dsh loads two **user-global** instruction files before any project file, on the first request of a
+session (and reconciles them on later file activity and on session resume):
+
+| Order | Path | Overridden by env |
+|---|---|---|
+| 1 | `~/.dsh/AGENTS.md` | `DSH_HOME` |
+| 2 | `~/.agents/AGENTS.md` | `DSH_AGENTS_HOME` |
+
+Both live on the `/home/dsh` volume, so they survive image upgrades. The two form a single
+candidate group: identical content (after trimming) is rendered once, and the `~/.dsh` file wins.
+The rendered baseline is capped (64 KiB in the `web` profile); over budget, broader files are
+dropped before the most specific file is truncated, with a visible notice naming what was omitted.
+
+The image deliberately ships **no** default there — pre-seeding a global instruction file would
+silently change every agent's behavior and could never be updated without either overwriting your
+edits or going stale. To teach the agent how this container is laid out, copy this into
+`~/.dsh/AGENTS.md`:
+
+```markdown
+Runtime environment: this dsh runs inside a container image. The toolchain
+(node, pnpm, uv, rust/cargo, caddy, podman, and dsh itself) lives in the
+image-owned system layer under /usr/local/bin and /opt, so it updates with the
+image. `apt install` and `rustup component add` at runtime land in the
+disposable writable layer and are lost when the container is recreated.
+
+/home/dsh is the persistent volume: ~/.dsh (settings, sessions, agent data),
+~/.cargo, ~/.local, ~/.local/share/{uv,pnpm}. Install persistent tools there
+(`cargo install`, `uv tool install`, `pnpm add -g`) rather than with apt.
+
+Exact tool versions: /etc/dsh-container/provenance.json
+```
 
 ## 7. In-container podman
 

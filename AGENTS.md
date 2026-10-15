@@ -10,11 +10,17 @@ A container image for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 built on `debian:13-slim` and published to GHCR as `ghcr.io/niyueee/dsh-container`. Users pull the
 image and run it with Docker/Podman; this repo is not an application you run directly.
 
+**Global agent instructions** live at `~/.dsh/AGENTS.md` (`$DSH_HOME`, first) and
+`~/.agents/AGENTS.md` (`$DSH_AGENTS_HOME`, second) — dsh loads both as a user-global baseline
+before any project file. The image deliberately ships **no** default there; a copy-pasteable
+container-environment note for that file lives in
+[docs/deployment.md](docs/deployment.md#global-agent-instructions).
+
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors), source-built dsh (`/opt/deepseek-harness`), entrypoint |
+| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors plus a diagnostics set: dig/nc/socat/traceroute/iperf3, file, ncdu, strace, zstd/lz4, just, shellcheck), `uv tool`-installed yq (`/opt/uv-tools`), source-built dsh (`/opt/deepseek-harness`), entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + session-cookie wait + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
@@ -28,6 +34,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 | `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
 | `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for patch anchors, CLI flags, and the request fence before any image is built |
 | `tests/triage-diff.sh` | Code-level agent admission gate: contract verdict + complete upstream changed-file list → decides whether the release-prep agent enters (drift or adaptation-surface hit), or the run proceeds without it |
+| `tests/validate-docs.py` | Stdlib-only doc gate extracted from `image.yml`: `links` (every relative doc link resolves) and `parity` (README/README.zh heading, link and code-fence counts); run by CI and by `just lint` |
 | `prompts/release-prep.md` | System prompt for the dsh headless agent that repairs contract drift in the `release-prep.yml` prep job |
 | `docs/upstream-contract.md` | The upstream contract: what this image depends on, where each item is enforced, and the drift-update protocol the agent follows |
 | `.github/dependabot.yml` | Dependabot version updates: weekly `github-actions` + `docker` ecosystems (action pins, base image) |
@@ -49,13 +56,19 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    data: dsh data stays at upstream's `~/.dsh` (no `DSH_HOME` override), the process cwd is `$HOME`
    itself (dsh creates directories under it as needed), and writable caches/user-installed tools
    live under `$HOME` (`CARGO_HOME=~/.cargo`, uv data in `~/.local/share/uv`,
-   `PNPM_HOME=~/.local/share/pnpm`). Tool upgrades happen by image upgrade; a volume can never
+   `PNPM_HOME=~/.local/share/pnpm` — its executable bin is `$PNPM_HOME/bin`, and all three of
+   `Containerfile`'s `ENV PATH`, `entrypoint.sh` and `dsh-web.sh` must spell that PATH identically:
+   omitting `/bin` makes `pnpm add -g` refuse to install). Tool upgrades happen by image upgrade;
+   a volume can never
    shadow image-provided tools. PATH is image-first (`/usr/local/bin` before `$HOME/.local/bin`)
    with user directories last. Agent high-frequency CLI tools (ripgrep, fd, python3, zip,
     openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch,
-    git-lfs, crun) are baked into the system layer too: runtime `apt install` writes the
+    git-lfs, crun, plus the network/process diagnostics dig/nc/socat/traceroute/iperf3, file, ncdu,
+    strace, zstd/lz4 and the dev tooling just/shellcheck) are baked into the system layer too:
+    runtime `apt install` writes the
     container's writable layer and is lost on recreation, so persistent tools belong in the image,
-    not in a runtime install. Toolchain copies and the npm-installed dsh that pre-source-build
+    not in a runtime install. (deliberately absent: `tcpdump`/`iftop`/`mtr` — the container has no
+    `CAP_NET_RAW`.) Toolchain copies and the npm-installed dsh that pre-source-build
     images (v0.2.x) seeded into volumes are inert (shadowed by PATH); manual cleanup
     commands live in `docs/releasing.md` § Upgrading data volumes to the image-owned
     toolchain. The entrypoint also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's
@@ -232,11 +245,15 @@ just build      # build ghcr.io/niyueee/dsh-container:local (podman or docker)
 just debug      # run in the foreground with port 3081 published
 just restart-dsh # restart dsh web inside the running "dsh" container
 just test       # smoke-test an already built image (tests/smoke.sh)
+just lint       # bash -n + shellcheck + doc-link/README-parity checks (no container)
 just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
 ```
 
 - The justfile passes `--format docker` only for podman (Docker has no such flag). podman needs it
   so `HEALTHCHECK` survives; GHCR images use the docker format.
+- `just lint` mirrors the CI `validate` job's script and docs steps one-for-one (the same
+  `tests/validate-docs.py` the workflow calls), so a lint failure is reproducible before pushing.
+  It requires `shellcheck` locally and fails loudly when it is missing rather than skipping.
 - Releasing: push a `dsh-v*` tag matching the upstream dsh repository tag → CI builds from
   that upstream tag, smoke-tests amd64, then publishes amd64 by digest; arm64 builds in parallel
   on GitHub's free native Arm runner (`ubuntu-24.04-arm`), and a merge job combines both into a
@@ -257,9 +274,13 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
 
 ## Validation checklist before committing
 
-1. `bash -n container/*.sh tests/*.sh` (and `shellcheck` if available)
+1. `just lint` — runs all three of: `bash -n container/*.sh tests/*.sh`,
+   `shellcheck container/*.sh tests/*.sh` (must be zero output, including info-level
+   diagnostics; annotate genuine false positives with a targeted `# shellcheck disable=`), and
+   `python3 tests/validate-docs.py`. CI runs the same three as separate steps.
 2. Examples parse: `docker compose -f examples/compose.yaml config --quiet` (or podman-compose)
 3. README/README.zh parity: equal heading count, link count, and code-fence count
+   (`python3 tests/validate-docs.py parity`)
 4. `just --list` parses with both the podman and docker branches in mind; Docker-only hosts must
    not receive podman-only flags.
 5. If you changed networking/trust behavior, verify end to end in a container: parse the

@@ -15,10 +15,14 @@ dsh version.
 Alongside the toolchain, the image bakes an agent's high-frequency CLI tools into the system layer
 (`ripgrep`, `fd`, `python3`, `zip`, `openssh-client`, `tmux`, `sqlite3`, `vim.tiny`, `nano`,
 `less`, `rsync`, `wget`, `tree`, `htop`, `tzdata`, `patch`, `git-lfs`, plus `crun` for nested
-rootless podman). Runtime `apt install` writes the container's writable layer and is lost on
+rootless podman, and a diagnostics set: `dig`/`nc`/`socat`/`traceroute`/`iperf3`, `file`, `ncdu`,
+`strace`, `zstd`/`lz4`, `bc`, `moreutils`, `pv`, `uuid-runtime`). Runtime `apt install` writes the
+container's writable layer and is lost on
 container recreation, so anything that must persist is installed at build time (or added via a
 child image). `rustfmt`/`clippy` are installed next to the minimal Rust profile for the same
-reason. The full rationale and the persistence matrix live in
+reason; `yq` is installed with `uv tool install` into `/opt/uv-tools` (see
+[deployment.md](deployment.md#installing-tools-that-persist) for why it is the Python `yq`). The
+full rationale and the persistence matrix live in
 [deployment.md](deployment.md) § Built-in tools.
 
 ## Build arguments
@@ -37,13 +41,16 @@ home `/opt/rust/rustup`, which rustup must write: it is built `dsh`-owned and se
 entrypoint), the volume owns the state.
 
 - Image-owned: uv/uvx and the pnpm binary in `/usr/local/bin`, the Rust toolchain tree in
-  `/opt/rust` (rustup proxies symlinked into `/usr/local/bin`), dsh in `/opt/deepseek-harness`.
+  `/opt/rust` (rustup proxies symlinked into `/usr/local/bin`), dsh in `/opt/deepseek-harness`,
+  and `yq`'s `uv tool` virtualenv in `/opt/uv-tools` (shims in `/usr/local/bin`).
   Tool upgrades happen by image upgrade — `uv self update` cannot write the root-owned
-  `/usr/local/bin`, and a runtime `rustup update` would only write the container layer (lost on
-  recreation), so runtime updates are not a supported upgrade path.
+  `/usr/local/bin`, a runtime `rustup update` would only write the container layer (lost on
+  recreation), and `uv tool upgrade yq` fails against the root-owned `/opt/uv-tools` by design,
+  so runtime updates are not a supported upgrade path.
 - Volume-owned (writable, persisted): `~/.cargo` (cargo registry/cache and `cargo install`
   binaries), uv data in `~/.local/share/uv` and `~/.cache/uv`, pnpm store and user global
-  packages in `~/.local/share/pnpm` (`PNPM_HOME`), anything the user puts in `~/.local/bin`.
+  packages in `~/.local/share/pnpm` (`PNPM_HOME`) with their executables in `$PNPM_HOME/bin`,
+  anything the user puts in `~/.local/bin`. All of those bin directories are on PATH.
   User-installed tools sit last on PATH and can never shadow image-provided ones.
 - Custom Rust toolchains: override `RUSTUP_HOME` to a volume directory and run `rustup-init`
   there (advanced escape hatch; the image-managed toolchain is unaffected).
