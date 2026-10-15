@@ -40,8 +40,9 @@ fi
 export HOME
 
 # PATH 镜像优先: dsh 必须解析到镜像内的 /usr/local/bin/dsh, 而不是旧数据卷
-# 中可能残留的副本; 再拼接用户层自装工具目录。
-export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+# 中可能残留的副本; 再拼接用户层自装工具目录(pnpm 全局 bin 在 $PNPM_HOME/bin,
+# 与 entrypoint.sh 及 Containerfile 的 ENV PATH 是同一条链路, 必须同步)。
+export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:${PNPM_HOME:-$HOME/.local/share/pnpm}/bin:$PATH"
 
 # 内部端口: entrypoint 解析 --port 后经 DSH_WEB_PORT 传入(默认 3080)。
 # 独立执行(不经 entrypoint)时自身也解析 --port <N>/--port=<N> —— 否则
@@ -96,6 +97,8 @@ caddy_alive() {
   return 0
 }
 
+# SC2317: cleanup() 只经下面的 trap 调用, shellcheck 静态看是"不可达", 属误报。
+# shellcheck disable=SC2317
 cleanup() {
   STOPPING=1
   if [ -n "$CADDY_PID" ]; then

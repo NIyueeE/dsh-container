@@ -68,7 +68,11 @@ export DSH_TELEMETRY_MODE="${DSH_TELEMETRY_MODE:-DISABLED}"
 mkdir -p "$HOME/.cargo/bin" "$HOME/.local/bin" "$PNPM_HOME"
 # PATH 镜像优先 (hermes-agent 模式): /usr/local/bin 里是镜像的真二进制
 # (dsh/uv/pnpm/cargo), 必须压过用户层目录; 用户自装工具垫底。
-export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+# pnpm 全局包的可执行文件落在 $PNPM_HOME/bin(而不是 $PNPM_HOME 本身)——
+# 少了这一层 `pnpm add -g` 装出来的命令不在 PATH 里, pnpm 自己会直接报
+# "The configured global bin directory ... is not in PATH" 并拒绝安装。
+# Containerfile 的 ENV PATH 与 dsh-web.sh 里是同一条链路的另外两处, 必须同步。
+export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PNPM_HOME/bin:$PATH"
 
 # 容器内 podman 运行期环境(尽力而为; 宿主侧要满足的条件见 docs/deployment.md
 # "容器内 podman"): rootless podman 必须能写 XDG_RUNTIME_DIR(libpod 运行时
