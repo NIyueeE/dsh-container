@@ -81,12 +81,23 @@ upstream tag is pushed here. Two automated helpers keep the repository in sync w
 Dependabot cannot watch another repository's git tags, so a small scheduled workflow does it.
 Running daily (plus on every `dsh-v*` tag push and on manual dispatch), it compares the newest
 `dsh-v*` tag of `deepseek-ai/deepseek-harness` with the newest `dsh-v*` tag of this repository
-(semver-aware, so a stable tag outranks its pre-releases: `dsh-v0.1.2-alpha.5` < `dsh-v0.1.2`):
+(semver-aware, so a stable tag outranks its pre-releases: `dsh-v0.1.2-alpha.5` < `dsh-v0.1.2`).
+The schedule is `30 11 * * *` — nominally 19:30 Beijing, deliberately ~6 h ahead of the intended
+landing time: Actions' `schedule` is best-effort queueing, and 41 measured runs landed 4.1–8.9 h
+late (mean +5.4 h, worsening), so the earlier `30 12 * * *` actually ran between 00:30 and 05:30
+Beijing. Expect the first runs to land loosely around 00:30–03:30 Beijing (±2 h is normal for this
+queue); adjust the nominal time if the spread drifts. The landing time only decides when *we* see
+the reminder; it does not delay detection, because a new upstream tag is also picked up by the next
+tag push or manual dispatch.
 
 - **upstream ahead** → opens one issue ("New upstream dsh release available: …") with the release
   notes link, the upstream diff, and the manual `git tag` / `git push` commands (kept as the
   fallback path); an older tracker issue is closed first so at most one stays open. It then fires a
-  `repository_dispatch` that starts the automated release-preparation pipeline below;
+  `repository_dispatch` that starts the automated release-preparation pipeline below. When a tracker
+  issue for that tag already exists (a previous attempt failed, or the pipeline is still running),
+  the same tag is re-dispatched **only if no `release-prep` run is queued or in progress** — a
+  repeat dispatch would otherwise queue a second full build + smoke + agent run, and retrying after
+  a failure stays intact;
 - **tags equal** → any open tracker issue is closed automatically — but only once the tag's push
   has actually produced an `image.yml` run. If the tag exists yet no run ever started (a broken
   push credential, e.g. a fine-grained `RELEASE_PAT` without the Workflows permission), the issue
