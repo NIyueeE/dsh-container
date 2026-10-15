@@ -20,7 +20,13 @@ name: Upstream dsh tag watch
 
 on:
   schedule:
-    - cron: "30 12 * * *" # 每日 UTC 12:30(北京时间 20:30)一次; Actions cron 时区为 UTC
+    # 名义 UTC 11:30 = 北京 19:30, 但 Actions 的 schedule 是"尽力而为"的排队,
+    # 实测落点远晚于名义时间: 本项目 41 次定时运行偏差 +4.1 ~ +8.9 小时
+    # (9 月均值 +4.5, 10 月 +6.4, 在变差), 上一版名义 12:30 UTC 实际落在
+    # UTC 16:30-21:30 = 北京 00:30-05:30。要落在北京 01:30 附近, 名义时间就得
+    # 提前约 6 小时 —— 这不是笔误。注: 排队延迟来自 Actions 侧的负载, 与"北京
+    # 是否低峰"无关, 因此提前量只决定我们什么时候看到提醒, 不改变发现的及时性。
+    - cron: "30 11 * * *"
   workflow_dispatch:
   push:
     tags: ['dsh-v*']
@@ -237,13 +243,25 @@ jobs:
           if [ -n "$existing" ]; then
             echo "issue #$existing already tracks $upstream_tag"
             # 已有提醒时仍要触发 release-prep: 上次运行可能失败, 每日重试,
-            # release-prep 内部幂等(已有同名 tag 即跳过), 重复 dispatch 无副作用
+            # release-prep 内部幂等(已有同名 tag 即跳过)
             dispatch_issue="$existing"
           else
             dispatch_issue=""
           fi
 
           if [ -n "$dispatch_issue" ]; then
+            # 同一 tag 已有 release-prep 在跑(或排队)时不再 dispatch: release-prep 的
+            # concurrency 只是排队(cancel-in-progress: false), 重复 dispatch 会白跑一次
+            # 完整构建+冒烟, 而且 agent 也会被再拉起来一遍 —— 正是"agent 尽量后入场"
+            # 要避免的。只有上一次已经结束(成功或失败)才重试, 幂等性与失败重试都保留。
+            # 只在确实要重试时才花这一次 API 调用。查询失败按"没有在跑"处理(宁可重复
+            # dispatch 也不能漏发: release-prep 内部幂等, 人工漏发才是真损失)。
+            in_flight="$(gh api "repos/$SELF_REPO/actions/workflows/release-prep.yml/runs?per_page=10" \
+              --jq '[.workflow_runs[] | select(.status == "in_progress" or .status == "queued")] | length' 2>/dev/null || echo 0)"
+            if [ "$in_flight" != "0" ]; then
+              echo "release-prep already running for a pending tag ($in_flight in flight); not dispatching again"
+              exit 0
+            fi
             if gh api "repos/$SELF_REPO/dispatches" \
                 -f event_type=upstream-dsh-tag \
                 -f "client_payload[new_tag]=$upstream_tag" \
