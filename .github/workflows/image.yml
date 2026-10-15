@@ -30,8 +30,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Shell syntax check
-        run: bash -n container/*.sh tests/*.sh
+      # 脚本门禁分两层: bash -n 只查语法, shellcheck 才查真 bug(引号/未定义变量/
+      # 子 shell 陷阱)。--severity=warning: info 级里混有大量合法误报(例如
+      # dsh-web 的 cleanup() 只经 trap 调用), 那类已在脚本内用定向 disable 注释
+      # 显式标注, 所以这里可以对 warning 级保持"零容忍"。runner 自带 shellcheck,
+      # 无需安装; 本地等价命令是 `just lint`。
+      - name: Shell syntax and lint check
+        run: |
+          set -euo pipefail
+          bash -n container/*.sh tests/*.sh
+          shellcheck --severity=warning container/*.sh tests/*.sh
 
       # 纯文档提交的安全快车道: 只改 *.md / LICENSE 时跳过镜像构建 + 冒烟
       # (省 ~15 分钟), 其余校验照跑。判定完全基于真实 diff, 并且 fail closed:
@@ -77,23 +85,9 @@ jobs:
           fi
 
       # 文档改动也得有门禁: 相对链接必须能在仓库里解析(文档是用户唯一的部署参考)。
+      # 判据抽到 tests/validate-docs.py —— 纯 stdlib, 本地 `just lint` 跑同一套。
       - name: Doc links resolve
-        run: |
-          python3 - <<'PY'
-          import pathlib, re, sys
-          root = pathlib.Path('.')
-          bad = []
-          for md in sorted(list(root.glob('*.md')) + list(root.glob('docs/*.md'))):
-              for link in re.findall(r'\]\(([^)#]+)', md.read_text()):
-                  if link.startswith(('http', 'mailto:', '#')):
-                      continue
-                  if not (md.parent / link).exists():
-                      bad.append(f'{md}: {link}')
-          if bad:
-              print('\n'.join(bad))
-              sys.exit(1)
-          print('all relative doc links resolve')
-          PY
+        run: python3 tests/validate-docs.py links
 
       - name: No removed auto-update remnants
         run: |
@@ -108,22 +102,10 @@ jobs:
             exit 1
           fi
 
+      # README.zh 必须与 README.md 结构一致(标题/链接/代码围栏计数), 只译散文。
+      # 同一判据也在 tests/validate-docs.py 里, 本地 `just lint` 可先跑。
       - name: README parity
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          en = Path('README.md').read_text()
-          zh = Path('README.zh.md').read_text()
-          def headings(text):
-              return re.findall(r'^#{1,6} .*$', text, re.M)
-          def links(text):
-              return len(re.findall(r'\[[^\]]*\]\([^)]*\)', text))
-          assert len(headings(en)) == len(headings(zh)), 'heading count mismatch'
-          assert links(en) == links(zh), 'link count mismatch'
-          assert en.count('```') == zh.count('```'), 'code fence count mismatch'
-          print('README parity OK')
-          PY
+        run: python3 tests/validate-docs.py parity
 
       - name: container-adapt plugin contract (transport injection + extracted-asset route)
         run: |

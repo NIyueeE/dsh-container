@@ -12,6 +12,10 @@
 # 环境变量:
 #   DOCKER    docker 二进制, 默认 docker; podman 用户可 DOCKER=podman
 #   其他依赖: curl, awk, sed; 需要空闲端口 3081 与 127.0.0.1:3082
+#
+# SC2016: 本文件大量使用 `"$DOCKER" exec "$cid" sh -c '...'` 形式, 单引号是
+# **故意**的 —— 里面的 $ 必须留给容器内的 sh 展开, 而不是在宿主 shell 展开。
+# shellcheck disable=SC2016
 set -euo pipefail
 
 DOCKER="${DOCKER:-docker}"
@@ -165,15 +169,47 @@ fi
 # 内置常用 CLI 工具(系统层烘干): agent 高频命令开箱可用, 不依赖容器内现装
 # —— runtime apt install 落在可写层, 容器重建即丢, 所以常用的必须进镜像。
 # fd 是 Debian fd-find(fdfind)的系统层真名别名。
+# 第二组是本镜像运维面更依赖的诊断工具: 网络栈(Caddy→dsh、嵌套 podman 的
+# slirp4netns)与进程排查。tcpdump/iftop/mtr 刻意不在其中 —— 容器没有
+# CAP_NET_RAW, 装了也抓不到包(docs/deployment.md § Built-in tools)。
+# just/shellcheck 让仓库自己的 justfile 与 lint 在容器内可跑。
 "$DOCKER" exec "$cid" sh -c '
   for t in rg fd patch zip less vi nano ssh rsync wget tree htop sqlite3 tmux crun; do
     command -v "$t" >/dev/null || { echo "missing built-in tool: $t" >&2; exit 1; }
+  done
+  for t in dig nc socat traceroute iperf3 file ncdu strace zstd lz4 bc sponge pv uuidgen just shellcheck; do
+    command -v "$t" >/dev/null || { echo "missing built-in diagnostics tool: $t" >&2; exit 1; }
   done
   python3 --version
   fd --version
   crun --version
   git lfs version
 ' || die "built-in tool check failed"
+
+# yq 经 uv tool 装进镜像(非 apt): 二进制软链在 /usr/local/bin, venv 在
+# /opt/uv-tools。它是 kislyuk 的 Python yq(4.x, 调用 /usr/bin/jq 处理 JSON),
+# 因此版本行会顺带打印 jq 的版本。
+"$DOCKER" exec "$cid" sh -c '
+  test -x /usr/local/bin/yq || { echo "yq shim missing" >&2; exit 1; }
+  test -d /opt/uv-tools/yq || { echo "yq venv missing" >&2; exit 1; }
+  yq --version
+' | grep -Eq '^yq [0-9]+\.' || die "yq is not the expected uv-tool install"
+
+# pnpm 全局安装契约: pnpm 把可执行文件放在 $PNPM_HOME/bin, PATH 必须包含它。
+# 断言解析结果 + PATH 成员, 而不是真去装一个包 —— 后者要拉 npm registry,
+# 会让冒烟测试多一个网络依赖; 而"目录不在 PATH"正是 pnpm 自己报错拒装的
+# 原因(旧镜像的回归: 装出来的命令不可见)。不设 pipefail 时管道右侧的
+# grep 退出码即整条管道的结果, 符合这里的判据。
+"$DOCKER" exec "$cid" sh -c '
+  home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
+  pnpm_home="${PNPM_HOME:-$home/.local/share/pnpm}"
+  bin="$(pnpm bin -g)" || exit 1
+  test "$bin" = "$pnpm_home/bin" || { echo "pnpm global bin is \"$bin\", expected \"$pnpm_home/bin\"" >&2; exit 1; }
+  case ":$PATH:" in
+    *":$bin:"*) ;;
+    *) echo "pnpm global bin \"$bin\" is not on PATH; pnpm add -g would refuse to install" >&2; exit 1 ;;
+  esac
+' || die "pnpm global install contract check failed"
 
 # 容器内 rootless podman 运行期契约(podman 5.4.2 实测):
 # XDG_RUNTIME_DIR 由 entrypoint provision; /etc/subuid、/etc/subgid 各自必须
