@@ -4,9 +4,9 @@
 #
 # 基础镜像: debian:13-slim —— 只保留本项目需要的工具链: Node.js LTS、pnpm、
 # uv、Rust/cargo、Caddy、podman、gh, 外加一组 agent 高频 CLI 工具
-# (ripgrep/fd/python3/zip/openssh-client/tmux/sqlite3/编辑器等)。后者全部进
-# 系统层: 卷上只放数据, agent 或用户在容器内 apt install 的东西会随容器重建
-# 丢失(可写层), 常用的就应当在构建期烘干, 避免每次重建都重新下载。
+# (ripgrep/fd/python3/zip/openssh-client/tmux/sqlite3/编辑器/网络诊断等)。
+# 后者全部进系统层: 卷上只放数据, agent 或用户在容器内 apt install 的东西会随
+# 容器重建丢失(可写层), 常用的就应当在构建期烘干, 避免每次重建都重新下载。
 # 在此之上按官方仓库 https://github.com/deepseek-ai/deepseek-harness 的源码
 # 方式构建 dsh: git clone 后切换到指定 tag, 再用 pnpm install/build:official。
 #
@@ -53,15 +53,18 @@
 #     不依赖 secure context 的 randomUuid()(util-crypto)
 #   - 分层(hermes-agent 模式): 工具链全部是镜像所有的系统层真二进制 —— uv/pnpm
 #     与 rustup 代理在 /usr/local/bin、rust 工具链树在 /opt/rust、dsh 在
-#     /opt/deepseek-harness, 随镜像更新整体重置; /home/dsh 整体挂载为数据卷,
+#     /opt/deepseek-harness、yq 的独立 venv 在 /opt/uv-tools, 随镜像更新整体
+#     重置; /home/dsh 整体挂载为数据卷,
 #     但卷上只有数据: ~/.dsh、可写缓存(~/.cargo 的 registry/cache、uv 的
-#     ~/.local/share/uv、pnpm store)与用户自装工具(~/.local/bin、~/.cargo/bin,
-#     PATH 垫底)。旧镜像种进卷的工具副本被 PATH 遮蔽(惰性), 手动清理见
-#     release notes
+#     ~/.local/share/uv、pnpm store)与用户自装工具(~/.local/bin、~/.cargo/bin、
+#     pnpm 全局 bin, PATH 垫底)。旧镜像种进卷的工具副本被 PATH 遮蔽(惰性),
+#     手动清理见 release notes
 #   - agent 高频 CLI 工具(ripgrep、fd、python3、zip、openssh-client、tmux、
-#     sqlite3、vim/nano、less、rsync、wget、tree、htop、tzdata、patch 等)与
-#     crun 同样进系统层: 容器内 sudo apt install 落在可写层, 重建即丢, 常用
-#     工具必须构建期烘干(见 docs/deployment.md "内置工具" 一节)
+#     sqlite3、vim/nano、less、rsync、wget、tree、htop、tzdata、patch,
+#     以及运维面更依赖的网络/进程诊断: dig、nc、socat、traceroute、iperf3、
+#     file、ncdu、strace、zstd/lz4 等)与 crun 同样进系统层: 容器内 sudo apt
+#     install 落在可写层, 重建即丢, 常用工具必须构建期烘干
+#     (见 docs/deployment.md "内置工具" 一节)
 #   - 容器内 rootless podman 的运行期环境: /etc/subuid、/etc/subgid 各自只有
 #     一行 dsh 区间(重复行使 newuidmap 写出重叠映射, 内核 EINVAL),
 #     entrypoint provision XDG_RUNTIME_DIR(/run/user/$UID, 无 login session
@@ -126,7 +129,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HOME=/home/dsh/.cargo \
     PNPM_HOME=/home/dsh/.local/share/pnpm \
     NPM_CONFIG_PREFIX=/home/dsh/.local
-ENV PATH=/usr/local/sbin:/usr/local/bin:/home/dsh/.local/bin:/home/dsh/.cargo/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PNPM_HOME}
+# PATH 镜像优先: 系统层真二进制在前, 用户自装工具(~/.local/bin、~/.cargo/bin、
+# pnpm 全局 bin)垫底。PNPM_HOME 自身只是 pnpm 的 store 与 home, 可执行文件落在
+# 它的 bin/ 子目录 —— 只写 $PNPM_HOME 会让 `pnpm add -g` 装出来的命令不在 PATH
+# 里(pnpm 自己就报 "The configured global bin directory ... is not in PATH",
+# 见 container/entrypoint.sh 与 dsh-web.sh 中同一条链路的同步)。
+ENV PATH=/usr/local/sbin:/usr/local/bin:/home/dsh/.local/bin:/home/dsh/.cargo/bin:${PNPM_HOME}/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ---------------------------------------------------------------------------
 # 1. 安装基础工具链、C/C++ 编译依赖、Caddy、嵌套 Podman 及 GitHub CLI 源。
@@ -134,6 +142,13 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/home/dsh/.local/bin:/home/dsh/.cargo/bi
 #    编辑器/rsync/wget/tree/htop/tzdata/patch/git-lfs)与 podman 的 crun
 #    运行时 —— 全部烘干进系统层, 容器内运行期再 apt install 只会落在可写层、
 #    容器重建即丢(见 docs/deployment.md "内置工具")。
+#    本镜像的运维面高度集中在网络栈(Caddy → dsh, 以及容器内嵌套 podman 的
+#    slirp4netns 网络): 因此另外烘干一组诊断工具 —— dig/nc/socat/traceroute/
+#    iperf3(连通性与带宽)、file/ncdu(对象与空间)、strace(三进程互相拉扯时
+#    追踪 dsh-web/Caddy/dsh)、zstd/lz4/bc/moreutils/pv/uuid-runtime(数据处理)。
+#    刻意**不**装 tcpdump/iftop/mtr: 容器 CapEff 无 CAP_NET_RAW(实测
+#    0x201000=cap_net_admin,cap_sys_admin), 抓包套接字打不开, 装了也只会让
+#    使用者以为能用。just/shellcheck 是开发工具(见 docs/deployment.md 同节)。
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -177,6 +192,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux \
     tzdata \
     git-lfs \
+    file \
+    bind9-dnsutils \
+    netcat-openbsd \
+    socat \
+    traceroute \
+    iperf3 \
+    strace \
+    ncdu \
+    zstd \
+    lz4 \
+    bc \
+    moreutils \
+    pv \
+    uuid-runtime \
+    just \
+    shellcheck \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -332,7 +363,29 @@ RUN set -eux; \
     pnpm --version
 
 # ---------------------------------------------------------------------------
-# 10. 从源码构建 dsh(系统层 /opt/deepseek-harness; 构建产物与镜像绑定)
+# 10. 安装 yq(经 uv, 系统层: 与 uv/pnpm/cargo 同属"镜像持有的工具")
+#     Debian 13 的 apt 只提供 Python 版 yq(3.4.3, 与 jq 语法不同), 因此走
+#     uv tool: 落成 /opt/uv-tools/yq 下的独立 venv + /usr/local/bin/{yq,tomlq,xq}
+#     软链。这个 venv 的解释器指向系统 /usr/bin(PyYAML 与 stdlib 自带依赖),
+#     不依赖 ~/.local/share/uv 里 uv 托管的 Python, 因此运行期不碰用户卷。
+#     注意它是 kislyuk 的 Python yq(4.x): **调用 /usr/bin/jq 完成 JSON 处理**,
+#     所以 jq 是运行期硬依赖(镜像已装, 见第 1 步), `yq --version` 也会顺带
+#     打印 jq 的版本行。
+#     UV_TOOL_DIR 只在本构建步骤内设置, **不**进全局 ENV —— 否则运行期用户
+#     自己 `uv tool install` 会去写 /opt 而撞权限。用户自装走默认
+#     ~/.local/share/uv/tools(在卷上, 持久), 见 docs/deployment.md。
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    export UV_TOOL_DIR=/opt/uv-tools \
+           UV_TOOL_BIN_DIR=/usr/local/bin \
+           UV_LINK_MODE=copy; \
+    mkdir -p "$UV_TOOL_DIR"; \
+    uv tool install yq; \
+    test -x /usr/local/bin/yq; \
+    yq --version
+
+# ---------------------------------------------------------------------------
+# 11. 从源码构建 dsh(系统层 /opt/deepseek-harness; 构建产物与镜像绑定)
 #     产物后处理顺序固定: 抽图 -> minify -> 重写构建记录(详见文件头说明)。
 #     esbuild 是构建期专用工具: 装进一次性前缀, 用完在同一层删除, 不进最终镜像。
 # ---------------------------------------------------------------------------
@@ -364,7 +417,7 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     dsh --version
 
 # ---------------------------------------------------------------------------
-# 11. 预热 apt 包索引: 最终镜像保留一份最新 /var/lib/apt/lists, 容器内开箱
+# 12. 预热 apt 包索引: 最终镜像保留一份最新 /var/lib/apt/lists, 容器内开箱
 #     即可 apt install, 无需先手动 apt-get update。前面各步骤用完即清是为了
 #     压缩中间层; 这里的索引属于系统层, 随镜像升级重置(索引会随镜像变旧,
 #     过期时容器内先 sudo apt-get update 再装, 见 docs/build.md)
@@ -372,7 +425,7 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
 RUN apt-get update
 
 # ---------------------------------------------------------------------------
-# 12. 运行配置
+# 13. 运行配置
 # ---------------------------------------------------------------------------
 WORKDIR /home/dsh
 EXPOSE 3081
