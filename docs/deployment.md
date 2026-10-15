@@ -174,6 +174,25 @@ origin, a path-based proxy) is rejected before the platform is even contacted
 symptom is a sign-in dialog that opens a tab and leaves it on `about:blank` while the popup stays
 empty.
 
+The platform enforces the same policy on its own side, so patching the upstream check would buy
+nothing: `POST https://platform.deepseek.com/auth-api/v0/dsh/auth_init` rejects a public
+`redirect_uri` with `50005 PAYLOAD_SCHEMA_MISMATCH` *before* any authorization happens. Measured
+against the live endpoint (no account, no consent screen involved):
+
+| `redirect_uri` | Platform |
+|---|---|
+| `http://localhost:3080/oauth/callback` | accepted (`code: 0`, returns `authorize_url`) |
+| `http://localhost:3081/oauth/callback` | accepted — any port, any path, query/fragment allowed |
+| `http://127.0.0.1:3080/…`, `http://[::1]:3080/…` | accepted |
+| `http://localhost/oauth/callback` (no port) | rejected `50005` |
+| `https://localhost:3080/…` (https loopback) | rejected `50005` |
+| `https://<your-domain>/oauth/callback` | rejected `50005` |
+| `http://<public-ip>:3081/oauth/callback` | rejected `50005` |
+
+So the accepted shape is *http + loopback host + explicit port* — the same policy upstream's
+`loginOrigin()` encodes client-side, which is why the proxy cannot substitute for the tunnel: the
+callback only has an effect where `localhost:<port>` actually reaches the container.
+
 So the tunnel has to run in the **browser's** direction, and the sign-in browser has to be on a
 machine that can reach the dsh host's own loopback:
 
@@ -182,6 +201,12 @@ machine that can reach the dsh host's own loopback:
 ssh -L 3081:127.0.0.1:3081 user@your-host
 # then sign in from http://localhost:3081
 ```
+
+Use `127.0.0.1` as the forward's *destination*, not `localhost`: the proxy listens on IPv4
+(`0.0.0.0:3081`), and an SSH client that resolves the destination to `::1` forwards into a port
+nothing is listening on. Do not add `-g` — that would expose the authenticated proxy to the
+browser's whole network. Basic auth applies inside the tunnel too when
+`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` are set.
 
 `http://localhost:3081` and `http://<host>:3081` are different origins, so the session cookie is
 **not** shared: the public name keeps its own, un-signed-in session, and account surfaces
@@ -192,6 +217,14 @@ a missing feature of this image.
 Account sign-in and model access are independent: to use DeepSeek models without account features,
 set an API key on the Models page (or in `~/.dsh/.credentials.yaml`), which needs no loopback origin
 and therefore works over any of the exposure modes above.
+
+Note the container needs outbound access to `platform.deepseek.com` too — `auth_init` is a
+server-side request. That endpoint sits behind a WAF that filters by client, so a container forced
+through a proxy or an unusual egress path can fail sign-in with a *network* error before the
+platform ever sees the request; a `curl` probe from inside the container reproduces it as an
+HTML `429 Request Blocked` page with curl's default User-Agent and `HTTP 200` with a browser
+User-Agent. If sign-in fails while the platform is otherwise reachable, check which side is failing
+before assuming the loopback constraint.
 
 ### External reverse proxy with TLS (WAN)
 
