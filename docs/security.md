@@ -168,7 +168,10 @@ reach it, and serving them is an explicit step. When you do:
   [deployment.md](deployment.md) "Public deployment (nginx in front)" — rate limiting/banning and
   basic auth both stay on;
 - **or don't expose at all**: an SSH tunnel (`ssh -L 3081:127.0.0.1:3081 ...`) or a VPN
-  (WireGuard/Tailscale) is the strongest option for a single user;
+  (WireGuard/Tailscale) is the strongest option for a single user. It is also the only exposure
+  mode in which DeepSeek **account sign-in** works: upstream accepts a loopback browser origin only,
+  so the tunnel has to end in the browser and be reached as `http://localhost:3081` (see
+  [deployment.md](deployment.md) § DeepSeek account sign-in);
 - if you front it with an external reverse proxy, forward the WebSocket upgrade headers
   (`Upgrade`/`Connection`) and raise the idle timeouts — without them the UI's event streams
   silently fail (see [deployment.md](deployment.md) for a working nginx example).

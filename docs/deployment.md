@@ -127,11 +127,12 @@ devices is an explicit step; when you do, treat it like any network service:
 - **public HTTPS** (a host-side nginx in front, TLS at nginx): keep the container port on loopback
   and see "Public deployment (nginx in front)" below — basic auth stays mandatory and nginx adds
   rate limiting / banning;
-- **anything beyond that**: use an SSH tunnel instead:
+- **anything beyond that**: use an SSH tunnel instead (`http://localhost:3081`, not the LAN address
+  or the public name — DeepSeek account sign-in only works from a loopback origin, see below):
 
 ```bash
 ssh -L 3081:127.0.0.1:3081 user@your-host
-# open http://127.0.0.1:3081 in your local browser
+# open http://localhost:3081 in your local browser
 ```
 
 The proxy's header rewrite makes every request look loopback, so there is no trust configuration
@@ -159,6 +160,38 @@ resolved its configuration — so a hand-written `settings.yaml` takes effect fr
 `dsh` start, not the current one (on a fresh home with a single start, never). Read or edit
 them from the host, or inside the container (`docker exec dsh cat
 ~/.dsh/profiles/web/cordis.patch.yml`).
+
+### DeepSeek account sign-in only works from a loopback browser origin
+
+"Sign in" failing is an upstream constraint, not a proxy misconfiguration, and the proxy cannot
+lift it. The account "Sign in" button runs an OAuth authorization-code flow with PKCE: the browser
+hands its own origin (`window.location.origin`) to dsh, dsh registers `/oauth/callback` and passes
+that origin to the platform as `redirect_uri`, and the browser is redirected there to finish.
+Upstream accepts only three shapes for that origin — `http://localhost:<port>`,
+`http://127.0.0.1:<port>`, `http://[::1]:<port>` — anything else (a remote domain, an `https://`
+origin, a path-based proxy) is rejected before the platform is even contacted
+(`packages/credentials/deepseek-account-platform/src/protocol.ts`, `loginOrigin()`). The observable
+symptom is a sign-in dialog that opens a tab and leaves it on `about:blank` while the popup stays
+empty.
+
+So the tunnel has to run in the **browser's** direction, and the sign-in browser has to be on a
+machine that can reach the dsh host's own loopback:
+
+```bash
+# on the machine running the browser (not on the dsh host)
+ssh -L 3081:127.0.0.1:3081 user@your-host
+# then sign in from http://localhost:3081
+```
+
+`http://localhost:3081` and `http://<host>:3081` are different origins, so the session cookie is
+**not** shared: the public name keeps its own, un-signed-in session, and account surfaces
+(balance, bonuses, account-scoped models) only show data in the tunneled session. Signing in from a
+remote browser that cannot reach the host's loopback is not supported — that is the constraint, not
+a missing feature of this image.
+
+Account sign-in and model access are independent: to use DeepSeek models without account features,
+set an API key on the Models page (or in `~/.dsh/.credentials.yaml`), which needs no loopback origin
+and therefore works over any of the exposure modes above.
 
 ### External reverse proxy with TLS (WAN)
 
@@ -514,6 +547,16 @@ the published port `3081` — if it does, the session bootstrap failed: check
 bootstrap errors; the container exits non-zero on bootstrap failure, so the orchestrator restarts
 it. The message is expected when hitting dsh's internal port `3080` directly (not published;
 same-network containers get `401` there by design).
+
+**Account sign-in (the "Sign in" button) fails over a domain or LAN address**
+Expected. Upstream only accepts a loopback browser origin for the OAuth callback
+(`http://localhost:<port>` / `http://127.0.0.1:<port>` / `http://[::1]:<port>`), so `https://…`,
+a LAN IP or a path-based proxy is rejected before the platform is contacted — typically a tab that
+opens and stays on `about:blank`. Sign in from `http://localhost:3081` through an SSH tunnel
+instead (`ssh -L 3081:127.0.0.1:3081 user@your-host`); see
+[DeepSeek account sign-in](#deepseek-account-sign-in-only-works-from-a-loopback-browser-origin).
+This affects account features (balance, bonuses) only — an API key on the Models page works over any
+exposure mode.
 
 **How do I update dsh inside a running container?**
 dsh is built into the image and immutable at runtime. Pull/run the image that is tagged with the
