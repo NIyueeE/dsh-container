@@ -202,9 +202,17 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   range exactly once per file), plus the runtime-side preparation: `crun`, an entrypoint-provisioned
   `XDG_RUNTIME_DIR`, a `containers.conf` preset (`slirp4netns` as the rootless network command,
   `default_sysctls` emptied — Debian's `ping_group_range` default fatally fails inside nested
-  rootless containers), and a `storage.conf` that sets only `mount_program`** (pinning
-  `driver = "overlay"` next to it breaks rootful podman config loading on 5.4.2: `runroot must be
-  set`). Do **not** set `_CONTAINERS_USERNS_CONFIGURED` anywhere: on podman 5.x it makes the inner
+  rootless containers), and a `storage.conf` that spells out all four keys — `driver`,
+  `graphroot`, `runroot` and `mount_program`.** Write all of them: podman applies its compiled-in
+  defaults only while the file is *absent*, so once it exists a missing key becomes a failure —
+  no `driver` means a warning on every single invocation, no `graphroot`/`runroot` means rootful
+  podman cannot load its configuration at all (`runroot must be set`, 5.4.2). Neither is caused by
+  pinning the driver; the older claim that pinning `driver` was what broke rootful was wrong
+  (measured: it fails unpinned too). Rootless keeps its XDG paths regardless. Rootful *running*
+  containers is still impossible here — crun needs `CAP_MKNOD`, absent from the container's
+  `CapBnd`, plus cgroup-namespace handling — so that is a host-deployment decision
+  (`--cap-add=MKNOD`), documented in `docs/deployment.md` but not verified end to end.
+  Do **not** set `_CONTAINERS_USERNS_CONFIGURED` anywhere: on podman 5.x it makes the inner
   podman skip user-namespace creation while its runtime still needs it, and every store-touching
   command then panics on a nil pointer (item 4 above). Nested containers still depend on the host
   Docker/Podman seccomp and user-namespace settings, `/dev/fuse`, `/dev/net/tun`, and an unmasked

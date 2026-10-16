@@ -256,18 +256,30 @@ EOF
 
 # ---------------------------------------------------------------------------
 # 3. 配置嵌套 Podman
-#    storage.conf: 只设 mount_program、不钉死 driver —— podman 自动探测到
-#    overlay 时挂载程序同样生效(rootless 在无 userns overlay 支持的内核上走
-#    fuse-overlayfs); 而 "driver=overlay + mount_program 但不给
-#    runroot/graphroot" 会让 rootful podman 加载配置即失败
-#    (podman 5.4.2 实测: "runroot must be set"), rootless 侧反而正常。
+#    storage.conf: driver/graphroot/runroot/mount_program 四项全部写全。只要该
+#    文件存在, podman 就不再套用编译内置的默认值, 缺项会直接变成故障:
+#      - 缺 driver → 每次 podman 调用都告警 "The storage 'driver' option
+#        should be set ... A driver was picked automatically";
+#      - 缺 graphroot/runroot → rootful podman 加载配置即失败
+#        "runroot must be set" (podman 5.4.2 实测)。
+#    这两件事都与"是否钉死 driver"无关 —— 旧注释把 rootful 失败归因于钉
+#    driver, 实测未钉 driver 时 rootful 同样失败(缺的是 runroot)。写全之后:
+#    rootless 静默, 且照旧走自己的 XDG 路径(系统 graphroot/runroot 对 rootless
+#    被忽略), 嵌套容器与出网均正常; rootful 也能加载配置并拉取镜像。
+#    代价: driver 写死后失去静默降级到 vfs 的能力(宿主 overlay 各种形态全不
+#    可用时会直接报错而非悄悄变慢); mount_program 仍覆盖"内核无 userns
+#    overlay"那一档。
+#    注意 rootful **运行**容器在本镜像依然不可用, 且与 storage.conf 无关:
+#    crun 用 mknod 建设备节点, 而 CAP_MKNOD 不在容器 CapBnd 内(容器内无法
+#    获取), 另需绕过 cgroup 命名空间的 no-internal-process 规则。启用它属于
+#    宿主部署决定(docker run --cap-add=MKNOD), 见 docs/deployment.md 同节。
 #    containers.conf: 默认 rootless 网络后端固定为 slirp4netns(镜像不装
 #    pasta, 而 podman 5 首选 pasta, 缺失即报错); default_sysctls 清空 ——
 #    Debian 默认的 net.ipv4.ping_group_range 写入在嵌套 rootless 容器里必然
 #    失败(内层 /proc/sys 只读, crun 写 sysctl 失败即容器创建失败)。
 # ---------------------------------------------------------------------------
 RUN mkdir -p /etc/containers \
-    && printf '[storage.options]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
+    && printf '[storage]\ndriver = "overlay"\ngraphroot = "/var/lib/containers/storage"\nrunroot = "/run/containers/storage"\n\n[storage.options]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
          > /etc/containers/storage.conf \
     && printf '[containers]\ndefault_sysctls = []\n\n[network]\ndefault_rootless_network_cmd = "slirp4netns"\n' \
          > /etc/containers/containers.conf \

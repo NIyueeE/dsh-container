@@ -436,7 +436,8 @@ Exact tool versions: /etc/dsh-container/provenance.json
 ## 7. In-container podman
 
 The image installs podman with `crun`, `fuse-overlayfs`, `slirp4netns` and `uidmap`, and prepares
-the runtime environment for **rootless podman as the `dsh` user** (no `sudo` inside the container):
+the runtime environment for **rootless podman as the `dsh` user** — the supported path, needing no
+privileges beyond the container's own:
 
 - **subuid/subgid carry the `dsh` range exactly once.** Duplicate lines make `newuidmap` build an
   overlapping mapping, which the kernel rejects with `Invalid argument` — rootless podman then
@@ -447,11 +448,27 @@ the runtime environment for **rootless podman as the `dsh` user** (no `sudo` ins
   store-touching command dies on a nil-pointer panic. Without it the inner podman runs the standard
   rootless flow: `unshare` + setuid `newuidmap` over the subuid range, then a fully initialized
   runtime inside that user namespace.
-- **Storage** is preset for rootless overlay via `fuse-overlayfs`: `/etc/containers/storage.conf`
-  sets `mount_program` only. Pinning `driver = "overlay"` next to it (without explicit
-  `runroot`/`graphroot`) makes *rootful* podman fail config loading with `runroot must be set`
-  (podman 5.4.2) — rootless podman is unaffected, but the shared file is kept safe for both.
-  `policy.json` accepts any registry.
+- **Storage** is fully specified in `/etc/containers/storage.conf`: `driver = "overlay"` together
+  with `mount_program = "/usr/bin/fuse-overlayfs"` and explicit `graphroot`/`runroot`. All four
+  keys matter, because podman falls back to its compiled-in defaults only while the file is
+  *absent* — once it exists, a missing key turns into a failure: without `driver` every single
+  podman invocation warns `The storage 'driver' option should be set …`, and without
+  `graphroot`/`runroot` *rootful* podman cannot even load its configuration (`runroot must be set`,
+  podman 5.4.2). Rootless is unaffected either way: it keeps its own XDG paths (the system
+  `graphroot`/`runroot` are ignored for a rootless user) and runs nested containers with working
+  outbound networking. The one trade-off of pinning `driver` is losing the silent fall back to
+  `vfs` — on a host where no overlay flavour works, podman now reports an error instead of quietly
+  turning slow; `mount_program` still covers kernels without user-namespace overlay. `policy.json`
+  accepts any registry.
+- **Rootful podman (`sudo podman`) can load its configuration and pull images, but cannot *run*
+  containers** — a host-invocation limit, not image configuration. crun creates the container's
+  device nodes with `mknod`, which needs `CAP_MKNOD`; that capability is missing from the
+  container's *bounding* set (`CapBnd`), so it cannot be acquired from inside (`sudo mknod` fails
+  with `Operation not permitted`). Rootful then also hits cgroup v2's no-internal-process rule,
+  because the container gets its own cgroup namespace — `--cgroups=disabled` clears that step.
+  Enabling rootful would therefore take a host-side `--cap-add=MKNOD` (a genuine privilege
+  increase) plus cgroup handling, and that combination is **not** verified end to end. Rootless
+  podman needs none of it and is the path this image supports.
 - **`/etc/containers/containers.conf`** presets `default_rootless_network_cmd = "slirp4netns"`
   (the image does not ship `pasta`, podman 5's preferred rootless network command) and empties
   `default_sysctls` — Debian's default `net.ipv4.ping_group_range` write fatally fails inside a
