@@ -62,8 +62,8 @@
 #   - agent 高频 CLI 工具(ripgrep、fd、python3、zip、openssh-client、tmux、
 #     sqlite3、vim/nano、less、rsync、wget、tree、htop、tzdata、patch,
 #     以及运维面更依赖的网络/进程诊断: dig、nc、socat、traceroute、iperf3、
-#     file、ncdu、strace、zstd/lz4 等)与 crun 同样进系统层: 容器内 sudo apt
-#     install 落在可写层, 重建即丢, 常用工具必须构建期烘干
+#     nft、file、ncdu、strace、zstd/lz4 等)与 crun 同样进系统层: 容器内 sudo
+#     apt install 落在可写层, 重建即丢, 常用工具必须构建期烘干
 #     (见 docs/deployment.md "内置工具" 一节)
 #   - 容器内 rootless podman 的运行期环境: /etc/subuid、/etc/subgid 各自只有
 #     一行 dsh 区间(重复行使 newuidmap 写出重叠映射, 内核 EINVAL),
@@ -144,8 +144,8 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/home/dsh/.local/bin:/home/dsh/.cargo/bi
 #    容器重建即丢(见 docs/deployment.md "内置工具")。
 #    本镜像的运维面高度集中在网络栈(Caddy → dsh, 以及容器内嵌套 podman 的
 #    slirp4netns 网络): 因此另外烘干一组诊断工具 —— dig/nc/socat/traceroute/
-#    iperf3(连通性与带宽)、file/ncdu(对象与空间)、strace(三进程互相拉扯时
-#    追踪 dsh-web/Caddy/dsh)、zstd/lz4/bc/moreutils/pv/uuid-runtime(数据处理)。
+#    iperf3/nft(连通性、带宽与防火墙规则)、file/ncdu(对象与空间)、strace(三进程
+#    互相拉扯时追踪 dsh-web/Caddy/dsh)、zstd/lz4/bc/moreutils/pv/uuid-runtime(数据处理)。
 #    刻意**不**装 tcpdump/iftop/mtr: 容器 CapEff 无 CAP_NET_RAW(实测
 #    0x201000=cap_net_admin,cap_sys_admin), 抓包套接字打不开, 装了也只会让
 #    使用者以为能用。just/shellcheck 是开发工具(见 docs/deployment.md 同节)。
@@ -169,6 +169,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     uidmap \
     slirp4netns \
     iptables \
+    nftables \
     ripgrep \
     fd-find \
     patch \

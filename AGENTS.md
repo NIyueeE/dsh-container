@@ -20,7 +20,7 @@ container-environment note for that file lives in
 
 | Path | Purpose |
 |---|---|
-| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors plus a diagnostics set: dig/nc/socat/traceroute/iperf3, file, ncdu, strace, zstd/lz4, just, shellcheck), `uv tool`-installed yq (`/opt/uv-tools`), source-built dsh (`/opt/deepseek-harness`), entrypoint |
+| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors plus a diagnostics set: dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, just, shellcheck), `uv tool`-installed yq (`/opt/uv-tools`), source-built dsh (`/opt/deepseek-harness`), entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + session-cookie wait + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
@@ -63,8 +63,8 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    shadow image-provided tools. PATH is image-first (`/usr/local/bin` before `$HOME/.local/bin`)
    with user directories last. Agent high-frequency CLI tools (ripgrep, fd, python3, zip,
     openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch,
-    git-lfs, crun, plus the network/process diagnostics dig/nc/socat/traceroute/iperf3, file, ncdu,
-    strace, zstd/lz4 and the dev tooling just/shellcheck) are baked into the system layer too:
+    git-lfs, crun, plus the network/process diagnostics dig/nc/socat/traceroute/iperf3/nft, file,
+    ncdu, strace, zstd/lz4 and the dev tooling just/shellcheck) are baked into the system layer too:
     runtime `apt install` writes the
     container's writable layer and is lost on recreation, so persistent tools belong in the image,
     not in a runtime install. (deliberately absent: `tcpdump`/`iftop`/`mtr` — the container has no

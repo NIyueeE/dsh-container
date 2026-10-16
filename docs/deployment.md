@@ -350,7 +350,7 @@ container never spends its first minutes downloading them:
 | Languages & runtimes | Node.js 22 LTS + npm/pnpm, uv, Rust/cargo with `rustfmt` + `clippy`, python3 (apt-managed; PEP 668 applies — prefer `uv run` / `uv pip` for project work), build-essential + libssl-dev for native builds |
 | Editors & pagers | `vim.tiny` (`vi`), `nano`, `less` |
 | Networking & debugging | `openssh-client`, `iputils-ping`, `iproute2` (`ss`/`ip`), `lsof`, `tree`, `htop` |
-| Network diagnostics | `dig`/`nslookup`/`host` (`bind9-dnsutils`), `nc`, `socat`, `traceroute`, `iperf3` — this image's operational surface is mostly network plumbing (Caddy → dsh, plus nested podman's slirp4netns), so connectivity and bandwidth checks are first-class |
+| Network diagnostics | `dig`/`nslookup`/`host` (`bind9-dnsutils`), `nc`, `socat`, `traceroute`, `iperf3`, `nft` (`nftables`) — this image's operational surface is mostly network plumbing (Caddy → dsh, plus nested podman's slirp4netns), so connectivity, bandwidth and firewall-rule checks are first-class |
 | Files & processes | `file`, `ncdu`, `strace` — inspecting what a file is, what fills the volume, and where the `dsh-web`/Caddy/dsh trio is stuck |
 | Compression & data | `zstd`, `lz4`, `bc`, `moreutils`, `pv`, `uuid-runtime` |
 | Dev tooling | `just` (the repository's `justfile` recipes work inside the container, including `just build` via nested podman), `shellcheck` (the repository's lint gate runs in-container too) |

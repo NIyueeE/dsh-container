@@ -177,7 +177,7 @@ fi
   for t in rg fd patch zip less vi nano ssh rsync wget tree htop sqlite3 tmux crun; do
     command -v "$t" >/dev/null || { echo "missing built-in tool: $t" >&2; exit 1; }
   done
-  for t in dig nc socat traceroute iperf3 file ncdu strace zstd lz4 bc sponge pv uuidgen just shellcheck; do
+  for t in dig nc socat traceroute iperf3 nft file ncdu strace zstd lz4 bc sponge pv uuidgen just shellcheck; do
     command -v "$t" >/dev/null || { echo "missing built-in diagnostics tool: $t" >&2; exit 1; }
   done
   python3 --version

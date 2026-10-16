@@ -15,7 +15,7 @@ dsh version.
 Alongside the toolchain, the image bakes an agent's high-frequency CLI tools into the system layer
 (`ripgrep`, `fd`, `python3`, `zip`, `openssh-client`, `tmux`, `sqlite3`, `vim.tiny`, `nano`,
 `less`, `rsync`, `wget`, `tree`, `htop`, `tzdata`, `patch`, `git-lfs`, plus `crun` for nested
-rootless podman, and a diagnostics set: `dig`/`nc`/`socat`/`traceroute`/`iperf3`, `file`, `ncdu`,
+rootless podman, and a diagnostics set: `dig`/`nc`/`socat`/`traceroute`/`iperf3`/`nft`, `file`, `ncdu`,
 `strace`, `zstd`/`lz4`, `bc`, `moreutils`, `pv`, `uuid-runtime`). Runtime `apt install` writes the
 container's writable layer and is lost on
 container recreation, so anything that must persist is installed at build time (or added via a
