@@ -14,63 +14,75 @@ put a host-side proxy in front). The proxy passes SSE/WebSocket streams through 
 restarts itself if it crashes (the container HEALTHCHECK marks it unhealthy while the proxy stays
 down; UI assets are gzip-compressed by dsh's own webserver, not the proxy).
 
-### The proxy is the security boundary
+### The proxy preserves dsh's security fence
 
-The proxy rewrites the `Host` and `Origin` headers to loopback before forwarding. dsh's `/api`
-browser-trust fence checks **HTTP headers only** (it never looks at the connection's source
-address), so from dsh's point of view every proxied request comes from `127.0.0.1` and passes the
-trust fence — **including the settings/credentials methods that upstream deliberately pins to
-loopback** (`settings/describe`, `settings/update`, `credentials.*`, `agentPreset.*`,
-`host.pickDirectory`/`host.openPath`, `llm.discoverModels`).
+Caddy forwards the browser's `Host` and `Origin` unchanged. dsh's `/api` fence is therefore real,
+not bypassed: an external authority is accepted only when it is declared with
+`DSH_TRUSTED_HOST` (or derived from `DSH_PUBLIC_URL`), and Caddy's Host allowlist rejects every
+other Host with `403` before the request reaches dsh. That Host check is what stops DNS rebinding;
+`DSH_TRUSTED_HOST` is the explicit trust declaration for the deployment, not a hidden rewrite.
 
 Upstream also requires a browser session: `dsh web` prints a one-time `?token=...` login URL and
 mints a signed session cookie from it (30 days by default, backed by a signing secret persisted in
-`~/.dsh`). This image absorbs that flow entirely: the container-adapt plugin exchanges the token
-against the local server inside the dsh process itself on every start (reusing a still-valid
-cookie) and writes the cookie to `/tmp/dsh-caddy/session-cookie`; the supervisor then configures
-Caddy to inject that cookie into every proxied request. Browsers never see a
-token — opening `3081` is enough and there is no 401/login step left on the proxy path.
-Authentication therefore lives **only** in Caddy (basic auth, or the network exposure you choose):
+`~/.dsh`). The container-adapt plugin writes the process launch token to
+`/tmp/dsh-caddy/launch-token`, and Caddy redirects a browser that has no `dsh-auth-*` cookie to
+`/?token=...`. dsh then sets `HttpOnly; SameSite=Strict` on the cookie and the browser sends it on
+every later request; **the proxy never injects or rewrites the session**. A still-valid browser
+cookie survives `dsh-restart` and container restarts because the signing secret lives on the
+volume. When the 30-day cookie expires, the next visit is redirected to the launch token again.
 
-- anyone who can reach port `3081` gets a fully authenticated session — enable basic auth
-  (`DSH_PROXY_USER` + `DSH_PROXY_PASSWORD`, set together or the supervisor refuses to start) for
-  any non-loopback deployment;
-- reading the container logs no longer grants anything extra — there is no token to fish out;
-- dsh's own fence is untouched behind the proxy: a direct request to `127.0.0.1:3080` (i.e. a peer
-  container on the same Docker network, which bypasses Caddy) still needs the session cookie and
-  gets `401` without it — the proxy is the only path in.
+The launch token is a process credential and is also printed by `dsh web` into the container log;
+treat container logs as sensitive. Caddy's startup-failure path no longer prints the Caddyfile,
+because that file contains the token.
 
-Upstream dsh's browser code still gates the settings/credentials pages on the page authority, so the
-header rewrite and session injection alone would not make those pages usable in a remote browser.
-The container-adapt plugin (`/opt/dsh-container-plugin`, mounted via `dsh --patch`) handles this by
-contributing the `__DSH_TRANSPORT__ = { ownsHost: true }` row to upstream's structured
-index-injection table — upstream's own declaration for a shell that owns the Host (the desktop shell
-and the worker-preview tunnel use it the same way; its only consumer is the client's `isLoopback`;
-upstream's `trustedHosts` covers only the server-side fence). Nothing in upstream's build output is
-modified for this. No `index.html` change beyond that row is needed: upstream ships its own
-insecure-context `randomUuid()` (`@deepseek-ai/dsh-util-crypto`, lint-enforced), so plain-HTTP LAN
-works without a polyfill.
+Access control still lives at the proxy/network edge:
+
+- anyone who can reach port `3081` can complete the login and gets a fully authenticated session;
+  enable basic auth (`DSH_PROXY_USER` + `DSH_PROXY_PASSWORD`, set together or the supervisor refuses
+  to start) for any non-loopback deployment, or put the port behind a VPN/authenticated proxy;
+- `/api/remote.mux` (the WebSocket upgrade) is exempt from basic auth because browsers do not
+  reliably attach `Authorization` to WebSocket handshakes; it is authenticated by the browser's
+  `SameSite=Strict` session cookie, which a cross-site page cannot send. All other paths still
+  require basic auth when it is configured;
+- dsh itself binds `127.0.0.1:3080`, and that port is not published. Caddy on `0.0.0.0:3081` is the
+  only path into the container; a direct request to `127.0.0.1:3080` from inside the container
+  still gets `401` without the session cookie;
+- `3081` is plain HTTP. Terminate TLS in front of it (the docs include an nginx example); the outer
+  proxy must also add `Secure` to the cookie (`proxy_cookie_flags ~ secure`), because dsh sees HTTP.
+
+`DSH_PUBLIC_URL` is advertisement only: it sets the printed/agent-visible URL and the initial
+launch-token URL, and it grants no trust. The browser-visible authority must still be named by
+`DSH_TRUSTED_HOST` (the image derives it from `DSH_PUBLIC_URL` when the variable is unset).
+
+Upstream's browser code still gates the settings-document affordance on the page authority. The
+container-adapt plugin contributes the `__DSH_TRANSPORT__ = { ownsHost: true }` row for older tags
+whose browser-side privileged surface consumes `isLoopback`; on 0.2.x the only consumer is the
+settings-document controller, and the plugin already forces `hasDocument: false`, so the row is a
+compatibility layer rather than a security mechanism. The proxy no longer changes Host/Origin to
+make that work.
 
 The same plugin keeps the headless-hostile settings-document affordance out of the UI:
 upstream's "Open config file" would spawn the native text-editor command into nothing in a
 container. The plugin wraps the settings controller's `describe` method so `settings/describe`
 reports `hasDocument: false` (and flips the provider's `documentPath` on pre-v0.1.7 upstream
-tags), so the browser never renders the button (upstream renders the action only when the
-describe mirror reports a local document). No download endpoint exists — settings live on the
+tags), so the browser never renders the button. No download endpoint exists — settings live on the
 mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them in the active profile's plugin
 configuration, `~/.dsh/profiles/<profile>/cordis.patch.yml`, with the legacy `settings.yaml`
 imported once), and only the user who mounts the volume and uid 1000 can read it.
 
 Consequences:
 
-- **Enable basic auth** on the proxy by setting both `DSH_PROXY_USER` and `DSH_PROXY_PASSWORD`
-  (recommended for any non-loopback deployment). The supervisor refuses to start when only one is
-  set — a half-configured auth block must never silently start open. Without auth, anyone who can
-  reach `3081` gets full control — same exposure as before, plus settings/credentials, now without
-  even needing the token from the logs.
-- Keep the host firewall closed for `3081` unless LAN access is actually needed.
-- For anything beyond the LAN, put an authenticated reverse proxy (e.g. Caddy + basic auth) or an
-  SSH tunnel in front — don't rely on the raw port; there is still no TLS on `3081` itself.
+- **Enable basic auth** on the proxy for any non-loopback deployment (set both variables; a
+  half-configured auth block must never silently start open). Without it, anyone who can reach
+  `3081` can log in.
+- Keep the host firewall closed for `3081` unless LAN access is actually needed; for anything beyond
+  the LAN, put an authenticated TLS reverse proxy (e.g. Caddy + basic auth) or an SSH tunnel in
+  front — there is still no TLS on `3081` itself.
+- **DeepSeek account sign-in still requires a loopback browser origin.** The browser hands
+  `window.location.origin` to dsh and the platform only accepts `http://localhost:<port>`,
+  `http://127.0.0.1:<port>`, or `http://[::1]:<port>`; a public `https://` hostname is rejected
+  before the platform is contacted. Use an SSH tunnel ending at `http://localhost:3081` for
+  account sign-in; API-key/model use works over any exposure. `DSH_PUBLIC_URL` does not change this.
 - Keep the host-side exposure minimal: the examples already bind to host loopback
   (`127.0.0.1:3081:3081`) — don't loosen that unless you mean to expose the port.
 

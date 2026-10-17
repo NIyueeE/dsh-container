@@ -8,10 +8,10 @@
 # only (127.0.0.1:3081), so LAN/public exposure is an explicit step (see the
 # ports block and docs/deployment.md "Public deployment"). dsh web listens on
 # 127.0.0.1 inside the container (upstream dsh rejects --host 0.0.0.0); Caddy
-# listens on 0.0.0.0:3081 and rewrites Host/Origin to loopback before forwarding
-# to dsh on 127.0.0.1:3080. The proxy bootstraps the dsh browser session
-# automatically (no login URL), and the image applies an idempotent client-side
-# patch before each dsh web start so remote browsers can use settings/credentials.
+# listens on 0.0.0.0:3081, preserves the browser Host/Origin, and forwards to
+# dsh on 127.0.0.1:3080. The first visit is redirected to dsh's launch token and
+# the browser holds the session cookie. For LAN/public set DSH_PUBLIC_URL (and
+# DSH_TRUSTED_HOST if you use more than one authority) and enable basic auth.
 #
 # Persistence: the whole /home/dsh directory is one named volume (the user
 # layer). System packages and /usr/local are replaced on image upgrades while
@@ -27,12 +27,14 @@ services:
       # reverse proxy such as nginx). For plain LAN access use "3081:3081" —
       # basic auth below then becomes mandatory, not optional.
       - "127.0.0.1:3081:3081"
-    # Runtime configuration surface: auth pair. Set both auth variables or
-    # neither. Setting only one fails startup. Loopback-only publishing (the
-    # default) is safe without auth; enable basic auth before switching the
-    # publish line to "3081:3081" (plain LAN) or exposing the host proxy
-    # publicly. The proxy is the security boundary; see docs/security.md.
+    # Runtime configuration surface. DSH_PUBLIC_URL is the browser-facing root
+    # (advertisement only; it also supplies the trusted authority).
+    # DSH_TRUSTED_HOST adds authorities when you use more than one. Basic auth
+    # is still the network access control; set both variables or neither
+    # (setting only one fails startup).
     # environment:
+    #   DSH_PUBLIC_URL: "http://192.168.1.5:3081/"
+    #   DSH_TRUSTED_HOST: "192.168.1.5"
     #   DSH_PROXY_USER: "admin"
     #   DSH_PROXY_PASSWORD: "replace-with-a-strong-password"
     volumes:

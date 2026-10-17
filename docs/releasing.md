@@ -145,8 +145,8 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    contract items is reported, never worked around. On **every** run — drift or not — it also
    checks the § Simplification triggers table in
    [upstream-contract.md](upstream-contract.md) against the upstream diff: when an upstream
-   change makes one of this image's hacks redundant (the transport-owner injection, cookie
-   bootstrap, settings-document button hide via the `describe` wrapper / `documentPath` flip,
+   change makes one of this image's hacks redundant (the transport-owner injection, launch-token
+   login redirect, settings-document button hide via the `describe` wrapper / `documentPath` flip,
    inline-image extraction, client minification, ...), it deletes the hack instead of keeping
    it, and reports the outcome in an "Adaptation review" section. It pushes a `release-prep/<tag>`
    branch and posts its report to the tracker issue — that report is the adaptation decision

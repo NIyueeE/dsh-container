@@ -7,10 +7,10 @@ AGENTS.md                # guidelines for agents working on this repo
 Containerfile            # image build (Debian slim + node/pnpm + rust/uv + podman/crun/caddy/gh + baked agent CLI tools + source-built dsh + entrypoint)
 container/
   entrypoint.sh          # entrypoint: HOME restoration, rustup-home ownership self-heal, XDG_RUNTIME_DIR provisioning, --port parsing, then exec dsh-web
-  dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the session cookie, runs the Caddy proxy, auto-restarts both
+  dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the launch token, runs the Caddy proxy with login redirect, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
   healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
-  plugin/                # container-adapt plugin at /opt/dsh-container-plugin: cookie bootstrap, settings-document button hide, __DSH_TRANSPORT__ index injection, /container-assets route; scripts/ holds the three build-time post-processing steps (extract inline images, esbuild minify, build-record refresh)
+  plugin/                # container-adapt plugin at /opt/dsh-container-plugin: launch-token writer for the Caddy login redirect, settings-document button hide, __DSH_TRANSPORT__ index injection for older tags, /container-assets route; scripts/ holds the three build-time post-processing steps (extract inline images, esbuild minify, build-record refresh)
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)
@@ -72,12 +72,12 @@ node /opt/dsh-container-plugin/scripts/minify-client.mjs --root /tmp/dsh-min \
 node --disable-warning=ExperimentalWarning --experimental-strip-types \
   /opt/dsh-container-plugin/scripts/refresh-build-record.mjs /tmp/dsh-min
 
-# isolated instance from the copy: own HOME/DSH_HOME, own cookie dir via the overlay's
+# isolated instance from the copy: own HOME/DSH_HOME, own launch-token dir via the overlay's
 # `config.runtimeDir` (see container/plugin/overlay.yml) — never the live /tmp/dsh-caddy
 node /tmp/dsh-min/apps/cli/lib/bin.js --patch /tmp/min-overlay.yml --profile web \
   --port 3092 --no-open
 
-# browser: the vendored Playwright, then drive the page with the instance's session cookie
+# browser: the vendored Playwright, then follow the instance's launch-token redirect / drive the page
 node /opt/deepseek-harness/node_modules/.pnpm/playwright@1.61.1/node_modules/playwright/cli.js \
   install --with-deps chromium
 ```

@@ -22,9 +22,9 @@ container-environment note for that file lives in
 |---|---|
 | `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors plus a diagnostics set: dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, just, shellcheck), `uv tool`-installed yq (`/opt/uv-tools`), source-built dsh (`/opt/deepseek-harness`), entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
-| `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + session-cookie wait + Caddy reverse proxy (auto-restart), installed as `/usr/local/bin/dsh-web` |
+| `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + launch-token wait + Caddy reverse proxy with token login redirect (auto-restart, `caddy reload` on token rotation), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
-| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) bootstraps the session cookie inside the dsh process, hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`, plus a `documentPath` flip on pre-v0.1.7 tags; upstream's own UI never renders it), contributes the `__DSH_TRANSPORT__ = { ownsHost: true }` row to upstream's structured index-injection table (its only consumer is the client `isLoopback`), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
+| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) writes dsh's launch token for Caddy's login redirect (the browser holds the session cookie), hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`, plus a `documentPath` flip on pre-v0.1.7 tags; upstream's own UI never renders it), keeps the `__DSH_TRANSPORT__ = { ownsHost: true }` row for older tags (on 0.2.x only the settings-document controller consumes `isLoopback`, and it is hidden), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -101,39 +101,42 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    the container log) mounted with the container-adapt plugin overlay
    (`dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web ...` — the `web` alias
    rejects parent flags upstream, so the root `--profile web` form is required). The plugin
-   bootstraps the session cookie inside the dsh process (token → cookie, reusing a still-valid
-   cookie) and
-   writes it to `/tmp/dsh-caddy/session-cookie` as a **state** file: its content is the cookie in
-   force, and a reused cookie is deliberately *not* rewritten. `dsh-web` waits only for the file to
-   exist (bounded, first boot) and afterwards reconciles on **content change** — regenerating the
-   Caddyfile and restarting Caddy only when the plugin rotated the cookie — so a same-container
-   restart never depends on a write happening (the old mtime handshake is what made the container
-   wait 120 s and exit 1, i.e. a crash loop under a restart policy; issue #12). `dsh-web` then
-   generates the
-   Caddyfile, and starts a **Caddy reverse proxy** on
-   `0.0.0.0:3081` that rewrites `Host`/`Origin` to loopback, injects the session cookie into
-   every proxied request, and marks **both** index entries (`/` and `/index.html` — upstream's two
-   supported entry paths) `Cache-Control: no-store` because the served index is the dynamic boot
-   manifest (UI assets are gzip-compressed by dsh's own webserver; Caddy does not
-   re-compress). It additionally marks the Vite-hashed `/assets/*` tree `Cache-Control: public,
-   max-age=31536000, immutable`: dsh sends no cache header for that tree at all, so without it the
-   browser re-fetches ~475 KiB of shell assets on every navigation (the `/plugins/??…` combo and
-   chunk routes already carry `immutable` from dsh itself, and must not be re-declared here). Browsers never handle the token; authentication
-   is Caddy's job: `DSH_PROXY_USER` + `DSH_PROXY_PASSWORD` add basic auth (Caddyfile `basicauth`
-   directive on the distro caddy 2.6 — renamed `basic_auth` upstream in 2.7; password bcrypt-hashed
-   via `caddy hash-password`, fed over stdin). Setting only one auth variable is a startup error,
-   not a silent no-auth fallback. The Caddyfile is generated at runtime into
-   `/tmp/dsh-caddy/Caddyfile`; Caddy restarts itself if it crashes (config errors still fail fast
-   at startup).
-6. `dsh-web` supervises `dsh web`: if it exits or crashes it is restarted automatically, and the
-   session cookie survives restarts because dsh's signing secret is persisted in the volume (the
-   plugin reuses the old cookie while it stays valid). The container has no
-   browser, so `dsh-web` appends `--no-open` unless the caller already passed it. Inside the
-   container, `dsh-restart` can be used to restart dsh web without restarting the whole container.
-   The plugin also owns the two served-side adaptations: the `__DSH_TRANSPORT__` row it
-   contributes to the structured index-injection table (contract item 1) and the
-   `/container-assets/*` route for the extracted images; the route is registered through
-   `ctx.effect`, and `ctx.on` owns the row subscription, so both dispose with the plugin.
+   writes the process launch token to `/tmp/dsh-caddy/launch-token` as a **state** file;
+   `dsh-web` waits only for that file (bounded), generates the Caddyfile, and afterwards
+   reconciles on **content change** — regenerating the Caddyfile and running `caddy reload` only
+   when the token rotated — so a same-container restart never depends on a write happening (the
+   old mtime handshake is what made the container wait 120 s and exit 1, i.e. a crash loop under a
+   restart policy; issue #12). It starts **Caddy** on `0.0.0.0:3081`, which **preserves the browser
+   `Host`/`Origin`** and forwards to dsh: no header rewrite and no cookie injection. Caddy's route
+   (in order) rejects any Host outside `127.0.0.1`/`localhost`/the configured trusted authorities
+   with `403` (the index token exchange itself does not apply dsh's API fence, so this is the
+   proxy's job), applies optional basic auth (except `/api/remote.mux`, whose WebSocket is
+   authenticated by the browser's `SameSite=Strict` session cookie), marks **both** index entries
+   (`/` and `/index.html` — upstream's two supported entry paths) `Cache-Control: no-store`, marks
+   the Vite-hashed `/assets/*` tree `Cache-Control: public, max-age=31536000, immutable`, and
+   302s a request without a `dsh-auth-*` cookie to `/?token=...`. dsh then sets the session cookie
+   and the browser holds it; the first visit is the only visible login step. The Caddyfile is
+   generated at runtime into `/tmp/dsh-caddy/Caddyfile` (mode 600; it contains the launch token
+   and the bcrypt hash; failure paths must not print it). Caddy restarts itself if it crashes
+   (config errors still fail fast at startup); token rotation uses `caddy reload` via the
+   loopback-only admin endpoint (`127.0.0.1:2019`).
+
+   External configuration: `DSH_PUBLIC_URL` (`--public-url`, advertisement/agent context; default
+   `http://127.0.0.1:3081/`) and `DSH_TRUSTED_HOST` (comma-separated extra authorities; derived
+   from `DSH_PUBLIC_URL` when unset). `--public-url` is probed via `dsh --profile web --help` and
+   skipped on tags that predate it. Basic auth remains `DSH_PROXY_USER` +
+   `DSH_PROXY_PASSWORD` (Caddyfile `basicauth` on distro caddy 2.6 — renamed `basic_auth` upstream
+   in 2.7; password bcrypt-hashed via `caddy hash-password`, fed over stdin). Setting only one auth
+   variable is a startup error, not a silent no-auth fallback.
+6. `dsh-web` supervises `dsh web`: if it exits or crashes it is restarted automatically. The
+   browser-held session cookie survives restarts because dsh's signing secret is persisted in the
+   volume; a dsh restart rotates the launch token (Caddy reload), while old browser cookies remain
+   valid. The container has no browser, so `dsh-web` appends `--no-open` unless the caller already
+   passed it. Inside the container, `dsh-restart` can be used to restart dsh web without restarting
+   the whole container. The plugin also owns the served-side adaptations: the
+   `__DSH_TRANSPORT__` row for older tags (contract item 1) and the `/container-assets/*` route
+   for the extracted images; the route is registered through `ctx.effect`, and `ctx.on` owns the
+   row subscription, so both dispose with the plugin.
 
 ### Hard constraints from upstream dsh (do not fight these)
 
@@ -141,27 +144,25 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   design). dsh always listens on `127.0.0.1` in this image; the Caddy proxy is the exposure
   mechanism.
 - **The `/api` browser-trust fence checks HTTP headers only** (`Host`/`Origin`/`sec-fetch-site`),
-  never the TCP source address. The proxy's loopback rewrite therefore passes every endpoint —
-  **including `PRIVILEGED_METHODS`** (`settings/describe`, `settings/update`, `credentials.*`,
-  `agentPreset.*`, `host.pickDirectory`/`host.openPath`, `llm.discoverModels`) that upstream
-  hard-pins to loopback via an empty trust list. Upstream also requires a browser session
-  (one-time `?token=...` login URL → signed cookie backed by a signing secret persisted in the
-  volume). This image absorbs the flow: the container-adapt plugin exchanges the token at dsh
-  startup and Caddy injects the cookie into every proxied request, so reaching `3081` means a
-  fully authenticated session — the **proxy is the security boundary**. Never present this as
-  "secure by default";
-  `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control, and dsh's own
-  fence still guards direct `3080` access from same-network containers (that port is not
-  published).
-- **Upstream's browser code still gates settings/credentials on the page authority**, so the Caddy
-  header rewrite alone is not enough for the settings UI: the browser computes
-  `isLoopback` from `location.hostname` unless a shell declares itself the transport owner. The
-  container-adapt plugin therefore contributes a `__DSH_TRANSPORT__ = { ownsHost: true }` row to
-  upstream's structured index-injection table (rendered as an inline `<head>` script; upstream's
-  own declaration for a shell that owns the Host — the desktop shell and the worker-preview tunnel
-  use it the same way, and its only consumer is that `isLoopback`
-  computation). No upstream build artifact is modified for this. (No `index.html` rewrite beyond
-  that row is needed — upstream ships its own insecure-context `randomUuid()` in
+  never the TCP source address. Caddy now **preserves** the browser `Host`/`Origin`; the fence is
+  the real check, and external authorities are admitted only through `--trusted-host` (from
+  `DSH_PUBLIC_URL`/`DSH_TRUSTED_HOST`). Caddy rejects any other Host with `403` before the request
+  reaches dsh; this is necessary because the index token exchange itself does not apply the API
+  fence. Upstream also requires a browser session (one-time `?token=...` login URL → signed cookie
+  backed by a signing secret persisted in the volume). The plugin writes the launch token, Caddy
+  redirects the first visit, and the browser holds the cookie — the **proxy is still the network
+  access boundary**, but it no longer forges the session. Never present this as "secure by
+  default"; `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control. dsh binds
+  `127.0.0.1:3080` (not published), so direct access is a container-internal path, not a
+  same-network-container bypass.
+- **Upstream's browser code still gates the settings-document affordance on the page authority for
+  older tags.** The container-adapt plugin keeps the `__DSH_TRANSPORT__ = { ownsHost: true }` row
+  for those tags (rendered as an inline `<head>` script; upstream's own declaration for a shell
+  that owns the Host — the desktop shell and worker-preview tunnel use it the same way). On 0.2.x
+  the only `isLoopback` consumer is the settings-document controller, which `hasDocument:false`
+  already hides; the row is a compatibility layer, not a security mechanism. Caddy no longer
+  rewrites Host/Origin. No upstream build artifact is modified for this. (No `index.html` rewrite
+  beyond that row is needed — upstream ships its own insecure-context `randomUuid()` in
   `@deepseek-ai/dsh-util-crypto`.)
 - **`settings/openSettingsDocument` has no headless fallback upstream** (unlike preset/workspace
   opens, which check `canOpenPath`): the plugin keeps the button out of the UI entirely — it wraps
@@ -232,9 +233,12 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   do not reintroduce container-IP binding tricks. The examples publish it on host loopback
   (`127.0.0.1:3081:3081`) — LAN/public exposure is an explicit step (the plain-LAN variant is
   documented next to the publish line).
-- **Remote access is proxy-only**: the Caddy header rewrite is the only exposure path. Do not
-  add host-trust bypasses; basic auth (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`) is the access
-  control.
+- **Remote access is proxy-only**: Caddy is the only exposure path. Do not add host-trust
+  bypasses or reintroduce Host/Origin rewriting; basic auth
+  (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`) is the access control. External authorities are named by
+  `DSH_TRUSTED_HOST` or derived from `DSH_PUBLIC_URL`; Caddy's Host allowlist rejects everything
+  else. DeepSeek account sign-in still requires a loopback browser origin (SSH tunnel), not a
+  public hostname — do not promise otherwise.
 - **Keep examples and docs in sync with code.** Changing ports, env vars, defaults, or entrypoint
   behavior requires updating all of: `container/entrypoint.sh` header, `Containerfile` comments,
   `examples/compose.yaml`, `examples/dsh.container`, `README.md` + `README.zh.md`,
@@ -291,12 +295,16 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
    (`python3 tests/validate-docs.py parity`)
 4. `just --list` parses with both the podman and docker branches in mind; Docker-only hosts must
    not receive podman-only flags.
-5. If you changed networking/trust behavior, verify end to end in a container: parse the
-   `?token=...` login URL from `dsh web` logs, exchange it through the proxy for the browser
-   cookie, then a privileged method (`POST /api/settings/describe`) must return **200 with the
-   cookie and 401 without it** (header rewrite + browser session both work). With
-   `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` set, the same flow must return **401 without basic
-   credentials and succeed with them**, and setting only one auth variable must exit nonzero.
+5. If you changed networking/trust behavior, verify end to end in a container: the first visit
+   without a cookie must be **302** to `/?token=...` whose token matches `dsh web`'s printed
+   token; following it must set an `HttpOnly; SameSite=Strict` cookie and return **200**;
+   `POST /api/settings/describe` must return **200 with the cookie and 401 without it**; a
+   `Host` outside the allowlist (e.g. `evil.test`) and an `Origin` that is not the request
+   authority must return **403**; a trusted Host (with `DSH_TRUSTED_HOST` set) must return 200.
+   With `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` set, the same flow must return **401 without basic
+   credentials and succeed with them**, `/api/remote.mux` must still answer `101` with only the
+   cookie, and setting only one auth variable must exit nonzero. Also start one container with
+   `HTTP_PROXY`/`NODE_USE_ENV_PROXY=1` to prove the internal `--noproxy` probes still work.
    Always test inside the built image (the dev machine may lack `caddy`).
 6. If you touched the container-adapt plugin (the index-injection row, the `/container-assets`
    route, the `Config` field, or one of the three build-time post-processing scripts), run

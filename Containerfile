@@ -29,16 +29,17 @@
 #   - dsh-web 以 `dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web ...`
 #     启动 dsh(注意 web 别名会拒绝父级 --patch, 必须用 --profile web 形式),
 #     挂载容器适配插件(container/plugin/, 镜像所有, 随镜像升级):
-#     会话 cookie 自举在 dsh 进程内完成(token → cookie, 复用仍有效的旧
-#     cookie), 写出 /tmp/dsh-caddy/session-cookie 供 Caddyfile 注入;
+#     launch token: 插件把 dsh 进程的 launch token 写到
+#     /tmp/dsh-caddy/launch-token; Caddy 对没有会话 cookie 的首次访问 302 到
+#     /?token=..., dsh 自己 Set-Cookie, 浏览器持有 —— 代理不注入 cookie, 也不
+#     改写 Host/Origin; 外部 authority 经 DSH_PUBLIC_URL/DSH_TRUSTED_HOST
+#     授权, Caddy 的 Host 允许列表拒绝其它 Host;
 #     设置 > 打开配置文件按钮隐藏: 无桌面容器里上游该操作没有 headless
-#     兜底(会 spawn xdg-open 扑空), 插件把 settings provider 实例的
-#     documentPath 置为 undefined, describe 即返回 hasDocument:false,
-#     按钮按上游自身逻辑不渲染(不引入浏览器侧代码, 也不提供下载端点);
-#     浏览器端 isLoopback 门(location.hostname 限制设置/凭据页)由插件向上游的
-#     结构化索引注入表推一行 __DSH_TRANSPORT__={ownsHost:true} 解决 —— 这是上游给
-#     "自己拥有 Host 的 shell"预留的声明(桌面 shell 与 worker 预览页同款), 唯一消费点
-#     就是 connection 的 isLoopback, 因此不再需要改写上游构建产物;
+#     兜底(会 spawn xdg-open 扑空), 插件让 settings/describe 返回
+#     hasDocument:false, 按钮按上游自身逻辑不渲染;
+#     老 tag 的浏览器端 isLoopback 门由插件向上游的结构化索引注入表推一行
+#     __DSH_TRANSPORT__={ownsHost:true} 兼容(Caddy 保留 Host/Origin 后它不再
+#     是安全机制; 0.2.x 上只剩 settings-document controller 消费, 已被隐藏);
 #     构建期后处理三件套(都在 plugin/scripts/, 顺序固定):
 #       1. extract-inline-assets.js 把 >=100 KiB 的内联 data URL 图片抽成真实
 #          文件(8 张引导插画占合并包 49%, 且每个用户只用得到 1 张), 由插件的

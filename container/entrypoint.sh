@@ -17,9 +17,11 @@
 #      —— podman 5.x 下它会让内层 podman 跳过 userns 创建而运行时半初始化,
 #      之后每条命令 nil panic)。宿主侧还需的 /dev/fuse、/dev/net/tun、
 #      unmask /proc 条件见 docs/deployment.md "In-container podman"。
-#   5. exec dsh-web —— dsh web 的启动/监督、会话 cookie 的就绪等待与 Caddy
-#      反代全部由 dsh-web 托管(会话 cookie 自举由容器适配插件在 dsh 进程内
-#      完成, 见 container/plugin/ 与 container/dsh-web.sh)。
+#   5. exec dsh-web —— dsh web 的启动/监督与 Caddy 反代由 dsh-web 托管。
+#      容器适配插件把 launch token 写到 /tmp/dsh-caddy/launch-token, Caddy 用
+#      它把浏览器首次访问 302 到 /?token=...; 浏览器自己从 dsh 拿会话 cookie。
+#      外部 authority 由 DSH_PUBLIC_URL(公告)和 DSH_TRUSTED_HOST(额外信任)决定,
+#      见 container/dsh-web.sh 与 docs/security.md。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080。
 # 遥测默认关闭: dsh 的反馈 OTel 上报(默认 FEEDBACK_ONLY 时, 用户点反馈会把
 # 完整会话上下文发往 harness-telemetry.deepseeksvc.com)在本镜像中默认

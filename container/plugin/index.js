@@ -1,54 +1,52 @@
 // dsh-container 容器适配插件(运行期)。职责:
-//   1. 会话 cookie 自举(替代旧 dsh-web.sh 的 token 交换);
+//   1. 把 dsh 进程的 launch token 写到 /tmp/dsh-caddy/launch-token, 供 Caddy 在
+//      浏览器首次访问 / 时 302 到 /?token=...; 浏览器随后从 dsh 拿到
+//      HttpOnly/SameSite=Strict 会话 cookie 并自己持有 —— 容器不再注入 cookie,
+//      也不改写 Host/Origin;
 //   2. 隐藏"打开配置文件"按钮: 容器无桌面, 上游 openSettingsDocument 无
 //      headless 兜底(会 spawn 原生文本编辑器命令扑空)—— 让 settings/describe
-//      报告 hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身
-//      逻辑(status !== 'ready' → 不渲染)让按钮整个消失, 不引入任何浏览器侧
-//      代码;
-//   3. 声明本页的传输层归属: 往服务端索引注入
-//      __DSH_TRANSPORT__ = { ownsHost: true }。容器里的页面由 Caddy 反代提供,
-//      代理已把 Host/Origin 改写成回环并注入会话 cookie —— 正是上游该契约描述的
-//      "自己拥有 Host 的 shell"。上游唯一消费点是 connection 的 isLoopback,
-//      置真后设置/凭据页在非回环 authority 上可用(替代旧的构建产物字符串补丁);
+//      报告 hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身逻辑
+//      (status !== 'ready' → 不渲染)让按钮整个消失, 不引入任何浏览器侧代码;
+//   3. 保留传输层归属声明 __DSH_TRANSPORT__ = { ownsHost: true }(老 tag 兼容):
+//      上游 0.1.x 的浏览器侧特权界面仍消费 isLoopback; 0.2.x 上该标记只剩
+//      settings-document controller 一个消费者, 而按钮已被 hasDocument:false
+//      隐藏。Caddy 现在保留 Host/Origin, 它不再是安全机制, 只是老 tag 的兼容层;
 //   4. 提供构建期抽出的客户端图片(/container-assets/<内容哈希>.<ext>): 见
 //      scripts/extract-inline-assets.js —— 上游把 8 张引导插画内联成 base64,
 //      占合并包 49%, 抽成文件后只在真正进入该页时才请求。
 //
-// 遵循上游插件规范: 导出 `name`/`inject`/`apply`/`Config`; 只用 inject 声明过的
-// 服务; 资源注册走 ctx.effect/ctx.on 的 disposer; 日志走 ctx.logger; 实例级可变
-// 参数是 Config 字段(从 overlay 条目的 config 传入), 不读环境变量。
+// 遵循上游插件规范: 导出 name/inject/apply/Config; 只用 inject 声明过的服务;
+// 资源注册走 ctx.effect/ctx.on 的 disposer; 日志走 ctx.logger; 实例级可变参数是
+// Config 字段(从 overlay 条目的 config 传入), 不读环境变量。
 //
-// 上游核对(机制随版本演化, 两条路都保留):
-//   - dsh-v0.1.7-alpha.1 起: settings-controller 的 describe() 硬编码
-//     hasDocument: true, provider 接口(SettingsProvider → SettingsForms)已
-//     删除 documentPath —— 翻 provider 属性失效, 改为包 settingsController
-//     实例的 describe。Gateway 调远程方法是 invoke 期在实例上动态取值后再
-//     Reflect.apply 带上 receiver(packages/api/gateway/src/index.ts), 实例
-//     自有属性即遮蔽原型方法;
+// 上游核对:
+//   - Connection.authenticatedUrl() 返回带进程 launch token 的 URL; token 只用于
+//     首次浏览器登录, 不再在插件内 curl 交换 cookie;
+//   - dsh 的浏览器会话 cookie 由 Connection 在 index token 交换时 Set-Cookie,
+//     天然带 HttpOnly/SameSite=Strict, 并绑定浏览器实际使用的 authority;
+//   - dsh 的 Host/Origin 围栏原样生效: 外部 authority 由 dsh-web 的
+//     --trusted-host 授权, Caddy 只转发, 不改写;
+//   - settings-controller 的 describe() 在 v0.1.7-alpha.1+ 硬编码
+//     hasDocument: true, provider 接口已删除 documentPath —— 翻 provider 属性
+//     失效, 改为包 settingsController 实例的 describe。Gateway 调远程方法是
+//     invoke 期在实例上动态取值后再 Reflect.apply 带上 receiver
+//     (packages/api/gateway/src/index.ts), 实例自有属性即遮蔽原型方法;
 //   - 更早的 tag: describe 由 provider 的 documentPath 推导
 //     (hasDocument = settings.documentPath !== undefined), 遮蔽该属性即可;
 //   - 按钮渲染门两种版本一致: SettingsDocumentAction 仅在 store 由 describe
-//     镜像推导出 status==='ready'(即 hasDocument:true)时渲染
-//     (packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx
-//     与 settings-document-store.ts);
-//   - prepareDocument 用 spec.filename(spec 是实例字段), 不受实例属性
-//     遮蔽影响; agent-preset 的打开路径上游自带 headless 回退
-//     (canOpenNativePath 在无桌面容器返回 false), 无需接管。
+//     镜像推导出 status==='ready'(即 hasDocument:true)时渲染。
 //
 // 幂等与稳健性:
-// - 每次 dsh web 启动(含崩溃重启、dsh-restart)都会执行一次自举, 复用优先;
-// - cookie 文件是状态而非事件: 内容 = 当前有效 cookie。复用成功不写盘, 只有
-//   轮换/首次铸造才原子写(tmp + rename, dsh-web 的 cat 永远读不到半截文件);
-//   dsh-web 以"文件是否存在 + 内容是否变化"收敛, 不依赖写入时机(无 mtime 握手);
-// - 交换/写文件带短重试, 瞬时失败不会让 dsh-web 空等 120s 后 fail-fast;
-// - 复用探测同样带短重试: 重启后新进程会话存储加载完成前可能拒绝旧 cookie,
-//   多重探几次再决定重新铸造, 避免无谓轮换(纯优化: 即使误判, dsh-web 也会
-//   按内容变化把新 cookie 收敛进 Caddy)。
-// 自举最终失败只记录日志、不阻止 dsh web 启动: 文件缺失时 dsh-web 会在有界
-// 等待后 fail-fast; 文件已存在时监督器继续用现有内容服务(不因一次自举失败
-// 杀掉容器, 避免重启策略下的崩溃循环)。
+// - 每次 dsh web 启动(含崩溃重启、dsh-restart)都会重新写一次 token;
+// - token 文件是状态而非事件: 内容 = 当前进程的 launch token; 原子写
+//   (tmp + rename), dsh-web 的 cat 永远读不到半截文件;
+// - 写文件带短重试, 瞬时失败不会让 dsh-web 空等 120s 后 fail-fast;
+// - 自举最终失败只记录日志、不阻止 dsh web 启动: 文件缺失时 dsh-web 会在有界
+//   等待后 fail-fast; 文件已存在时监督器继续用现有内容服务(不因一次写失败
+//   杀掉容器, 避免重启策略下的崩溃循环)。浏览器仍可直接打开 dsh 打印的
+//   token URL 登录, 不依赖这个重定向。
 import { createReadStream, existsSync } from 'node:fs'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
@@ -56,16 +54,19 @@ export const name = 'dsh-container-adapt'
 export const inject = ['webServer', 'connection', 'settings', 'settingsController']
 
 /**
- * 会话 cookie 状态文件所在目录: 默认值与 `container/dsh-web.sh` 的 `RUNTIME_DIR` 共享
- * (监督器从同一路径读取)。它是**实例级**参数而非部署配置 —— 需要跑隔离实例(本机验证
- * 第二个 dsh web)时, 在 overlay 条目的 `config:` 里覆写, 而不是靠环境变量:
- * 上游规则明确"a `DEFAULT_*` constant or test hook is not configurability",
+ * launch token 状态文件所在目录: 默认值与 `container/dsh-web.sh` 的 `RUNTIME_DIR`
+ * 共享(监督器从同一路径读取)。它是**实例级**参数而非部署配置 —— 需要跑隔离实例
+ * (本机验证第二个 dsh web)时, 在 overlay 条目的 `config:` 里覆写, 而不是靠环境
+ * 变量: 上游规则明确"a `DEFAULT_*` constant or test hook is not configurability",
  * 可变的实例参数应当是可校验的 `Config` 字段。
- * 注意: 覆写它必须同时改 `dsh-web.sh` 的 `RUNTIME_DIR`, 否则监督器等不到 cookie 文件
- * 会在有界等待后 fail-fast(这也是正式部署不传 config 的原因)。
+ * 注意: 覆写它必须同时改 `dsh-web.sh` 的 `RUNTIME_DIR`, 否则监督器等不到 token
+ * 文件会在有界等待后 fail-fast(这也是正式部署不传 config 的原因)。
  */
 const DEFAULT_RUNTIME_DIR = '/tmp/dsh-caddy'
-const COOKIE_FILENAME = 'session-cookie'
+const TOKEN_FILENAME = 'launch-token'
+
+/** launch token 只允许 Caddyfile 安全的 URL-safe 字符; 上游 token 是 base64url。 */
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/
 
 /**
  * 插件配置。Cordis 用 Standard Schema 校验(`resolveConfig()` 调
@@ -109,112 +110,45 @@ const ASSET_TYPES = {
 }
 const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable'
 
-/** 自举重试次数与间隔(覆盖端口就绪窗口与瞬时网络/写盘失败)。 */
-const BOOTSTRAP_RETRIES = 5
-const BOOTSTRAP_RETRY_DELAY_MS = 500
-
-/**
- * 复用探测重试: dsh web 重启后, 新进程的会话存储可能还在异步加载, 此时带旧
- * cookie 探测根路径可能拿到非 200(甚至连接被拒)。旧 cookie 本身仍有效(签名
- * 密钥在卷上持久化), 多重探几次再决定重新铸造 —— 否则无谓轮换 cookie,
- * Caddy 也要跟着重启, 浏览器侧已注入的会话全部作废。
- */
-const PROBE_RETRIES = 3
-const PROBE_DELAY_MS = 250
-
-/**
- * 探测盘上的旧 cookie 是否仍被当前 dsh 进程接受(根路径 200 即可)。
- * 文件不存在/为空 → 没有可复用的 cookie, 直接返回 false。
- * @returns true 表示应复用(调用方负责记录日志)。
- */
-async function reuseExistingCookie(baseUrl, cookieFile) {
-  for (let probe = 1; probe <= PROBE_RETRIES; probe += 1) {
-    let existing
-    try {
-      existing = await readFile(cookieFile, 'utf8')
-    } catch {
-      return false
-    }
-    if (existing === '') return false
-    try {
-      const response = await fetch(`${baseUrl}/`, {
-        headers: { cookie: existing },
-        redirect: 'manual',
-      })
-      if (response.status === 200) return true
-      // 非 200: 启动瞬态(会话存储加载中)或 cookie 真失效, 重试后再判。
-    } catch {
-      // 连接失败(服务未就绪): 重试。
-    }
-    if (probe < PROBE_RETRIES) {
-      await new Promise((resolve) => { setTimeout(resolve, PROBE_DELAY_MS) })
-    }
-  }
-  return false
-}
-
-/** 从 Set-Cookie 头提取第一个 cookie 的 name=value(分号截断, 与旧 awk 一致)。 */
-function firstCookieValue(setCookies) {
-  for (const header of setCookies) {
-    if (typeof header !== 'string') continue
-    const pair = header.split(';', 1)[0]
-    if (pair.includes('=')) return pair
-  }
-  return undefined
-}
+/** token 写入重试次数与间隔(覆盖启动瞬间 connection 尚未就绪的窗口)。 */
+const WRITE_RETRIES = 5
+const WRITE_RETRY_DELAY_MS = 500
 
 /** 原子写入: 先写 .tmp 再 rename, 读方永远拿到完整内容或旧内容。 */
-async function writeCookieAtomically(cookieFile, cookie) {
-  await mkdir(dirname(cookieFile), { recursive: true, mode: 0o700 })
-  const tmpFile = `${cookieFile}.tmp`
-  await writeFile(tmpFile, cookie, { mode: 0o600 })
-  await rename(tmpFile, cookieFile)
+async function writeFileAtomically(file, content) {
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 })
+  const tmpFile = `${file}.tmp`
+  await writeFile(tmpFile, content, { mode: 0o600 })
+  await rename(tmpFile, file)
 }
 
 /**
- * 进程内自举: 优先复用仍被接受的旧 cookie, 否则用进程启动 token 换取。
- * 整体带短重试; 所有异常向上抛给调用方记录。
+ * 把当前进程的 launch token 写到 Caddy 读取的状态文件。浏览器首次访问 / 时,
+ * Caddy 302 到 /?token=<token>; dsh 在 index 交换中给浏览器 Set-Cookie, 之后
+ * 浏览器自己携带会话 cookie。插件不再发 HTTP 请求, 也不再碰 cookie。
  * @param ctx - 注入 webServer/connection 的 Cordis 上下文。
- * @param cookieFile - 会话 cookie 状态文件路径(由 config.runtimeDir 决定)。
+ * @param tokenFile - launch token 状态文件路径(由 config.runtimeDir 决定)。
  */
-async function bootstrap(ctx, cookieFile) {
-  const baseUrl = `http://127.0.0.1:${String(ctx.webServer.port)}`
-
+async function writeLaunchToken(ctx, tokenFile) {
   let lastError
-  for (let attempt = 1; attempt <= BOOTSTRAP_RETRIES; attempt += 1) {
+  for (let attempt = 1; attempt <= WRITE_RETRIES; attempt += 1) {
     try {
-      // 1) 复用仍被 dsh 接受的旧 cookie(带短重试, 见 reuseExistingCookie)。
-      //    复用成功不写盘: cookie 文件是**状态**(内容 = 当前有效 cookie), 不是
-      //    事件。dsh-web 只在文件缺失时等待、只在内容变化时重建 Caddy 配置,
-      //    所以这里绝不能为了让"写入被观察到"而重写同样的内容。
-      if (await reuseExistingCookie(baseUrl, cookieFile)) {
-        ctx.logger.info('reusing the still-valid session cookie')
-        return
+      const authenticated = ctx.connection.authenticatedUrl(`http://127.0.0.1:${String(ctx.webServer.port)}/`)
+      const token = new URL(authenticated).searchParams.get('token')
+      if (token === null || !TOKEN_PATTERN.test(token)) {
+        throw new Error('connection.authenticatedUrl() did not yield a URL-safe launch token')
       }
-
-      // 2) 用进程启动 token 换取会话 cookie。
-      const tokenUrl = ctx.connection.authenticatedUrl(`${baseUrl}/`)
-      const exchange = await fetch(tokenUrl, { redirect: 'manual' })
-      const setCookies = typeof exchange.headers.getSetCookie === 'function'
-        ? exchange.headers.getSetCookie()
-        : [exchange.headers.get('set-cookie')].filter(Boolean)
-      const cookie = firstCookieValue(setCookies)
-      if (cookie === undefined) {
-        throw new Error(`token exchange produced no session cookie (status ${String(exchange.status)})`)
-      }
-
-      // 3) 原子落盘。
-      await writeCookieAtomically(cookieFile, cookie)
-      ctx.logger.info('session cookie minted from the login token')
+      await writeFileAtomically(tokenFile, token)
+      ctx.logger.info('launch token written for the proxy login redirect')
       return
     } catch (error) {
       lastError = error
-      if (attempt < BOOTSTRAP_RETRIES) {
-        await new Promise((resolve) => { setTimeout(resolve, BOOTSTRAP_RETRY_DELAY_MS) })
+      if (attempt < WRITE_RETRIES) {
+        await new Promise((resolve) => { setTimeout(resolve, WRITE_RETRY_DELAY_MS) })
       }
     }
   }
-  throw lastError ?? new Error('session bootstrap failed')
+  throw lastError ?? new Error('launch token write failed')
 }
 
 /** describe 包装标记: 保证多次 apply(dsh web 每次启动/重启)幂等。 */
@@ -224,7 +158,7 @@ const DESCRIBE_WRAPPED = Symbol.for('dsh-container-adapt.describeWrapped')
  * 日志可见性: 本镜像的 web profile 没有挂载 console exporter(vendored 的
  * `@deepseek-ai/cordis-plugin-logger-console` 没有出现在任何 bundle 里), 因此
  * `ctx.logger` 默认**什么都不输出**。而本镜像的运维面依赖这些行: dsh-web 把 dsh 的
- * stdout 镜像进容器日志、smoke 断言据此判断自举成功、docs 的排障步骤也指向它。
+ * stdout 镜像进容器日志、smoke 断言据此判断 token 写入成功、docs 的排障步骤也指向它。
  * 这里用上游标准 API `ctx.logger.exporter()`(AppBoot 也这么接诊断 exporter)注册一个
  * **只导出本插件日志**的 exporter —— 按 `message.name` 过滤, 不改动其它插件的输出;
  * 调用点仍然全部走 `ctx.logger`。
@@ -280,13 +214,17 @@ function forceNoSettingsDocument(controller, logger) {
  * `isLoopback: transport?.ownsHost === true || …`; 上游桌面 shell
  * (apps/web/src/main.ts)与 worker 预览页(experimental/webworker-runtime)都这么用,
  * 上游 connection 插件贡献 `__DSH_CONNECTION_RECOVERY__` 用的也是这一行类型。
- * 本容器里 Caddy 代理就是那个 shell(改写 Host/Origin + 注入会话 cookie), 置真后
- * 设置/凭据页在非回环 authority 上可用 —— 取代旧的构建产物字符串补丁。
+ *
+ * 现在 Caddy 保留浏览器 Host/Origin, 不再改写, 所以这行**不再是安全机制**:
+ * 0.2.x 上 `isLoopback` 的消费点只剩 settings-document controller, 而按钮已由
+ * hasDocument:false 隐藏; 保留它是为了老 tag(0.1.x)的浏览器侧特权界面兼容。
+ * 上游一旦把最低支持版本提到不再消费它, 就按 docs/upstream-contract.md 的
+ * simplification trigger 删除。
  *
  * 用结构化的 `global` 行而不是 `tapIndex` 字符串变换: 后者是上游给"行表达不了的
  * 标记"留的逃生门(见 host/webserver/src/injections.ts 头注), 而这一行本身就是
  * JSON 可序列化数据 —— 由上游负责转义与摆放(渲染进 <head>、先于所有脚本行),
- * 并且同样喂给 worker 静态渲染路径, 我们不再自己找 `<head>` 锚点。
+ * 并且同样喂给 worker 静态渲染路径, 我们不再自己找 <head> 锚点。
  */
 const TRANSPORT_GLOBAL_ROW = { kind: 'global', name: '__DSH_TRANSPORT__', value: { ownsHost: true } }
 
@@ -318,14 +256,14 @@ function createAssetHandler() {
   }
 }
 
-/** 挂载: 自举不阻塞插件激活(失败由 dsh-web 的等待超时兜底)。 */
+/** 挂载: token 写入不阻塞插件激活(失败由 dsh-web 的等待超时兜底)。 */
 export function apply(ctx, config) {
   // 0) 日志可见性: 本 profile 无 console exporter, 自接一个(只导出本插件日志)。
   exportOwnLogs(ctx)
 
-  // 1) 会话 cookie 自举。
-  void bootstrap(ctx, join(config.runtimeDir, COOKIE_FILENAME)).catch((error) => {
-    ctx.logger.error(`session bootstrap failed: ${error instanceof Error ? error.message : String(error)}`)
+  // 1) 把 launch token 交给 Caddy 的登录重定向。
+  void writeLaunchToken(ctx, join(config.runtimeDir, TOKEN_FILENAME)).catch((error) => {
+    ctx.logger.error(`launch token write failed: ${error instanceof Error ? error.message : String(error)}`)
   })
 
   // 2) 隐藏"打开配置文件"按钮: 上游把 hasDocument 当作"本地文档可用"信号,
@@ -339,9 +277,9 @@ export function apply(ctx, config) {
   }
   forceNoSettingsDocument(ctx.settingsController, ctx.logger)
 
-  // 3) 传输层声明: 向上游的结构化索引注入表推一行(上游 connection 插件贡献
-  //    __DSH_CONNECTION_RECOVERY__ 同款写法; 每次渲染索引时读取当前表, 因此这里
-  //    只需注册一次监听, ctx.on 的 disposer 随插件卸载自动撤销)。
+  // 3) 传输层声明: 向上游的结构化索引注入表推一行(老 tag 兼容; 见上方说明)。
+  //    每次渲染索引时读取当前表, 因此这里只需注册一次监听, ctx.on 的 disposer
+  //    随插件卸载自动撤销。
   ctx.on('webserver/index-inject', (table) => {
     table.push({ ...TRANSPORT_GLOBAL_ROW })
   })

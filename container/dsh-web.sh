@@ -3,27 +3,33 @@
 #   1. 启动 `dsh web`(输出写入日志文件并 tail 镜像到 stdout, 容器日志仍可见),
 #      退出/崩溃后自动重新拉起; 配合 `dsh-restart` 可在容器内部重启 dsh web。
 #      启动命令挂载镜像自带的容器适配插件 overlay(--patch, launcher flag,
-#      必须位于 `web` 之前): 会话 cookie 自举、传输层声明注入、(构建期抽出的)
-#      图片路由都在插件内完成, 不再由本脚本 grep 日志 token + curl 交换。
-#   2. 把插件写出的会话 cookie(/tmp/dsh-caddy/session-cookie)当状态读取:
-#      文件存在且非空 ⇔ 插件当前持有一个可用 cookie; 本脚本只在文件缺失时
-#      等待它出现, 之后每轮比较内容, 变了才重建 Caddyfile 并重启 Caddy ——
-#      没有 mtime 握手(复用旧 cookie 时插件不写盘, "必须看到一次写入"是错的
-#      同步信号)。这个路径是本脚本与插件的共享契约(插件侧 Config.runtimeDir
-#      默认值相同; 覆写插件配置就必须同步这里的 RUNTIME_DIR)。dsh 的签名密钥
-#      持久化在数据卷
-#      凭据库中, cookie 默认 30 天有效、跨进程/跨容器重启有效 —— 插件会复用
-#      仍被接受的旧 cookie, 不重复换取。dsh 自身的浏览器围栏
-#      (3080 直连无 cookie 仍 401)原样保留, 3081 上的鉴权由 Caddy 承担
-#      (basic auth / 网络暴露面)。
-#   3. 启动 Caddy 反代监听 0.0.0.0:3081: 把 Host/Origin 改写为回环后转发到
-#      127.0.0.1:$DSH_WEB_PORT, 并注入会话 cookie(UI 资源压缩由上游 dsh 的
-#      webserver 自带 gzip 承担, Caddy 不再重复压缩); 另外补两条缓存策略:
-#      两个索引入口(/ 与 /index.html)no-store(动态启动清单), 内容哈希的
-#      /assets/* immutable(dsh 自己不发缓存头, 否则每次导航重下约 475 KiB);
-#      运行期崩溃自动重启
-#      (配置错误 fail-fast)。DSH_PROXY_USER + DSH_PROXY_PASSWORD 必须成对设置
-#      以启用 basic auth, 只设置一个直接退出。
+#      必须位于 `web` 之前): 插件把 launch token 写到 /tmp/dsh-caddy/launch-token,
+#      Caddy 用它把浏览器首次访问 302 到 /?token=...; 浏览器自己从 dsh 拿到
+#      HttpOnly/SameSite=Strict 会话 cookie —— 容器不注入 cookie, 也不改写
+#      Host/Origin。
+#   2. 把插件写出的 launch token 当状态读取: 文件存在且非空 ⇔ 插件当前持有一个
+#      可用 token; 本脚本只在文件缺失时等待, 之后每轮比较内容, 变了才重建
+#      Caddyfile 并 `caddy reload`(热更新, 旧浏览器 cookie 仍有效, 因为 dsh 的
+#      签名密钥持久化在数据卷)。没有 mtime 握手; 这个路径是本脚本与插件的
+#      共享契约(插件侧 Config.runtimeDir 默认值相同; 覆写插件配置就必须同步
+#      这里的 RUNTIME_DIR)。
+#   3. 启动 Caddy 反代监听 0.0.0.0:3081: 保留浏览器 Host/Origin 原样转发到
+#      127.0.0.1:$DSH_WEB_PORT; 只接受 loopback 和 --trusted-host 授权的外部
+#      authority(Host 允许列表, 防 DNS rebinding); 浏览器没有 dsh 会话 cookie 时
+#      302 到 /?token=... 完成登录; basic auth 仍然可选(DSH_PROXY_USER +
+#      DSH_PROXY_PASSWORD 必须成对设置), 但 /api/remote.mux 的 WebSocket 升级
+#      由 dsh 的 SameSite=Strict cookie 认证, 不要求 basic auth(浏览器不保证给
+#      WS 带 Authorization)。另外补两条缓存策略: 两个索引入口(/ 与
+#      /index.html)no-store(动态启动清单), 内容哈希的 /assets/* immutable
+#      (dsh 自己不发缓存头, 否则每次导航重下约 475 KiB); 运行期崩溃自动重启
+#      (配置错误 fail-fast)。
+#   4. 外部 authority/公告地址通过环境变量配置:
+#      DSH_PUBLIC_URL  浏览器实际访问的根 URL(默认 http://127.0.0.1:3081/),
+#                      传给 dsh --public-url, 只用于公告/agent 上下文, 不授予信任;
+#      DSH_TRUSTED_HOST 逗号分隔的额外 authority(host 或 host:port), 传给
+#                      dsh --trusted-host; 不设时自动从 DSH_PUBLIC_URL 的 host
+#                      派生(远程部署通常只需要设置 DSH_PUBLIC_URL 一个变量)。
+#      两者都会进入 Caddy 的 Host 允许列表; 不在列表里的 Host 直接 403。
 # 附加参数会原样透传给 dsh web, 例如 --port 8080; 容器内默认追加
 # --no-open(无浏览器环境), 用户显式传入时不重复。
 set -euo pipefail
@@ -73,11 +79,99 @@ case " $* " in
   *) WEB_ARGS=("$@" "--no-open") ;;
 esac
 
+# 外部公告地址: 只影响 dsh 打印/公告的 URL 与 agent 运行时上下文, 不授予信任。
+# 远程部署(公网/LAN)应设成浏览器实际打开的根 URL; 默认值对应示例的宿主 3081。
+DSH_PUBLIC_URL="${DSH_PUBLIC_URL:-http://127.0.0.1:3081/}"
+case "$DSH_PUBLIC_URL" in
+  http://*|https://*) ;;
+  *) echo "[dsh-web] invalid DSH_PUBLIC_URL: '$DSH_PUBLIC_URL' (must start with http:// or https://)" >&2; exit 1 ;;
+esac
+
+# 用户是否自己传了 --public-url(避免重复); DSH_PUBLIC_URL 仍可作为 trusted-host 来源。
+public_url_arg=0
+for a in "$@"; do
+  case "$a" in
+    --public-url|--public-url=*) public_url_arg=1 ;;
+  esac
+done
+
+# 上游 --public-url 从 0.2.1-alpha.1 才有; 老 tag 上跳过, 只退化公告地址。
+# 用 help 探测而不是版本号比较, 避免 pre-release 排序问题。
+PUBLIC_URL_SUPPORTED=0
+help_text="$(dsh --profile web --help 2>/dev/null || true)"
+case "$help_text" in
+  *--public-url*) PUBLIC_URL_SUPPORTED=1 ;;
+esac
+if [ "$PUBLIC_URL_SUPPORTED" = 0 ] && [ "$public_url_arg" = 0 ]; then
+  echo "[dsh-web] upstream dsh does not support --public-url; advertised URL stays the bind address" >&2
+fi
+
+# authority 解析: 只接受 host[:port] 或 [IPv6][:port]; 拒绝空白/斜杠/注入字符。
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+TRUSTED_HOSTS=()
+CADDY_HOSTS=(127.0.0.1 localhost)
+declare -A trusted_seen=()
+declare -A caddy_seen=([127.0.0.1]=1 [localhost]=1)
+
+add_caddy_host() {
+  local host="$1"
+  [ -z "$host" ] && return 0
+  if [ -n "${caddy_seen[$host]:-}" ]; then return 0; fi
+  caddy_seen[$host]=1
+  CADDY_HOSTS+=("$host")
+}
+
+add_trusted_host() {
+  local entry host
+  entry="$(trim "$1")"
+  [ -z "$entry" ] && return 0
+  if [[ $entry =~ ^(\[[0-9A-Fa-f:]+\])(:[0-9]+)?$ ]]; then
+    host="${BASH_REMATCH[1]}"
+  elif [[ $entry =~ ^([A-Za-z0-9._-]+)(:[0-9]+)?$ ]]; then
+    host="${BASH_REMATCH[1]}"
+  else
+    echo "[dsh-web] invalid authority in DSH_TRUSTED_HOST/DSH_PUBLIC_URL: '$entry'" >&2
+    return 1
+  fi
+  if [ -z "${trusted_seen[$entry]:-}" ]; then
+    trusted_seen[$entry]=1
+    TRUSTED_HOSTS+=("$entry")
+  fi
+  add_caddy_host "$host"
+}
+
+# DSH_TRUSTED_HOST: 逗号分隔; 原样传给 dsh(host:port 精确匹配, 无端口匹配任意端口)。
+if [ -n "${DSH_TRUSTED_HOST:-}" ]; then
+  IFS=',' read -r -a trusted_entries <<< "$DSH_TRUSTED_HOST"
+  for entry in "${trusted_entries[@]}"; do
+    add_trusted_host "$entry" || exit 1
+  done
+fi
+
+# 从 DSH_PUBLIC_URL 派生 authority: 远程部署通常只设这一个变量。
+# 只取 host(去掉端口): 浏览器对默认端口会省略 Host 里的端口, 带端口的
+# trusted entry 反而匹配不上; dsh 的无端口 entry 匹配任意端口, 足够安全。
+public_authority="${DSH_PUBLIC_URL#*://}"
+public_authority="${public_authority%%/*}"
+public_authority="${public_authority##*@}"
+if [[ $public_authority =~ ^(\[[0-9A-Fa-f:]+\])(:[0-9]+)?$ ]]; then
+  public_authority="${BASH_REMATCH[1]}"
+elif [[ $public_authority =~ ^([A-Za-z0-9._-]+)(:[0-9]+)?$ ]]; then
+  public_authority="${BASH_REMATCH[1]}"
+fi
+add_trusted_host "$public_authority" || exit 1
+
 cd "$HOME"
 
 RUNTIME_DIR=/tmp/dsh-caddy
 CADDYFILE="$RUNTIME_DIR/Caddyfile"
-COOKIE_FILE="$RUNTIME_DIR/session-cookie"
+TOKEN_FILE="$RUNTIME_DIR/launch-token"
 LOG=/tmp/dsh-web.log
 
 PIDFILE=/tmp/dsh-web.pid
@@ -119,46 +213,52 @@ trap cleanup TERM INT EXIT
 # 全部输出(含一次性登录 token 与报错)。启动命令用 launcher 根 flag 组合
 # `--patch <overlay> --profile web`(注意: `web` 别名会拒绝父级 --patch,
 # 见上游 args.ts rejectParentOptions —— 必须用 --profile web 形式)。
+# --public-url / --trusted-host 只在 web profile 上有效, 放在 --profile web 之后。
 start_dsh_web() {
   : > "$LOG"
-  dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web "${WEB_ARGS[@]}" >>"$LOG" 2>&1 &
+  rm -f "$TOKEN_FILE"
+  local -a extra=()
+  if [ "$PUBLIC_URL_SUPPORTED" = 1 ] && [ "$public_url_arg" = 0 ]; then
+    extra+=(--public-url "$DSH_PUBLIC_URL")
+  fi
+  local h
+  for h in "${TRUSTED_HOSTS[@]}"; do
+    extra+=(--trusted-host "$h")
+  done
+  dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web "${extra[@]}" "${WEB_ARGS[@]}" >>"$LOG" 2>&1 &
   CHILD_PID=$!
   echo "$CHILD_PID" > "$PIDFILE"
   echo "[dsh-web] dsh web started (pid $CHILD_PID)" >&2
   tail -f --pid="$CHILD_PID" "$LOG" &
 }
 
-# --- 会话 cookie(状态文件, 非事件) --------------------------------------------
-# 由插件在 dsh 进程内自举(token → cookie, 复用仍有效的旧 cookie)并原子写出;
-# 本脚本把 COOKIE_FILE 当状态读取: 存在且非空 ⇔ 插件持有一个可用 cookie。
-# 只做两件事:
-#   - 文件缺失 → 有界等待插件产出, 等不到 fail-fast(会话自举彻底失败);
-#   - 内容变化 → 调用方重建 Caddyfile 并重启 Caddy(插件轮换了 cookie)。
-# 不复用旧 cookie 时插件不写盘, 因此绝不能把"文件被写了一次(mtime 前进)"
-# 当作就绪信号: 那样复用成功反而会让这里空等 120s 后 exit 1, 容器在重启策略
-# 下变成崩溃循环(issue #12)。
-wait_for_cookie() {
+# --- launch token(状态文件, 非事件) ------------------------------------------
+# 由插件在 dsh 进程内写出; 本脚本把 TOKEN_FILE 当状态读取: 存在且非空 ⇔
+# 当前进程有一个可用 token。文件缺失 → 有界等待; 内容变化 → 重建 Caddyfile
+# 并热更新 Caddy。启动前会删掉旧 token, 所以每次 dsh 重启都必然等新文件。
+wait_for_token() {
   for _ in $(seq 1 120); do
-    if [ -s "$COOKIE_FILE" ]; then
-      echo "[dsh-web] session cookie ready (bootstrapped by the container-adapt plugin)" >&2
+    if [ -s "$TOKEN_FILE" ]; then
+      echo "[dsh-web] launch token ready (written by the container-adapt plugin)" >&2
       return 0
     fi
     if ! kill -0 "$CHILD_PID" 2>/dev/null; then
-      echo "[dsh-web] dsh web exited before the session cookie appeared; last log lines:" >&2
+      echo "[dsh-web] dsh web exited before the launch token appeared; last log lines:" >&2
       tail -n 20 "$LOG" >&2 || true
       return 1
     fi
     sleep 1
   done
-  echo "[dsh-web] no session cookie from the container-adapt plugin within 120s" >&2
+  echo "[dsh-web] no launch token from the container-adapt plugin within 120s" >&2
   return 1
 }
 
-# dsh 端口就绪门(与 cookie 无关): 容器重启时 cookie 文件已存在, 不先等 dsh
-# 监听就拉起 Caddy, 会让反代在 dsh 起来之前对用户返回 502。
+# dsh 端口就绪门: 容器重启时 token 文件可能已存在, 不先等 dsh 监听就拉起
+# Caddy, 会让反代在 dsh 起来之前对用户返回 502。--noproxy 保证容器里配置了
+# HTTP(S)_PROXY 时这些内部探针仍然直连回环(见 network-proxy 文档)。
 wait_for_dsh_port() {
   for _ in $(seq 1 120); do
-    if curl -s -o /dev/null "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null; then
+    if curl -s --noproxy '*' --max-time 2 -o /dev/null "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null; then
       return 0
     fi
     if ! kill -0 "$CHILD_PID" 2>/dev/null; then
@@ -173,41 +273,45 @@ wait_for_dsh_port() {
 }
 
 # --- Caddyfile 生成 -----------------------------------------------------------
-# header_up Cookie 用整头替换而不是追加: 注入的是内部 authority
-# (127.0.0.1:$WEB_PORT)绑定的会话 cookie, 浏览器不可能持有同名 cookie,
-# 替换可避免多 Cookie 头拼接在各端解析上的歧义。
+# 关键顺序(route 内按书写顺序执行):
+#   1. Host 允许列表 403 —— 必须早于 token 重定向, 否则任意 Host 都能拿到
+#      Location 里的 token; dsh 的 index token 交换本身不做 Host 围栏, 所以
+#      这一步是代理的职责。
+#   2. basic auth(若配置), 但排除 WebSocket 路径: 浏览器不保证给 WS 升级带
+#      Authorization, 而 WS 已经被 dsh 的 SameSite=Strict cookie 认证。
+#   3. 索引 no-store / assets immutable。
+#   4. 无 dsh 会话 cookie 的 GET / 或 /index.html → 302 到 /?token=...; token
+#      来自插件的状态文件, 只存在于 0600 Caddyfile 与浏览器地址栏。
+#   5. reverse_proxy 原样转发 Host/Origin; dsh 的围栏用 --trusted-host 授权。
 generate_caddyfile() {
-  local cookie
-  cookie="$(cat "$COOKIE_FILE")"
+  local token token_ok=0
+  token="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
+  case "$token" in
+    ''|*[!A-Za-z0-9_-]*) token_ok=1 ;;
+  esac
+  if [ "$token_ok" = 1 ]; then
+    echo "[dsh-web] invalid or empty launch token in $TOKEN_FILE" >&2
+    return 1
+  fi
   mkdir -p "$RUNTIME_DIR"
+  chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
+  # Caddyfile 含 token 与 bcrypt 哈希; 先收紧 umask, 避免 cat 创建时出现 0644 窗口。
+  umask 077
+  local caddy_hosts="${CADDY_HOSTS[*]}"
   # 缩进用 tab(caddy fmt 规范), 避免启动时 "Caddyfile input is not formatted" 警告。
   cat > "$CADDYFILE" <<EOF
 {
-	admin off
+	admin 127.0.0.1:2019
 	auto_https off
 }
 :3081 {
-	# index.html 是动态启动清单(内联 bundle URL 与 rev): 必须禁缓存。否则镜像
-	# 升级后浏览器会用旧前端调用已被移除的端点(旧 /api/events.mux ->
-	# 新 /api/remote.mux), 表现为页面能开但事件流全部 502。
-	# 上游把索引入口限定为 dist 根与配置的 index path —— 即 / 与 /index.html
-	# 两个路径都返回索引, 两个都要禁缓存(只匹配 / 会让从 /index.html 进入的
-	# 浏览器缓存旧启动清单)。
-	@index path / /index.html
-	header @index Cache-Control "no-store"
-	# /assets/* 是 Vite 构建的内容哈希产物(assets/index-<hash>.js、vendor-<hash>.css
-	# 等)。dsh 自己不给这棵前缀树发任何缓存头(实测无 Cache-Control/ETag/
-	# Last-Modified), 浏览器每次导航都要重新下载约 475 KiB(gzip), WAN 上是秒级
-	# 开销; 文件名带内容哈希, 无需再验证即可长期缓存。只补这一棵前缀树 ——
-	# /plugins/??... 合并包与插件分片由 dsh 自己标了 immutable, 索引入口由
-	# @index 禁缓存, 这里都不碰。
-	@assets path /assets/*
-	header @assets Cache-Control "public, max-age=31536000, immutable"
-	reverse_proxy 127.0.0.1:${WEB_PORT} {
-		header_up Host 127.0.0.1:${WEB_PORT}
-		header_up Origin http://127.0.0.1:${WEB_PORT}
-		header_up Cookie "${cookie}"
-	}
+	route {
+		# 只接受 loopback + 显式授权的 authority; 其余 Host 直接 403。
+		@badHost not host ${caddy_hosts}
+		respond @badHost 403
+
+		# basic auth 可选; WebSocket 由 dsh 的 SameSite=Strict cookie 认证。
+		@needsAuth not path /api/remote.mux /api/events.mux
 EOF
   if [ -n "${DSH_PROXY_USER:-}" ] || [ -n "${DSH_PROXY_PASSWORD:-}" ]; then
     # 只设置一个变量时 fail closed: 静默跳过 basic auth 会让用户以为已启用认证。
@@ -228,19 +332,43 @@ EOF
       return 1
     fi
     cat >> "$CADDYFILE" <<EOF
-	basicauth {
-		$DSH_PROXY_USER $hash
-	}
+		basicauth @needsAuth {
+			$DSH_PROXY_USER $hash
+		}
 EOF
   fi
-  printf '}\n' >> "$CADDYFILE"
-  # 文件含 bcrypt 哈希(以及会话 cookie 的注入行), 仅运行时用户可读。
+  cat >> "$CADDYFILE" <<EOF
+
+		# index.html 是动态启动清单(内联 bundle URL 与 rev): 必须禁缓存。
+		@index path / /index.html
+		header @index Cache-Control "no-store"
+		# /assets/* 是 Vite 构建的内容哈希产物; dsh 自己不发缓存头。
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+
+		# 浏览器还没有 dsh 会话 cookie 时, 用插件写出的 launch token 完成
+		# 首次登录; dsh 在 303 里 Set-Cookie, 之后浏览器自己携带。
+		@needsLogin {
+			method GET
+			path / /index.html
+			not query token=*
+			not header_regexp Cookie "(^|;[[:space:]]*)dsh-auth-[A-Za-z0-9_-]+="
+		}
+		header @needsLogin Cache-Control "no-store"
+		header @needsLogin Referrer-Policy "no-referrer"
+		redir @needsLogin "/?token=${token}" 302
+
+		reverse_proxy 127.0.0.1:${WEB_PORT}
+	}
+}
+EOF
+  # 文件含 launch token 与 bcrypt 哈希; 仅运行时用户可读。
   chmod 600 "$CADDYFILE"
 }
 
-# --- Caddy 启动/重启 ------------------------------------------------------------
+# --- Caddy 启动/重启/热更新 ---------------------------------------------------
 # 在最多约 5s 内等待代理端口可响应, 进程中途退出或始终无响应均 fail-fast
-# (配置/端口错误不静默降级)。
+# (配置/端口错误不静默降级)。失败时不要把 Caddyfile 打到日志: 里面有 token。
 start_caddy() {
   if [ -z "${DSH_PROXY_USER:-}" ] && [ -z "${DSH_PROXY_PASSWORD:-}" ]; then
     echo "[dsh-web] WARNING: the proxy listens on 0.0.0.0:3081 with NO authentication — set DSH_PROXY_USER + DSH_PROXY_PASSWORD before any non-loopback exposure (docs/security.md)" >&2
@@ -250,11 +378,10 @@ start_caddy() {
   local ready=0
   for _ in $(seq 1 20); do
     if ! caddy_alive "$CADDY_PID"; then
-      echo "[dsh-web] caddy failed to start (config below):" >&2
-      cat "$CADDYFILE" >&2
+      echo "[dsh-web] caddy failed to start; inspect $CADDYFILE inside the container (not printed: it contains the launch token)" >&2
       return 1
     fi
-    if curl -sS -o /dev/null "http://127.0.0.1:3081/" 2>/dev/null; then
+    if curl -s --noproxy '*' --max-time 2 -o /dev/null "http://127.0.0.1:3081/" 2>/dev/null; then
       ready=1
       break
     fi
@@ -275,13 +402,26 @@ restart_caddy() {
   start_caddy
 }
 
-# --- 栈引导: dsh web → 会话 cookie → Caddy -------------------------------------
-# cookie 文件已存在(同一容器重启)时 wait_for_cookie 立即返回 —— 复用路径
-# 不会写盘, 所以这里绝不能等"被写一次"。
+# token 轮换只改 Caddyfile 的一个 Location; caddy reload 热更新, 不丢现有连接。
+# admin 只监听容器内 127.0.0.1:2019, 不对外暴露。reload 失败(例如旧进程还是
+# admin off)则回退到重启, 由新配置接管。
+reload_caddy() {
+  if caddy reload --config "$CADDYFILE" --adapter caddyfile --address 127.0.0.1:2019 >>"$LOG" 2>&1; then
+    echo "[dsh-web] caddy reloaded with the new launch token" >&2
+    return 0
+  fi
+  echo "[dsh-web] caddy reload failed; restarting caddy" >&2
+  restart_caddy
+}
+
+# --- 栈引导: dsh web → launch token → Caddy ----------------------------------
 mkdir -p "$RUNTIME_DIR"
+chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
+# 升级清理: 旧版本把 cookie 写在这里; 新模型不再使用它。
+rm -f "$RUNTIME_DIR/session-cookie"
 start_dsh_web
-if ! wait_for_cookie; then
-  echo "[dsh-web] session bootstrap failed; refusing to serve" >&2
+if ! wait_for_token; then
+  echo "[dsh-web] launch token bootstrap failed; refusing to serve" >&2
   exit 1
 fi
 if ! wait_for_dsh_port; then
@@ -294,13 +434,12 @@ if ! start_caddy; then
 fi
 echo "[dsh-web] caddy started (pid $CADDY_PID); stack ready on 0.0.0.0:3081 -> 127.0.0.1:${WEB_PORT}" >&2
 
-last_cookie="$(cat "$COOKIE_FILE" 2>/dev/null || true)"
+last_token="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
 
 # --- 监督循环 -------------------------------------------------------------------
-# 单线程轮询(2s): dsh web 退出则重启; cookie 文件缺失则等插件产出(有界, 等不到
-# 即退出交给编排层 —— 不静默降级); 插件轮换 cookie(内容变化)才重建 Caddyfile
-# 并重启 Caddy —— 复用旧 cookie 时内容不变, Caddy 与浏览器会话全程不中断。
-# caddy 崩溃则直接重启。
+# 单线程轮询(2s): dsh web 退出则重启; launch token 文件缺失则等插件产出(有界,
+# 等不到即退出交给编排层 —— 不静默降级); token 变化(新进程)才重建 Caddyfile
+# 并 caddy reload —— 旧浏览器 cookie 仍然有效, 现有会话不中断。caddy 崩溃则重启。
 while [ "$STOPPING" = "0" ]; do
   if ! kill -0 "$CHILD_PID" 2>/dev/null; then
     local_status=0
@@ -315,19 +454,30 @@ while [ "$STOPPING" = "0" ]; do
     echo "[dsh-web] dsh web exited (status $local_status); restarting in 2s" >&2
     sleep 2
     start_dsh_web
+    if ! wait_for_token; then
+      echo "[dsh-web] launch token bootstrap failed after dsh web restart; giving up" >&2
+      exit 1
+    fi
+    if ! wait_for_dsh_port; then
+      echo "[dsh-web] dsh web is not accepting connections after restart; giving up" >&2
+      exit 1
+    fi
+    generate_caddyfile || exit 1
+    reload_caddy || exit 1
+    last_token="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
   fi
-  if [ ! -s "$COOKIE_FILE" ]; then
-    if ! wait_for_cookie; then
-      echo "[dsh-web] session bootstrap failed after dsh web restart; giving up" >&2
+  if [ ! -s "$TOKEN_FILE" ]; then
+    if ! wait_for_token; then
+      echo "[dsh-web] launch token bootstrap failed after dsh web restart; giving up" >&2
       exit 1
     fi
   fi
-  new_cookie="$(cat "$COOKIE_FILE" 2>/dev/null || true)"
-  if [ -n "$new_cookie" ] && [ "$new_cookie" != "$last_cookie" ]; then
-    echo "[dsh-web] session cookie changed; regenerating caddy config" >&2
+  new_token="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
+  if [ -n "$new_token" ] && [ "$new_token" != "$last_token" ]; then
+    echo "[dsh-web] launch token changed; regenerating caddy config" >&2
     generate_caddyfile || exit 1
-    restart_caddy || exit 1
-    last_cookie="$new_cookie"
+    reload_caddy || exit 1
+    last_token="$new_token"
   fi
   if [ -n "$CADDY_PID" ] && ! caddy_alive "$CADDY_PID"; then
     echo "[dsh-web] caddy exited; restarting" >&2

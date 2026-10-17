@@ -3,16 +3,17 @@
 //   1. 向上游的结构化索引注入表推的是标准行
 //      ({kind:'global', name:'__DSH_TRANSPORT__', value:{ownsHost:true}}), 由上游渲染
 //      进 <head>(必须先于 type="module" 的 bundle 执行, connection 插件才读得到);
-//   2. Config 是 Standard Schema 校验器: 默认值/覆写生效, 非法输入被拒;
-//   3. /container-assets 路由按内容哈希服务抽出的图片(immutable 缓存头),
+//   2. launch token 文件按 0600 原子写出(Caddy 的登录重定向依赖它);
+//   3. Config 是 Standard Schema 校验器: 默认值/覆写生效, 非法输入被拒;
+//   4. /container-assets 路由按内容哈希服务抽出的图片(immutable 缓存头),
 //      并且拒绝未知名/路径穿越;
-//   4. 日志走 ctx.logger, 且自接的 exporter 只放行本插件自己的行
+//   5. 日志走 ctx.logger, 且自接的 exporter 只放行本插件自己的行
 //      (本 profile 没有任何 console exporter, 少了它就等于没有日志);
-//   5. settings/describe 被包裹成 hasDocument:false。
+//   6. settings/describe 被包裹成 hasDocument:false。
 // 端到端效果(真实 dsh / 真实浏览器)由 tests/smoke.sh 在镜像里断言。
 // 用法: node tests/plugin-unit.mjs
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
@@ -91,9 +92,6 @@ async function callHandler(handler, url) {
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'dsh-plugin-unit-'))
-// 自举只读取这个 cookie 文件; 提前放一个"已被接受"的 cookie, 走复用路径(不发请求)。
-await mkdir(join(scratch, 'caddy'), { recursive: true })
-await writeFile(join(scratch, 'caddy', 'session-cookie'), 'dsh-auth-stub=value')
 
 const { ctx, registrations, listeners, exporters, logs } = createStubContext()
 const plugin = await import('../container/plugin/index.js')
@@ -109,6 +107,19 @@ assert.ok(plugin.Config['~standard'].validate({ runtimeDir: 'relative/path' }).i
 assert.ok(plugin.Config['~standard'].validate('nope').issues, 'non-object config must be rejected')
 
 plugin.apply(ctx, { runtimeDir: join(scratch, 'caddy') })
+
+// launch token 是异步写出的; 等它落盘并断言内容/权限。
+const tokenFile = join(scratch, 'caddy', 'launch-token')
+let tokenText = ''
+for (let attempt = 0; attempt < 50; attempt += 1) {
+  try {
+    tokenText = await readFile(tokenFile, 'utf8')
+    break
+  } catch {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
+assert.equal(tokenText, 'stub', 'plugin must write the launch token from connection.authenticatedUrl()')
 
 assert.equal(registrations.length, 1, 'plugin must register exactly one web route')
 assert.deepEqual(
@@ -131,6 +142,7 @@ assert.deepEqual(
 // settings/describe 包装(遮蔽实例方法)与日志走 ctx.logger。
 assert.equal(ctx.settingsController.describe().hasDocument, false, 'describe must report no local document')
 assert.ok(logs.some(([, message]) => String(message).includes('describe wrapped')), 'wrap must be logged through ctx.logger')
+assert.ok(logs.some(([, message]) => String(message).includes('launch token written')), 'token write must be logged through ctx.logger')
 assert.ok(
   logs.every(([, message]) => !String(message).startsWith('[dsh-container-adapt]')),
   'log lines must not carry a hand-written prefix (the logger owns it)',

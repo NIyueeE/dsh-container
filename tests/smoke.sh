@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# dsh-container 镜像冒烟测试: 对给定镜像做端到端验证, 覆盖 token 交换、
-# Caddy 头改写、会话注入、前端补丁、遥测默认关闭、工具链分层布局、内置
-# 常用工具与容器内 podman 运行期环境、supervisor 重启与 basic auth 全链路。
+# dsh-container 镜像冒烟测试: 对给定镜像做端到端验证, 覆盖 launch token
+# 登录重定向、浏览器会话 cookie、Host/Origin 围栏、前端补丁、遥测默认关闭、
+# 工具链分层布局、内置常用工具与容器内 podman 运行期环境、supervisor 重启与
+# basic auth 全链路。
 # 由 .github/workflows/image.yml 与 release-prep.yml 共同调用; 本地可用
 # `just test` 运行。
 #
@@ -11,7 +12,7 @@
 #                           (不含 dsh-v 前缀, 如 0.1.2-rc.1)
 # 环境变量:
 #   DOCKER    docker 二进制, 默认 docker; podman 用户可 DOCKER=podman
-#   其他依赖: curl, awk, sed; 需要空闲端口 3081 与 127.0.0.1:3082
+#   其他依赖: curl, awk, sed; 需要空闲端口 3081、127.0.0.1:3082 与 127.0.0.1:3083
 #
 # SC2016: 本文件大量使用 `"$DOCKER" exec "$cid" sh -c '...'` 形式, 单引号是
 # **故意**的 —— 里面的 $ 必须留给容器内的 sh 展开, 而不是在宿主 shell 展开。
@@ -56,10 +57,12 @@ done
 
 cid=""
 auth_cid=""
+proxy_cid=""
 cookie_jar="$(mktemp)"
 cookie_relogin="$(mktemp)"
 auth_cookie_jar="$(mktemp)"
-trap '"$DOCKER" rm -f "$cid" "$auth_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$cookie_relogin" "$auth_cookie_jar"' EXIT
+auth_dsh_jar="$(mktemp)"
+trap '"$DOCKER" rm -f "$cid" "$auth_cid" "$proxy_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$cookie_relogin" "$auth_cookie_jar" "$auth_dsh_jar"' EXIT
 
 # 失败辅助: 打印标记与容器日志后退出, 便于定位是哪一环、服务端发生了什么。
 die() {
@@ -73,9 +76,9 @@ cid="$("$DOCKER" run -d --rm --name dsh-smoke -p 3081:3081 \
   -e DSH_HOME=/tmp/dsh-smoke-home \
   "$image")"
 
-# dsh web 启动后会把登录 URL(?token=...)打印到容器日志(经 dsh-web
-# 镜像到容器日志); supervisor 会用它自举会话, 这里取 token 供交换
-# 流程断言使用。容器提前退出时快速失败并带出日志。
+# dsh web 启动后会把登录 URL(?token=...)打印到容器日志; 插件把同一个 token
+# 写到 /tmp/dsh-caddy/launch-token, Caddy 用它把浏览器首次访问 302 到
+# /?token=...。这里取日志 token, 同时验证 Caddy 的 Location 与它一致。
 running() { [ "$("$DOCKER" inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
 token=""
 for _ in $(seq 1 60); do
@@ -86,7 +89,7 @@ for _ in $(seq 1 60); do
 done
 [ -n "$token" ] || { "$DOCKER" logs --tail 30 "$cid" >&2 || true; die "no login token printed by dsh web"; }
 
-# 栈引导顺序: dsh web 先行, dsh-web 换取会话 cookie 后才拉起 Caddy。
+# 栈引导顺序: dsh web 先行, 插件写出 launch token 后 dsh-web 才拉起 Caddy。
 # token 出现后等 3081 可连通再继续, 消除引导竞态。
 for _ in $(seq 1 60); do
   curl -s -o /dev/null http://127.0.0.1:3081/ 2>/dev/null && break
@@ -94,27 +97,44 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
-exchange="$(curl -sS -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
-  "http://127.0.0.1:3081/?token=$token")"
-[ "$exchange" = "303" ] || die "token exchange returned $exchange, expected 303"
+# 1) 无会话 cookie 的 / 必须 302 到 /?token=...; 不能再像旧实现那样直接
+# 返回页面(Caddy 不再注入 cookie)。Location 里的 token 必须与 dsh 日志一致。
+redirect_headers="$(curl -sS -D - -o /dev/null http://127.0.0.1:3081/)"
+printf '%s' "$redirect_headers" | grep -qi '^location: /?token=' \
+  || die "GET / without a session cookie did not redirect to /?token=..."
+redirect_status="$(printf '%s' "$redirect_headers" | sed -n '1s/.* \([0-9][0-9][0-9]\).*/\1/p')"
+[ "$redirect_status" = "302" ] || die "GET / without a cookie returned $redirect_status, expected 302"
+redirect_token="$(printf '%s' "$redirect_headers" | sed -n 's/^[Ll]ocation: \/?token=//p' | tr -d '\r')"
+[ "$redirect_token" = "$token" ] \
+  || die "Caddy redirect token does not match the dsh launch token"
 
-# 会话注入: 不带任何 cookie 的请求也拿到完整页面 —— dsh 的浏览器围栏
-# 被 Caddy 侧自举的会话吸收, 3081 上不再有 401 流程, 鉴权只看 Caddy。
-proxied_open="$(curl -sS http://127.0.0.1:3081/)"
+# 2) token 交换由浏览器完成: dsh 303 + Set-Cookie(HttpOnly/SameSite=Strict);
+# 浏览器之后自己携带 cookie, Caddy 不再注入。
+exchange_headers="$(curl -sS -D - -o /dev/null -c "$cookie_jar" \
+  "http://127.0.0.1:3081/?token=$token")"
+printf '%s' "$exchange_headers" | grep -qi '^HTTP/1.1 303' \
+  || die "token exchange did not return 303"
+printf '%s' "$exchange_headers" | grep -qi 'set-cookie:.*HttpOnly' \
+  || die "token exchange Set-Cookie lacks HttpOnly"
+printf '%s' "$exchange_headers" | grep -qi 'set-cookie:.*SameSite=Strict' \
+  || die "token exchange Set-Cookie lacks SameSite=Strict"
+
+# 3) 浏览器持有 cookie 后 / 返回完整页面。
+proxied_open="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
+  || die "GET / with the browser session cookie failed"
 [[ "$proxied_open" == *'<title>DeepSeek Harness</title>'* ]] \
-  || die "proxied / without cookies does not serve the app (session injection broken)"
+  || die "proxied / with the session cookie does not serve the app"
 # 鉴权职责没有后退到 dsh: 3080 直连(绕过 Caddy)无 cookie 仍必须 401,
 # 同网段容器/进程无法绕过代理直接使用。
 direct_unauth="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/)"
 [ "$direct_unauth" = "401" ] || die "direct dsh (3080) without cookie returned $direct_unauth, expected 401"
+
 # 首页必须 no-store: 防止镜像升级后浏览器沿用旧前端。
 # 上游的索引入口有两个(dist 根 + 配置的 index path, 即 / 与 /index.html),
 # 两个都必须禁缓存 —— 否则从 /index.html 进入的浏览器会缓存旧启动清单。
-# /index.html 是索引入口这件事本身也在这里钉住(上游改为 404 时会失败, 提示
-# 复核 dsh-web 的 @index 规则是否还需要第二个路径)。
-curl -sS -o /dev/null -D - http://127.0.0.1:3081/ | grep -qi 'cache-control: no-store' \
+curl -sS -o /dev/null -D - -b "$cookie_jar" http://127.0.0.1:3081/ | grep -qi 'cache-control: no-store' \
   || die "GET / response lacks Cache-Control: no-store"
-curl -sS -o /dev/null -D - http://127.0.0.1:3081/index.html | grep -qi 'cache-control: no-store' \
+curl -sS -o /dev/null -D - -b "$cookie_jar" http://127.0.0.1:3081/index.html | grep -qi 'cache-control: no-store' \
   || die "GET /index.html response lacks Cache-Control: no-store (index entry caching not covered)"
 
 # 会话内页面: 标题与前端补丁。先取回整个 index 再做包含判断,
@@ -127,12 +147,12 @@ index_html="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
 # /assets/* 是 Vite 构建的内容哈希产物, 但 dsh 自己不给这棵树发任何缓存头
 # (实测无 Cache-Control/ETag/Last-Modified) —— 少了 Caddy 补的 immutable, 浏览器
 # 每次导航都要重下约 475 KiB 的 shell 资源。这里用索引里真正引用的第一个 assets
-# JS 条目验证: 路径可达(200) 且响应带 immutable 头。
+# JS 条目验证: 路径可达(200) 且响应带 immutable 头。资源请求同样要带会话 cookie。
 asset_path="$(printf '%s' "$index_html" | grep -o 'assets/[A-Za-z0-9._-]\+\.js' | head -n1)"
 [ -n "$asset_path" ] || die "served index references no hashed /assets JS entry"
-asset_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:3081/$asset_path")"
+asset_status="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' "http://127.0.0.1:3081/$asset_path")"
 [ "$asset_status" = "200" ] || die "GET /$asset_path returned $asset_status, expected 200"
-curl -sS -o /dev/null -D - "http://127.0.0.1:3081/$asset_path" \
+curl -sS -b "$cookie_jar" -o /dev/null -D - "http://127.0.0.1:3081/$asset_path" \
   | grep -qi 'cache-control: public, max-age=31536000, immutable' \
   || die "GET /$asset_path lacks the immutable Cache-Control header (hashed asset caching not applied)"
 
@@ -252,7 +272,7 @@ fi
 "$DOCKER" exec "$cid" sh -c 'test "$(command -v uv)" = "/usr/local/bin/uv"' \
   || die "a stale volume uv copy shadows the image-provided uv"
 "$DOCKER" exec "$cid" sh -c 'home="$(getent passwd "$(id -u)" | cut -d: -f6)"; rm -f "$home/.local/bin/uv"'
-# Caddy 代理已在容器内运行(头改写链路)
+# Caddy 代理已在容器内运行(保留 Host/Origin + token 登录重定向)
 "$DOCKER" exec "$cid" sh -c 'pgrep -x caddy >/dev/null' \
   || die "caddy process not found inside the container"
 # 遥测默认关闭: entrypoint 必须把 DSH_TELEMETRY_MODE=DISABLED 传给 dsh web
@@ -273,66 +293,74 @@ dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
   /etc/dsh-container/provenance.json >/dev/null \
   || die "provenance tool versions missing"
 
-# supervisor 安全细节: 凭证类文件仅运行时用户可读; 未配置 basic auth
-# 的容器必须打印裸奔警告(本容器即无 auth)。
+# supervisor 安全细节: launch token/Caddyfile 仅运行时用户可读; 旧的
+# session-cookie 文件必须已被清理; Caddyfile 不再包含 header_up(不注入 cookie,
+# 也不改写 Host/Origin), 但必须有登录重定向。
 "$DOCKER" exec "$cid" sh -c \
-  '[ "$(stat -c %a /tmp/dsh-caddy/session-cookie)" = "600" ] && [ "$(stat -c %a /tmp/dsh-caddy/Caddyfile)" = "600" ]' \
-  || die "session-cookie/Caddyfile permissions are not 0600"
-# 会话 cookie 由容器适配插件在 dsh 进程内自举(替代旧的 dsh-web token 交换):
-# 日志必须出现插件的自举记录。插件走 ctx.logger, 但本 profile 没有任何 console
-# exporter, 因此插件自己注册了一个"只导出本插件日志"的 exporter(见 index.js) ——
-# 这一行同时钉住"日志确实落到了容器日志"。
-"$DOCKER" logs "$cid" 2>&1 | grep -E 'dsh-container-adapt.*session cookie (minted|reusing)' \
-  || die "container-adapt plugin did not bootstrap the session cookie (or its log line is not visible)"
+  '[ "$(stat -c %a /tmp/dsh-caddy/launch-token)" = "600" ] && [ "$(stat -c %a /tmp/dsh-caddy/Caddyfile)" = "600" ] && [ ! -e /tmp/dsh-caddy/session-cookie ]' \
+  || die "launch-token/Caddyfile permissions are not 0600 (or stale session-cookie exists)"
+"$DOCKER" exec "$cid" sh -c '! grep -q "header_up" /tmp/dsh-caddy/Caddyfile' \
+  || die "Caddyfile still rewrites/injects upstream headers (header_up present)"
+"$DOCKER" exec "$cid" sh -c 'grep -q "redir @needsLogin" /tmp/dsh-caddy/Caddyfile' \
+  || die "Caddyfile lacks the launch-token login redirect"
+# launch token 由容器适配插件在 dsh 进程内写出。插件走 ctx.logger, 但本 profile
+# 没有任何 console exporter, 因此插件自己注册了一个"只导出本插件日志"的
+# exporter(见 index.js) —— 这一行同时钉住"日志确实落到了容器日志"。
+"$DOCKER" logs "$cid" 2>&1 | grep -E 'dsh-container-adapt.*launch token written' \
+  || die "container-adapt plugin did not write the launch token (or its log line is not visible)"
 "$DOCKER" logs "$cid" 2>&1 | grep -F 'WARNING: the proxy listens on 0.0.0.0:3081 with NO authentication' \
   || die "no-auth proxy did not print the exposure warning"
 
-# 特权 API(/api/settings/describe 属上游 PRIVILEGED_METHODS): 经代理
-# 一律 200(会话由 Caddy 注入); 3080 直连无 cookie 必须 401 —— 同网段
-# 容器无法绕过代理拿特权接口。
-settings_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+# 特权 API(/api/settings/describe): 浏览器 cookie 经代理 200; 无 cookie 401;
+# 3080 直连无 cookie 也必须 401 —— 同网段容器无法绕过代理拿特权接口。
+settings_code="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' -X POST \
   http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [ "$settings_code" = "200" ] || die "proxied /api/settings/describe returned $settings_code, expected 200"
+settings_nocookie="$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
+  --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
+[ "$settings_nocookie" = "401" ] || die "proxied API without cookie returned $settings_nocookie, expected 401"
 direct_api="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' -X POST \
   http://127.0.0.1:3080/api/settings/describe -H 'content-type: application/json' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [ "$direct_api" = "401" ] || die "direct dsh (3080) /api without cookie returned $direct_api, expected 401"
 
 # 设置 > 打开配置文件按钮隐藏: 容器无桌面, 上游 openSettingsDocument 无
-# headless 兜底(会 spawn 原生文本编辑器命令扑空)—— 插件包 settingsController
-# 实例的 describe(旧 tag 上再翻 provider 的 documentPath), 上游 describe 即
-# 返回 hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身逻辑
-# (status !== 'ready' → 不渲染)让按钮消失, 不引入任何浏览器侧代码。经 3081
-# 的请求由 Caddy 注入会话 cookie。
-settings_body="$(curl -s -X POST http://127.0.0.1:3081/api/settings/describe \
+# headless 兜底 —— 插件包 settingsController 实例的 describe(旧 tag 上再翻
+# provider 的 documentPath), 上游 describe 即返回 hasDocument:false。
+settings_body="$(curl -sS -b "$cookie_jar" -X POST http://127.0.0.1:3081/api/settings/describe \
   -H 'content-type: application/json' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [[ "$settings_body" == *'"hasDocument":false'* ]] \
   || die "settings describe did not report hasDocument:false (button-hide fuse broken): $settings_body"
 # 旧下载入口已删除: /download/settings.yaml 只应落到前端 SPA fallback
 # (HTML 页面), 任何 content-disposition: attachment 响应都意味着端点回归。
-dl_gone="$(curl -s -D - -o /dev/null http://127.0.0.1:3081/download/settings.yaml)"
+dl_gone="$(curl -sS -b "$cookie_jar" -D - -o /dev/null http://127.0.0.1:3081/download/settings.yaml)"
 printf '%s' "$dl_gone" | grep -qi 'content-disposition: attachment' \
   && die "removed download endpoint still serves /download/settings.yaml"
 
-# 传输层声明: 容器适配插件向上游的结构化索引注入表推一行
-# __DSH_TRANSPORT__={ownsHost:true}(替代旧的构建产物字符串补丁)。上游把它渲染成
-# <head> 里的内联脚本 —— 先于 type="module" 的 bundle 执行, connection 插件的
-# isLoopback 才读得到(上游唯一消费点)。位置不必紧贴 <head>(上游自己的 base 与
-# 其它 global 行也在那一段, 行的先后由表顺序决定)。
+# 传输层声明(老 tag 兼容): __DSH_TRANSPORT__={ownsHost:true} 仍在索引的
+# <head> 里, 但它不再是安全机制 —— Caddy 保留 Host/Origin, dsh 的围栏才是。
 transport_injection='<script>globalThis["__DSH_TRANSPORT__"] = {"ownsHost":true}</script>'
 [[ "$index_html" == *"$transport_injection"* ]] \
   || die "served index lacks the __DSH_TRANSPORT__ ownsHost injection"
 [[ "${index_html%%</head>*}" == *"$transport_injection"* ]] \
-  || die "the transport injection is not inside <head> (it would run after the module scripts)"
-# 非回环 Host 头模拟远程浏览器: 注入与 Host 无关(代理改写后同样可用)。
-index_alt_host="$(curl -fsS -H 'Host: dsh.test' http://127.0.0.1:3081/)" \
-  || die "GET / with Host: dsh.test failed"
-[[ "${index_alt_host%%</head>*}" == *"$transport_injection"* ]] \
-  || die "Host: dsh.test index lacks the transport injection in <head>"
-# 容器适配插件(container/plugin/)必须随镜像安装: 会话 cookie 自举、传输层注入、
-# 抽图路由与三个构建期后处理脚本都在插件包内。
+  || die "the transport injection is not inside <head>"
+
+# Host 允许列表: 默认只接受 loopback; 未授权的 dsh.test/evil.test 必须 403。
+# 这正是 DNS rebinding 的防线 —— 不能像旧实现那样把任意 Host 改写成 loopback。
+host_evil="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.test' http://127.0.0.1:3081/)"
+[ "$host_evil" = "403" ] || die "Host: evil.test returned $host_evil, expected 403"
+host_untrusted="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dsh.test' http://127.0.0.1:3081/)"
+[ "$host_untrusted" = "403" ] || die "Host: dsh.test returned $host_untrusted, expected 403 (not in the allowlist)"
+# Origin 围栏: 带合法 cookie 但 Origin 不是本 authority, dsh 必须 403。
+origin_evil="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' \
+  -H 'Origin: http://evil.test' -X POST http://127.0.0.1:3081/api/settings/describe \
+  -H 'content-type: application/json' \
+  --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
+[ "$origin_evil" = "403" ] || die "API with evil Origin returned $origin_evil, expected 403"
+# 容器适配插件(container/plugin/)必须随镜像安装。
 "$DOCKER" exec "$cid" sh -c 'test -f /opt/dsh-container-plugin/index.js && test -f /opt/dsh-container-plugin/overlay.yml && test -f /opt/dsh-container-plugin/scripts/extract-inline-assets.js && test -f /opt/dsh-container-plugin/scripts/minify-client.mjs && test -f /opt/dsh-container-plugin/scripts/refresh-build-record.mjs && test -d /opt/dsh-container-plugin/assets' \
   || die "container-adapt plugin files missing in the image"
 
@@ -353,7 +381,7 @@ case "$combo_url" in
   *) die "extracted combo URL has no rev parameter (did the index escaping change?): ${combo_url:0:120}" ;;
 esac
 combo_body="$(mktemp)"
-combo_bytes="$(curl -fsS --compressed -o "$combo_body" -w '%{size_download}' "http://127.0.0.1:3081${combo_url}")" \
+combo_bytes="$(curl -fsS -b "$cookie_jar" --compressed -o "$combo_body" -w '%{size_download}' "http://127.0.0.1:3081${combo_url}")" \
   || die "fetching the combined client bundle failed"
 # 抽图阈值是"解码后 >= 100 KiB" = base64 载荷 >= 136536 字符(4*ceil(102400/3))。
 # 用 grep -oE + awk 而不是 `{136536,}` 这类巨大重复量词: 部分 grep(如 Debian 13 的
@@ -367,7 +395,7 @@ fi
 # 真有引用时验证路由; 但"大图内联"永远不允许回归(上面的断言)。
 asset_path="$(grep -oE '/container-assets/[0-9a-f]{16,64}\.(png|jpeg|jpg|webp|gif)' "$combo_body" | head -n1 || true)"
 if [ -n "$asset_path" ]; then
-  asset_headers="$(curl -fsS -D - -o /dev/null "http://127.0.0.1:3081${asset_path}")" \
+  asset_headers="$(curl -fsS -b "$cookie_jar" -D - -o /dev/null "http://127.0.0.1:3081${asset_path}")" \
     || die "GET ${asset_path} (extracted client image) failed"
   printf '%s' "$asset_headers" | grep -qi 'content-type: image/' \
     || die "${asset_path} is not served with an image content type"
@@ -380,41 +408,49 @@ fi
   || die "combined client bundle is ${combo_bytes} bytes gzipped; expected < 3 MiB (re-measure if upstream grew)"
 rm -f "$combo_body"
 
-# dsh web 守护/重启: dsh-restart 后由 dsh-web 重新拉起, 新进程会打印
-# 新 token; 等新 token 出现后重新登录, 再验证页面与补丁仍然可用。
-# cookie 文件是状态(内容 = 当前有效 cookie), 不是事件: 复用旧 cookie 时插件
-# 不写盘, dsh-web 也不等待写入(只在文件缺失时等待、只在内容变化时重建 Caddy
-# 配置)。所以这里只断言可见行为, 不 grep 日志文本、不等 mtime。
+# dsh web 守护/重启: dsh-restart 后 dsh-web 重新拉起, 新进程的 launch token 变化,
+# Caddy 热更新 Location; 旧浏览器 cookie 仍有效(dsh 签名密钥持久化在卷上)。
 "$DOCKER" exec "$cid" dsh-restart || die "dsh-restart failed"
 token2=""
-exchange2=""
 for _ in $(seq 1 90); do
   token2="$("$DOCKER" logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | tail -n1 | cut -d= -f2 || true)"
-  if [ -n "$token2" ] && [ "$token2" != "$token" ]; then
-    exchange2="$(curl -sS -o /dev/null -w '%{http_code}' -c "$cookie_relogin" \
-      "http://127.0.0.1:3081/?token=$token2" || true)"
-    if [ "$exchange2" = "303" ]; then break; fi
-  fi
+  if [ -n "$token2" ] && [ "$token2" != "$token" ]; then break; fi
   sleep 1
 done
-[ "$exchange2" = "303" ] \
-  || die "re-login after dsh-restart failed (last exchange=${exchange2:-none})"
-# 会话跨 dsh web 重启存活(签名密钥持久化在卷): 重启后无 cookie 的代理
-# 请求必须仍是 200 —— supervisor 可能正带着新 cookie 重启 Caddy, 短重试。
+if [ -z "$token2" ] || [ "$token2" = "$token" ]; then
+  die "dsh-restart did not produce a new launch token"
+fi
+
+# Caddy 必须把新的 Location 收敛到新 token(supervisor 通过 caddy reload 热更新)。
+redirect2_ok=0
+for _ in $(seq 1 30); do
+  loc2="$(curl -sS -D - -o /dev/null http://127.0.0.1:3081/ | sed -n 's/^[Ll]ocation: //p' | tr -d '\r')"
+  case "$loc2" in
+    *"token=$token2") redirect2_ok=1; break ;;
+  esac
+  sleep 1
+done
+[ "$redirect2_ok" = 1 ] || die "Caddy redirect did not converge to the new launch token after dsh-restart"
+
+# 旧 token 必须失效; 新 token 交换 303; 新浏览器会话可用。
+old_token_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3081/?token=$token" || true)"
+[ "$old_token_code" = "401" ] || die "stale launch token returned $old_token_code, expected 401"
+exchange2="$(curl -sS -o /dev/null -w '%{http_code}' -c "$cookie_relogin" \
+  "http://127.0.0.1:3081/?token=$token2" || true)"
+[ "$exchange2" = "303" ] || die "re-login after dsh-restart failed (last exchange=${exchange2:-none})"
+
+# 会话跨 dsh web 重启存活: 重启前的浏览器 cookie 必须仍然 200(不依赖重新注入)。
 survive=""
 for _ in $(seq 1 15); do
-  survive="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/ || true)"
+  survive="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
   [ "$survive" = "200" ] && break
   sleep 1
 done
 [ "$survive" = "200" ] \
-  || die "proxied / after dsh-restart returned $survive, expected 200 (session did not survive restart)"
-# 重启后 Caddy 注入的 cookie 仍被 dsh 接受: 特权方法经代理必须 200
-# (dsh-web 若没把(可能已轮换的)新 cookie 收敛进 Caddy, 这里会拿到 401)。
-# 插件是复用还是重新铸造 cookie 都合法 —— 不作为判定条件。
+  || die "browser session cookie did not survive dsh-restart (code=$survive)"
 settings_restart=""
 for _ in $(seq 1 15); do
-  settings_restart="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  settings_restart="$(curl -s -b "$cookie_jar" -o /dev/null -w '%{http_code}' -X POST \
     http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
     --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}' || true)"
   [ "$settings_restart" = "200" ] && break
@@ -422,23 +458,19 @@ for _ in $(seq 1 15); do
 done
 [ "$settings_restart" = "200" ] \
   || die "proxied /api/settings/describe after dsh-restart returned $settings_restart, expected 200"
-# 信息性: 重启前的会话 cookie 是否仍被接受(不作为判定条件)。
-old_cookie_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
-if [ "$old_cookie_code" != "200" ]; then
-  echo "=== [smoke] note: pre-restart session cookie no longer accepted after restart (code=$old_cookie_code); re-login used" >&2
-fi
-
-index_restart="$(curl -fsS -b "$cookie_relogin" http://127.0.0.1:3081/)" \
+index_restart="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
   || die "GET / after restart failed"
 [[ "$index_restart" == *'<title>DeepSeek Harness</title>'* ]] \
   || die "served index.html after restart lacks the expected title"
 [[ "${index_restart%%</head>*}" == *"$transport_injection"* ]] \
   || die "transport injection missing from the index <head> after dsh web restart"
 
-# basic auth 模式: 未带 basic 凭据 401; 带凭据后 token 换 cookie(303),
-# 之后 root 与特权 API 均 200。
+# basic auth 模式: 未带凭据 401; 带凭据后浏览器完成 token 登录; root/API 200;
+# 受信任的 Host dsh.test 也必须能登录; WebSocket 只靠 dsh cookie(不要求 basic auth)。
 auth_cid="$("$DOCKER" run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
   -e DSH_HOME=/tmp/dsh-smoke-auth-home \
+  -e DSH_PUBLIC_URL=http://127.0.0.1:3082/ \
+  -e DSH_TRUSTED_HOST=dsh.test \
   -e DSH_PROXY_USER=smoke \
   -e DSH_PROXY_PASSWORD=smoke-pass \
   "$image")"
@@ -450,7 +482,6 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 [ -n "$auth_token" ] || { "$DOCKER" logs --tail 30 "$auth_cid" >&2 || true; die "no login token printed by the basic-auth container"; }
-# 等 Caddy(basic auth)就绪: 未认证请求返回 401 即代表代理已监听。
 for _ in $(seq 1 60); do
   curl -s -o /dev/null http://127.0.0.1:3082/ 2>/dev/null && break
   running "$auth_cid" || { "$DOCKER" logs --tail 30 "$auth_cid" >&2 || true; die "basic-auth container exited before the proxy became ready"; }
@@ -458,17 +489,47 @@ for _ in $(seq 1 60); do
 done
 unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/)"
 [ "$unauth" = "401" ] || die "basic-auth proxy returned $unauth without credentials, expected 401"
-auth_exchange="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
-  -c "$auth_cookie_jar" "http://127.0.0.1:3082/?token=$auth_token")"
+unauth_body="$(curl -s http://127.0.0.1:3082/)"
+case "$unauth_body" in *token=*) die "unauthenticated 401 leaked the launch token" ;; esac
+
+# 浏览器流程: basic auth 之后 Caddy 302 到 token, dsh 303 Set-Cookie, 再 200。
+auth_open="$(curl -sS -L -u smoke:smoke-pass -c "$auth_cookie_jar" -b "$auth_cookie_jar" \
+  -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/)"
+[ "$auth_open" = "200" ] || die "basic-auth browser flow returned $auth_open, expected 200"
+auth_exchange="$(curl -sS -u smoke:smoke-pass -o /dev/null -w '%{http_code}' -c "$auth_cookie_jar" \
+  "http://127.0.0.1:3082/?token=$auth_token")"
 [ "$auth_exchange" = "303" ] || die "basic-auth token exchange returned $auth_exchange, expected 303"
-auth_root="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
-  -b "$auth_cookie_jar" http://127.0.0.1:3082/)"
+auth_root="$(curl -sS -u smoke:smoke-pass -b "$auth_cookie_jar" -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/)"
 [ "$auth_root" = "200" ] || die "basic-auth root with cookie returned $auth_root, expected 200"
-auth_api="$(curl -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass \
-  -b "$auth_cookie_jar" -X POST \
+auth_api="$(curl -sS -u smoke:smoke-pass -b "$auth_cookie_jar" -o /dev/null -w '%{http_code}' -X POST \
   http://127.0.0.1:3082/api/settings/describe -H 'content-type: application/json' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [ "$auth_api" = "200" ] || die "basic-auth API with cookie returned $auth_api, expected 200"
+
+# 显式信任的 Host dsh.test: 登录与 API 都必须 200(同时覆盖 Caddy 允许列表和
+# dsh --trusted-host 两侧一致)。
+auth_dsh_open="$(curl -sS -L -u smoke:smoke-pass -H 'Host: dsh.test' \
+  -c "$auth_dsh_jar" -b "$auth_dsh_jar" -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/)"
+[ "$auth_dsh_open" = "200" ] || die "trusted Host dsh.test login returned $auth_dsh_open, expected 200"
+auth_dsh_api="$(curl -sS -u smoke:smoke-pass -H 'Host: dsh.test' -b "$auth_dsh_jar" \
+  -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3082/api/settings/describe \
+  -H 'content-type: application/json' \
+  --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
+[ "$auth_dsh_api" = "200" ] || die "trusted Host dsh.test API returned $auth_dsh_api, expected 200"
+auth_evil="$(curl -sS -u smoke:smoke-pass -o /dev/null -w '%{http_code}' -H 'Host: evil.test' http://127.0.0.1:3082/)"
+[ "$auth_evil" = "403" ] || die "untrusted Host on basic-auth proxy returned $auth_evil, expected 403"
+
+# WebSocket: 浏览器不保证给升级请求带 Authorization, 所以 Caddy 对 WS 路径不做
+# basic auth; dsh 的 SameSite=Strict cookie 仍是唯一凭据。
+ws() { curl -sS --http1.1 -i --max-time 3 -o /tmp/dsh-smoke-ws.out \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  "$@" http://127.0.0.1:3082/api/remote.mux >/dev/null 2>&1 || true; head -1 /tmp/dsh-smoke-ws.out; }
+ws_ok="$(ws -H 'Host: dsh.test' -b "$auth_dsh_jar")"
+case "$ws_ok" in *'101 Switching Protocols'*) ;; *) die "cookie-only WebSocket handshake returned: $ws_ok" ;; esac
+ws_denied="$(ws -H 'Host: dsh.test')"
+case "$ws_denied" in *'401 Unauthorized'*) ;; *) die "WebSocket without cookie returned: $ws_denied" ;; esac
+rm -f /tmp/dsh-smoke-ws.out
 
 # 只设置 basic auth 一半变量时必须 fail closed, 不能静默裸奔。
 if timeout 30 "$DOCKER" run --rm --name dsh-smoke-partial-auth \
@@ -482,27 +543,52 @@ fi
 grep -F 'must be set together' /tmp/dsh-partial-auth.log >/dev/null \
   || die "partial-auth container failed without the expected message"
 
-# issue #12 回归(同容器重启路径): cookie 文件在 /tmp 里跨 `docker restart`
-# 存活。旧实现把"文件被写了一次(mtime 前进)"当成就绪信号, 而复用该 cookie
-# 时插件不写盘 → dsh-web 空等 120s 后 exit 1, 在 restart 策略下变成每约
-# 2 分钟一次的崩溃循环。这里真等过那个 120s 窗口, 确认容器仍在运行且代理
-# 可用; 插件复用还是轮换 cookie 都合法。
+# 出站代理环境变量回归: network-proxy 文档会要求 HTTP(S)_PROXY; 容器内部探针
+# 必须 --noproxy 直连回环, 否则 wait_for_dsh_port/健康检查会走代理并失败。
+proxy_cid="$("$DOCKER" run -d --rm --name dsh-smoke-proxy -p 127.0.0.1:3083:3081 \
+  -e DSH_HOME=/tmp/dsh-smoke-proxy-home \
+  -e HTTP_PROXY=http://127.0.0.1:9 \
+  -e HTTPS_PROXY=http://127.0.0.1:9 \
+  -e ALL_PROXY=http://127.0.0.1:9 \
+  -e NODE_USE_ENV_PROXY=1 \
+  "$image")"
+proxy_ready=0
+for _ in $(seq 1 60); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3083/ 2>/dev/null || true)"
+  if [ "$code" = "302" ] || [ "$code" = "401" ]; then proxy_ready=1; break; fi
+  running "$proxy_cid" || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container exited during startup"; }
+  sleep 1
+done
+[ "$proxy_ready" = 1 ] || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container did not become reachable (internal probes went through HTTP_PROXY?)"; }
+proxy_health=""
+for _ in $(seq 1 40); do
+  proxy_health="$("$DOCKER" inspect -f '{{.State.Health.Status}}' "$proxy_cid" 2>/dev/null || true)"
+  [ "$proxy_health" = "healthy" ] && break
+  sleep 2
+done
+[ "$proxy_health" = "healthy" ] || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container health is '$proxy_health', expected healthy"; }
+"$DOCKER" rm -f "$proxy_cid" >/dev/null 2>&1 || true
+proxy_cid=""
+
+# issue #12 回归(同容器重启路径): 旧实现把"cookie 文件被写了一次"当成就绪
+# 信号, 复用旧 cookie 时插件不写盘, dsh-web 空等 120s 后 exit 1。新实现每次
+# dsh 重启都删掉旧 token 并等新 token; 这里真等过 120s 窗口, 确认容器仍在运行、
+# 旧浏览器 cookie 仍有效、代理可用。
 "$DOCKER" restart "$cid" >/dev/null || die "docker restart failed"
 restart_root=""
 for _ in $(seq 1 60); do
-  restart_root="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/ || true)"
+  restart_root="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
   [ "$restart_root" = "200" ] && break
   running "$cid" || { "$DOCKER" logs --tail 40 "$cid" >&2 || true; die "container exited while coming back from docker restart"; }
   sleep 1
 done
 [ "$restart_root" = "200" ] \
-  || die "proxied / after docker restart returned $restart_root, expected 200"
-echo "=== [smoke] waiting 130s to confirm the container survives the post-restart window (issue #12)" >&2
+  || die "browser session after docker restart returned $restart_root, expected 200"
 sleep 130
 running "$cid" \
   || { "$DOCKER" logs --tail 40 "$cid" >&2 || true; die "container exited within 130s of docker restart (issue #12 regression)"; }
-restart_root_late="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3081/ || true)"
+restart_root_late="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
 [ "$restart_root_late" = "200" ] \
-  || die "proxied / 130s after docker restart returned $restart_root_late, expected 200"
+  || die "browser session 130s after docker restart returned $restart_root_late, expected 200"
 
 echo "=== [smoke] PASS: all checks passed for $image"

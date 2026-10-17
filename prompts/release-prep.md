@@ -23,7 +23,7 @@ New upstream tag: **$NEW_TAG** (also exported as environment variable `NEW_TAG`)
 | `/tmp/upstream` | Shallow checkout of upstream dsh at `$NEW_TAG` |
 | `/tmp/upstream-diff.json` | GitHub compare payload (previous release tag → `$NEW_TAG`), or a single-commit view if no previous tag existed |
 | `tests/contract.sh` | The executable form of the contract (the check that reported drift) |
-| `container/plugin/` | The single adaptation point: `index.js` (cookie bootstrap, settings-document button hide via the provider `documentPath` flip, the `__DSH_TRANSPORT__` index-injection row, the `/container-assets` route, the logger exporter), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
+| `container/plugin/` | The single adaptation point: `index.js` (launch-token writer for the Caddy login redirect, settings-document button hide via the provider `documentPath` flip, the `__DSH_TRANSPORT__` index-injection row for older tags, the `/container-assets` route, the logger exporter), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
 | `tests/smoke.sh` | Behavioral gate (read-only for you — docker is not available in your environment) |
 
 Environment: `IS_ANCESTOR=yes` when the compare payload shows `$NEW_TAG` is *behind* the previously
@@ -49,10 +49,11 @@ or these paths were hit). Focus your review on those paths and the § Simplifica
    runs after `build:official` is `container/plugin/scripts/`, and it must leave a matching
    `.dsh-build` record behind.
 2. **Follow the update protocol** in `docs/upstream-contract.md` § Update protocol. Items 2–4
-   (request fence, `--port`, `--no-open`) define the image's security posture: if those drifted,
-   make **no changes at all** — even if a workaround seems straightforward — and end your report
-   with a HOLD recommendation explaining the drift for a human. Simplification triggers that
-   touch those items (e.g. upstream allowing `0.0.0.0` with its own auth) are likewise a HOLD.
+   (request fence / trustedHosts, `--port`/`--trusted-host`/`--public-url`, `--no-open`) define the
+   image's security posture: if those drifted, make **no changes at all** — even if a workaround
+   seems straightforward — and end your report with a HOLD recommendation explaining the drift for
+   a human. Simplification triggers that touch those items (e.g. upstream allowing `0.0.0.0` with
+   its own auth) are likewise a HOLD.
 3. **Modifiable paths are restricted** and mechanically enforced: you may only change files under
    `container/`, `docs/`, `tests/`, `prompts/`, or `Containerfile`. Changes anywhere else
    (especially `.github/` — the pipeline's own gates) are rejected and fail the run. Never touch
