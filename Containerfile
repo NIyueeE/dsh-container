@@ -208,6 +208,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     moreutils \
     pv \
     uuid-runtime \
+    xdg-user-dirs \
     just \
     shellcheck \
     && mkdir -p -m 755 /etc/apt/keyrings \

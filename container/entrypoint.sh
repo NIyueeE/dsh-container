@@ -68,6 +68,21 @@ export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
 # 可恢复上游默认行为。
 export DSH_TELEMETRY_MODE="${DSH_TELEMETRY_MODE:-DISABLED}"
 mkdir -p "$HOME/.cargo/bin" "$HOME/.local/bin" "$PNPM_HOME"
+# dsh 的 UI 默认 workspace 启动路径通过 xdg-user-dir 解析系统 Documents 目录;
+# headless 容器没有 user-dirs 配置, 这里补一个最小配置并确保目录存在。已有
+# 用户配置(数据卷)不覆盖; 只保证它指向的 Documents 目录可创建。
+if command -v xdg-user-dir >/dev/null 2>&1; then
+  mkdir -p "$HOME/Documents" "$HOME/.config"
+  if [ ! -f "$HOME/.config/user-dirs.dirs" ]; then
+    # shellcheck disable=SC2016 # xdg-user-dir expands $HOME from this config at runtime
+    printf 'XDG_DOCUMENTS_DIR="$HOME/Documents"\n' > "$HOME/.config/user-dirs.dirs"
+  fi
+  documents_dir="$(xdg-user-dir DOCUMENTS 2>/dev/null || true)"
+  case "$documents_dir" in
+    ''|"$HOME") ;;
+    *) mkdir -p "$documents_dir" 2>/dev/null || true ;;
+  esac
+fi
 # PATH 镜像优先 (hermes-agent 模式): /usr/local/bin 里是镜像的真二进制
 # (dsh/uv/pnpm/cargo), 必须压过用户层目录; 用户自装工具垫底。
 # pnpm 全局包的可执行文件落在 $PNPM_HOME/bin(而不是 $PNPM_HOME 本身)——

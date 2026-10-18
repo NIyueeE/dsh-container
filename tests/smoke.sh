@@ -129,6 +129,20 @@ proxied_open="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
 direct_unauth="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/)"
 [ "$direct_unauth" = "401" ] || die "direct dsh (3080) without cookie returned $direct_unauth, expected 401"
 
+# UI 默认 workspace bootstrap: dsh 通过 xdg-user-dir 解析系统 Documents 目录。
+# 镜像必须带 xdg-user-dirs, entrypoint 必须提供 ~/Documents + user-dirs.dirs;
+# 否则首屏会显示 "Unable to create default workspace"。
+"$DOCKER" exec "$cid" sh -c 'test "$(xdg-user-dir DOCUMENTS)" = "$HOME/Documents" && test -d "$HOME/Documents"' \
+  || die "xdg-user-dir DOCUMENTS is not provisioned by the image/entrypoint"
+workspace_body="$(curl -sS -b "$cookie_jar" -X POST \
+  http://127.0.0.1:3081/api/workspace/initializeDefault \
+  -H 'content-type: application/json' \
+  --data '{"type":"client-request","rpcId":"1","method":"workspace/initializeDefault","payload":{"args":{}}}')"
+[[ "$workspace_body" == *'"ok":true'* ]] \
+  || die "workspace/initializeDefault failed: $workspace_body"
+[[ "$workspace_body" == *'Documents/deepseek-harness/default-workspace'* ]] \
+  || die "default workspace is not under Documents: $workspace_body"
+
 # 首页必须 no-store: 防止镜像升级后浏览器沿用旧前端。
 # 上游的索引入口有两个(dist 根 + 配置的 index path, 即 / 与 /index.html),
 # 两个都必须禁缓存 —— 否则从 /index.html 进入的浏览器会缓存旧启动清单。
@@ -197,7 +211,7 @@ fi
   for t in rg fd patch zip less vi nano ssh rsync wget tree htop sqlite3 tmux crun; do
     command -v "$t" >/dev/null || { echo "missing built-in tool: $t" >&2; exit 1; }
   done
-  for t in dig nc socat traceroute iperf3 nft file ncdu strace zstd lz4 bc sponge pv uuidgen just shellcheck; do
+  for t in dig nc socat traceroute iperf3 nft file ncdu strace zstd lz4 bc sponge pv uuidgen xdg-user-dir just shellcheck; do
     command -v "$t" >/dev/null || { echo "missing built-in diagnostics tool: $t" >&2; exit 1; }
   done
   python3 --version

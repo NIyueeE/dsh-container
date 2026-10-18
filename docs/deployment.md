@@ -369,6 +369,7 @@ container never spends its first minutes downloading them:
 | Network diagnostics | `dig`/`nslookup`/`host` (`bind9-dnsutils`), `nc`, `socat`, `traceroute`, `iperf3`, `nft` (`nftables`) — this image's operational surface is mostly network plumbing (Caddy → dsh, plus nested podman's slirp4netns), so connectivity, bandwidth and firewall-rule checks are first-class |
 | Files & processes | `file`, `ncdu`, `strace` — inspecting what a file is, what fills the volume, and where the `dsh-web`/Caddy/dsh trio is stuck |
 | Compression & data | `zstd`, `lz4`, `bc`, `moreutils`, `pv`, `uuid-runtime` |
+| Workspace / desktop integration | `xdg-user-dirs` (`xdg-user-dir`) — resolves the default Documents directory the UI uses to create its default workspace; the entrypoint provisions `~/Documents` and a minimal `~/.config/user-dirs.dirs` because a headless container has no XDG user-dirs config |
 | Dev tooling | `just` (the repository's `justfile` recipes work inside the container, including `just build` via nested podman), `shellcheck` (the repository's lint gate runs in-container too) |
 | YAML / JSON | `yq` — installed with `uv tool install` (see below), not via apt |
 

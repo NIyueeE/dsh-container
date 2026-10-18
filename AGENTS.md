@@ -64,7 +64,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    with user directories last. Agent high-frequency CLI tools (ripgrep, fd, python3, zip,
     openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch,
     git-lfs, crun, plus the network/process diagnostics dig/nc/socat/traceroute/iperf3/nft, file,
-    ncdu, strace, zstd/lz4 and the dev tooling just/shellcheck) are baked into the system layer too:
+    ncdu, strace, zstd/lz4, xdg-user-dirs and the dev tooling just/shellcheck) are baked into the system layer too:
     runtime `apt install` writes the
     container's writable layer and is lost on recreation, so persistent tools belong in the image,
     not in a runtime install. (deliberately absent: `tcpdump`/`iftop`/`mtr` — the container has no
