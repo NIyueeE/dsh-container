@@ -10,13 +10,19 @@ window.__ModuleLoader__.load({
     const en = {
       title: "Container adaptation",
       summary: "Runtime adaptations for this container image.",
-      body: "Provides the launch-token handoff to Caddy, hides the settings-document button in headless environments, and serves client images extracted at build time. It is built into the image and always enabled.",
+      login: "Login: hands the launch token to Caddy for the first browser sign-in redirect.",
+      ui: "UI: hides the unusable “Open config file” action in headless environments.",
+      assets: "Assets: serves client images extracted at build time, reducing the initial payload.",
+      source: "Built into the dsh-container image",
       project: "Project address"
     };
     const zh = {
       title: "容器适配",
       summary: "镜像运行所需的运行期适配。",
-      body: "负责把 launch token 交给 Caddy、在无桌面环境中隐藏设置文档按钮，并提供构建期抽出的客户端图片。随镜像内置，始终启用。",
+      login: "登录链路：把 launch token 交给 Caddy，完成首次浏览器登录重定向。",
+      ui: "界面适配：在无桌面环境中隐藏不可用的“打开配置文件”按钮。",
+      assets: "资源加载：提供构建期抽出的客户端图片，减少首屏下载体积。",
+      source: "随 dsh-container 镜像内置",
       project: "项目地址"
     };
     function makeCard(t) {
@@ -25,7 +31,14 @@ window.__ModuleLoader__.load({
         return React.createElement(
           "div",
           null,
-          React.createElement("p", null, t("body")),
+          React.createElement(
+            "ul",
+            null,
+            React.createElement("li", null, t("login")),
+            React.createElement("li", null, t("ui")),
+            React.createElement("li", null, t("assets"))
+          ),
+          React.createElement("p", null, t("source")),
           React.createElement(
             "p",
             null,
