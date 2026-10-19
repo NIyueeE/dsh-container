@@ -28,7 +28,7 @@ contract tag:
     tests/contract.sh --tag {{tag}}
 
 # 本地静态门禁: 与 CI 的 "Shell syntax and lint check" / "Doc links resolve" /
-# "README parity" 三步同一套判据, 不必推 CI 才知道坏了。不需要容器。
+# "README parity" 三步同一套判据, 并额外做插件 JS 语法检查; 不需要容器。
 # shellcheck 缺失时明确失败(不静默跳过): CI runner 自带, 本地按发行版安装
 # (Debian/Ubuntu: apt install shellcheck; macOS: brew install shellcheck)。
 lint:
@@ -40,4 +40,7 @@ lint:
     fi
     bash -n container/*.sh tests/*.sh
     shellcheck container/*.sh tests/*.sh
+    for file in container/plugin/index.js container/plugin/lib/client.js container/plugin/scripts/*.js container/plugin/scripts/*.mjs; do
+        node --check "$file"
+    done
     python3 tests/validate-docs.py

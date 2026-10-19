@@ -407,8 +407,6 @@ reload_caddy() {
 # --- 栈引导: dsh web → launch token → Caddy ----------------------------------
 mkdir -p "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
-# 升级清理: 旧版本把 cookie 写在这里; 新模型不再使用它。
-rm -f "$RUNTIME_DIR/session-cookie"
 start_dsh_web
 if ! wait_for_token; then
   echo "[dsh-web] launch token bootstrap failed; refusing to serve" >&2

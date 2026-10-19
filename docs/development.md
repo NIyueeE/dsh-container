@@ -9,6 +9,7 @@ container/
   entrypoint.sh          # entrypoint: HOME restoration, rustup-home ownership self-heal, XDG_RUNTIME_DIR provisioning, --port parsing, then exec dsh-web
   dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the launch token, runs the Caddy proxy with login redirect, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
+  dsh-version-floor.sh   # shared minimum-version check for Containerfile and tests/contract.sh
   healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
   plugin/                # container-adapt plugin at /opt/dsh-container-plugin: host half (launch-token writer, settings-document button hide, /container-assets route), client half (built-in Plugins page card), and scripts/ (three build-time post-processing steps)
 examples/
@@ -42,7 +43,7 @@ justfile                 # build / debug / restart / test / contract recipes
 Run before committing (the CI runs the same checks):
 
 ```sh
-bash -n container/*.sh tests/*.sh                     # shell syntax
+just lint                                            # shellcheck + plugin JS syntax + docs
 docker compose -f examples/compose.yaml config --quiet
 just --list                                           # justfile parses
 python3 - <<'PY'                                      # README parity

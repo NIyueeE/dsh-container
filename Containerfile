@@ -349,6 +349,7 @@ COPY container/dsh-web.sh /usr/local/bin/dsh-web
 COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
 COPY container/healthcheck.sh /usr/local/bin/healthcheck
 COPY container/plugin /opt/dsh-container-plugin
+COPY container/dsh-version-floor.sh /tmp/dsh-version-floor
 RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/healthcheck
 
 # ---------------------------------------------------------------------------
@@ -362,25 +363,7 @@ RUN set -eux; \
       echo "resolved latest upstream dsh tag: $DSH_TAG"; \
     fi; \
     test -n "$DSH_TAG"; \
-    version="${DSH_TAG#dsh-v}"; \
-    version="${version%%-*}"; \
-    vmajor="${version%%.*}"; \
-    rest="${version#*.}"; \
-    vminor="${rest%%.*}"; \
-    vpatch="${rest#*.}"; \
-    case "${vmajor}${vminor}${vpatch}" in \
-      *[!0-9]*|'') echo "unsupported DSH_TAG $DSH_TAG: minimum supported upstream dsh is 0.2.1-alpha.3" >&2; exit 1 ;; \
-    esac; \
-    if [ "$vmajor" -eq 0 ] && { [ "$vminor" -lt 2 ] || { [ "$vminor" -eq 2 ] && [ "$vpatch" -lt 1 ]; }; }; then \
-      echo "unsupported DSH_TAG $DSH_TAG: minimum supported upstream dsh is 0.2.1-alpha.3" >&2; \
-      exit 1; \
-    fi; \
-    case "$DSH_TAG" in \
-      dsh-v0.2.1-alpha.[0-2]) \
-        echo "unsupported DSH_TAG $DSH_TAG: 0.2.1-alpha.3 is the first tag without the loopback settings-persistence gate" >&2; \
-        exit 1; \
-        ;; \
-    esac; \
+    /tmp/dsh-version-floor "$DSH_TAG"; \
     git checkout "$DSH_TAG"; \
     git rev-parse HEAD
 

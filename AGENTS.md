@@ -27,6 +27,7 @@ container-environment note for that file lives in
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + launch-token wait + Caddy reverse proxy with token login redirect (auto-restart, `caddy reload` on token rotation), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
+| `container/dsh-version-floor.sh` | Shared build/contract floor (`0.2.1-alpha.3`); rejects older tags and is used by `Containerfile` and `tests/contract.sh` |
 | `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) writes dsh's launch token for Caddy's login redirect (the browser holds the session cookie), hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`; upstream's own UI never renders it), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; its client half (`lib/client.js` + `dsh.client`) registers a built-in `plugins.item` card (no enable/disable switch) with a summary and project link; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
@@ -256,7 +257,7 @@ just build      # build ghcr.io/niyueee/dsh-container:local (podman or docker)
 just debug      # run in the foreground with port 3081 published
 just restart-dsh # restart dsh web inside the running "dsh" container
 just test       # smoke-test an already built image (tests/smoke.sh)
-just lint       # bash -n + shellcheck + doc-link/README-parity checks (no container)
+just lint       # bash -n + shellcheck + plugin JS checks + doc links/README parity (no container)
 just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
 ```
 
@@ -285,10 +286,10 @@ just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
 
 ## Validation checklist before committing
 
-1. `just lint` — runs all three of: `bash -n container/*.sh tests/*.sh`,
-   `shellcheck container/*.sh tests/*.sh` (must be zero output, including info-level
-   diagnostics; annotate genuine false positives with a targeted `# shellcheck disable=`), and
-   `python3 tests/validate-docs.py`. CI runs the same three as separate steps.
+1. `just lint` — runs `bash -n container/*.sh tests/*.sh`, `shellcheck
+   container/*.sh tests/*.sh` (must be zero output, including info-level diagnostics; annotate
+   genuine false positives with a targeted `# shellcheck disable=`), `node --check` for the
+   plugin and post-processing JS, and `python3 tests/validate-docs.py`. CI runs the same checks.
 2. Examples parse: `docker compose -f examples/compose.yaml config --quiet` (or podman-compose)
 3. README/README.zh parity: equal heading count, link count, and code-fence count
    (`python3 tests/validate-docs.py parity`)

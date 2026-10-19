@@ -7,7 +7,7 @@
 //   4. 日志走 ctx.logger, 且自接的 exporter 只放行本插件自己的行
 //      (本 profile 没有任何 console exporter, 少了它就等于没有日志);
 //   5. settings/describe 被包裹成 hasDocument:false;
-//   6. 客户端 half 声明了 dsh.client 与 plugins.item 卡片(内置配置页)。
+//   6. 客户端 half 真正执行: 注册 dsh.client/plugins.item 卡片并渲染文案。
 // 端到端效果(真实 dsh / 真实浏览器)由 tests/smoke.sh 在镜像里断言。
 // 用法: node tests/plugin-unit.mjs
 import assert from 'node:assert/strict'
@@ -15,6 +15,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
+import { runInNewContext } from 'node:vm'
 
 const ASSET_DIR = '/opt/dsh-container-plugin/assets'
 
@@ -103,6 +104,64 @@ const clientSource = await readFile(new URL('../container/plugin/lib/client.js',
 assert.match(clientSource, /plugins\.item/, 'the client half must register a plugins.item card')
 assert.match(clientSource, /https:\/\/github\.com\/NIyueeE\/dsh-container/, 'the card must link the project')
 
+// 真正执行一次客户端 bundle, 而不是只 grep 字符串: 用最小 module-loader/React
+// 存根跑 registration → factory → apply, 断言卡片注册与页面文案。
+let clientLoaderRegistration
+runInNewContext(clientSource, {
+  window: { __ModuleLoader__: { load(value) { clientLoaderRegistration = value } } },
+}, { filename: 'container/plugin/lib/client.js' })
+assert.ok(clientLoaderRegistration !== undefined, 'client bundle must register through __ModuleLoader__')
+assert.equal(clientLoaderRegistration.id, '@dsh-container/adapt', 'client bundle id changed')
+const React = {
+  createElement(type, props, ...children) {
+    return { type, props, children: children.flat(Infinity) }
+  },
+}
+const clientPlugin = clientLoaderRegistration.factory((id) => {
+  if (id === 'react') return React
+  throw new Error(`unexpected client dependency: ${id}`)
+})
+assert.deepEqual([...clientPlugin.inject], ['slots', 'locale'], 'client plugin inject list changed')
+let clientDictionaries
+let clientCardComponent
+let clientRegistrationOptions
+const clientContext = {
+  locale: {
+    bind: namespace => key => clientDictionaries?.['zh']?.[key] ?? key,
+    register: (namespace, dictionaries) => {
+      clientDictionaries = dictionaries
+      return () => {}
+    },
+  },
+  slots: {
+    inject: (name, callback) => {
+      assert.equal(name, 'plugins.item', 'client must register a plugins.item card')
+      callback()
+    },
+    register: (options, component) => {
+      clientRegistrationOptions = options
+      clientCardComponent = component
+      return () => {}
+    },
+  },
+  effect: callback => callback(),
+}
+clientPlugin.apply(clientContext)
+assert.equal(clientRegistrationOptions?.id, 'dsh-container', 'card id changed')
+assert.equal(clientRegistrationOptions?.order, 50, 'card order changed')
+assert.equal(clientRegistrationOptions?.label(), '容器适配', 'card label changed')
+const textOf = node => {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join('')
+  if (node === null || typeof node !== 'object') return ''
+  return textOf(node.children ?? [])
+}
+assert.match(textOf(clientCardComponent({ view: 'summary' })), /镜像运行所需的运行期适配/, 'card summary changed')
+const detailText = textOf(clientCardComponent({ view: 'page' }))
+assert.match(detailText, /登录链路/, 'detail page lost the login category')
+assert.match(detailText, /随 dsh-container 镜像内置/, 'detail page lost its provenance line')
+assert.match(detailText, /https:\/\/github\.com\/NIyueeE\/dsh-container/, 'detail page lost the project link')
+
 // Config 走 Standard Schema(Cordis resolveConfig 直接调 '~standard'.validate)。
 assert.equal(plugin.Config['~standard'].version, 1, 'Config must be a Standard Schema v1 validator')
 assert.deepEqual(plugin.Config['~standard'].validate(undefined), { value: { runtimeDir: '/tmp/dsh-caddy' } })
@@ -184,4 +243,4 @@ if (existsSync(ASSET_DIR)) {
 }
 
 await rm(scratch, { recursive: true, force: true })
-console.log('[plugin-unit] OK: launch token + Config + asset route + describe wrapper contract')
+console.log('[plugin-unit] OK: launch token + Config + asset route + describe wrapper + client card contract')

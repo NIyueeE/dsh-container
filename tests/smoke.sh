@@ -311,12 +311,12 @@ dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
   /etc/dsh-container/provenance.json >/dev/null \
   || die "provenance tool versions missing"
 
-# supervisor 安全细节: launch token/Caddyfile 仅运行时用户可读; 旧的
-# session-cookie 文件必须已被清理; Caddyfile 不再包含 header_up(不注入 cookie,
-# 也不改写 Host/Origin), 但必须有登录重定向。
+# supervisor 安全细节: launch token/Caddyfile 仅运行时用户可读;
+# Caddyfile 不再包含 header_up(不注入 cookie, 也不改写 Host/Origin), 但必须有
+# 登录重定向。
 "$DOCKER" exec "$cid" sh -c \
-  '[ "$(stat -c %a /tmp/dsh-caddy/launch-token)" = "600" ] && [ "$(stat -c %a /tmp/dsh-caddy/Caddyfile)" = "600" ] && [ ! -e /tmp/dsh-caddy/session-cookie ]' \
-  || die "launch-token/Caddyfile permissions are not 0600 (or stale session-cookie exists)"
+  '[ "$(stat -c %a /tmp/dsh-caddy/launch-token)" = "600" ] && [ "$(stat -c %a /tmp/dsh-caddy/Caddyfile)" = "600" ]' \
+  || die "launch-token/Caddyfile permissions are not 0600"
 "$DOCKER" exec "$cid" sh -c '! grep -q "header_up" /tmp/dsh-caddy/Caddyfile' \
   || die "Caddyfile still rewrites/injects upstream headers (header_up present)"
 "$DOCKER" exec "$cid" sh -c 'grep -q "redir @needsLogin" /tmp/dsh-caddy/Caddyfile' \

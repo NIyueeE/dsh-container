@@ -16,6 +16,8 @@
 # 输出行格式: "PASS|MISS|WARN|SKIP <check-id>[ <detail>]", 供 workflow 解析。
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 UPSTREAM_REPO="deepseek-ai/deepseek-harness"
 TAG=""
 DIR=""
@@ -39,28 +41,8 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$TAG" ] || usage
-# 与 upstream-tag.yml 的 semver 解析保持一致的 tag 形状校验
-if ! [[ "$TAG" =~ ^dsh-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-  echo "error: --tag must look like dsh-vX.Y.Z[-pre], got: $TAG" >&2
-  exit 1
-fi
-# 最低支持 0.2.1-alpha.3: 更早的 tag 没有兼容层, 直接拒绝(Containerfile 同样会 fail fast)。
-version="${TAG#dsh-v}"; version="${version%%-*}"
-vmajor="${version%%.*}"; rest="${version#*.}"
-vminor="${rest%%.*}"; vpatch="${rest#*.}"
-case "${vmajor}${vminor}${vpatch}" in
-  *[!0-9]*|'') echo "error: unsupported tag $TAG: minimum supported upstream dsh is 0.2.1-alpha.3" >&2; exit 1 ;;
-esac
-if [ "$vmajor" -eq 0 ] && { [ "$vminor" -lt 2 ] || { [ "$vminor" -eq 2 ] && [ "$vpatch" -lt 1 ]; }; }; then
-  echo "error: unsupported tag $TAG: minimum supported upstream dsh is 0.2.1-alpha.3" >&2
-  exit 1
-fi
-case "$TAG" in
-  dsh-v0.2.1-alpha.[0-2])
-    echo "error: unsupported tag $TAG: 0.2.1-alpha.3 is the first tag without the loopback settings-persistence gate" >&2
-    exit 1
-    ;;
-esac
+# 最低支持版本与 Containerfile 共用同一份检查(包含 0.2.1-alpha.1/2 的特例)。
+"$SCRIPT_DIR/../container/dsh-version-floor.sh" "$TAG"
 
 WORK=""
 if [ -z "$DIR" ]; then

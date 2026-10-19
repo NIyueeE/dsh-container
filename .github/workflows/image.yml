@@ -114,9 +114,10 @@ jobs:
           # hasDocument:false 包装, 与 /container-assets 路由行为(immutable、
           # 拒绝路径穿越与未知名)。真实镜像上的端到端断言在 tests/smoke.sh。
           node tests/plugin-unit.mjs
-          # 构建期后处理脚本的语法; 真正执行需要完整 dsh checkout 与 esbuild,
-          # 由镜像构建(Containerfile 第 10 步)与 smoke 断言覆盖。
+          # 插件 host/client 与构建期后处理脚本的语法; 真正执行需要完整 dsh
+          # checkout 与 esbuild, 由镜像构建与 smoke 断言覆盖。
           node --check container/plugin/index.js
+          node --check container/plugin/lib/client.js
           node --check container/plugin/scripts/extract-inline-assets.js
           node --check container/plugin/scripts/minify-client.mjs
           node --check container/plugin/scripts/refresh-build-record.mjs
