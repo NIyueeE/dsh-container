@@ -20,6 +20,8 @@ tests/
   contract.sh            # static upstream-contract check against a dsh-v* tag
   triage-diff.sh         # code-level agent admission gate for release-prep (diff triage)
   plugin-unit.mjs        # container-adapt plugin contract (launch token, Config, route, logger, client card execution)
+  validate-static.sh     # single-source static gate (shellcheck, plugin, docs, compose/quadlet) used by CI + verify + just lint
+  newest-tag.mjs         # semver-aware "is this the newest dsh-v* tag" helper for the image.yml downgrade guard
 prompts/
   release-prep.md        # system prompt for the headless dsh release agent
 docs/
@@ -43,19 +45,9 @@ justfile                 # build / debug / restart / test / contract recipes
 Run before committing (the CI runs the same checks):
 
 ```sh
-just lint                                            # shellcheck + plugin JS syntax + docs
-node tests/plugin-unit.mjs                           # host/client plugin contract
-docker compose -f examples/compose.yaml config --quiet
-just --list                                           # justfile parses
-python3 - <<'PY'                                      # README parity
-from pathlib import Path
-import re
-en = Path('README.md').read_text(); zh = Path('README.zh.md').read_text()
-h = lambda t: len(re.findall(r'^#{1,6} .*$', t, re.M))
-l = lambda t: len(re.findall(r'\[[^\]]*\]\([^)]*\)', t))
-assert h(en) == h(zh) and l(en) == l(zh) and en.count('```') == zh.count('```')
-print('README parity OK')
-PY
+just lint                     # tests/validate-static.sh --no-runtime (shellcheck, plugin, docs)
+tests/validate-static.sh      # full CI static gate (adds compose/quadlet; needs docker + sudo/systemd)
+just --list                    # justfile parses
 ```
 
 ## Verifying a processed payload in a headless browser
@@ -102,3 +94,7 @@ helpers collide across files — see `container/plugin/scripts/minify-client.mjs
   dispatch) falls back to the full build — the classifier fails closed.
 - **everything else** (code, examples, workflows, Containerfile, …): full build + smoke, exactly
   as before.
+
+All workflows pin `ubuntu-24.04` (arm64: `ubuntu-24.04-arm`) instead of `ubuntu-latest`, so a
+release gate cannot change operating system under an in-flight release while GitHub migrates the
+`ubuntu-latest` label.

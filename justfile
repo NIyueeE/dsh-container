@@ -27,20 +27,8 @@ test image="ghcr.io/niyueee/dsh-container:local":
 contract tag:
     tests/contract.sh --tag {{tag}}
 
-# 本地静态门禁: 与 CI 的 "Shell syntax and lint check" / "Doc links resolve" /
-# "README parity" 三步同一套判据, 并额外做插件 JS 语法检查; 不需要容器。
-# shellcheck 缺失时明确失败(不静默跳过): CI runner 自带, 本地按发行版安装
-# (Debian/Ubuntu: apt install shellcheck; macOS: brew install shellcheck)。
+# 本地静态门禁: 与 CI 的 validate job 共用 tests/validate-static.sh 的
+# --no-runtime 模式(shell syntax/lint、插件契约、文档、移除项残留检查;
+# 跳过需要 docker/systemd 的 compose/quadlet)。shellcheck 缺失时明确失败。
 lint:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if ! command -v shellcheck >/dev/null 2>&1; then
-        echo "lint: shellcheck 未安装 —— Debian/Ubuntu: sudo apt install shellcheck; macOS: brew install shellcheck" >&2
-        exit 1
-    fi
-    bash -n container/*.sh tests/*.sh
-    shellcheck container/*.sh tests/*.sh
-    for file in container/plugin/index.js container/plugin/lib/client.js container/plugin/scripts/*.js container/plugin/scripts/*.mjs; do
-        node --check "$file"
-    done
-    python3 tests/validate-docs.py
+    tests/validate-static.sh --no-runtime

@@ -85,7 +85,7 @@ or these paths were hit). Focus your review on those paths and the § Simplifica
 3. **Modifiable paths are restricted** and mechanically enforced: you may only change files under
    `container/`, `docs/`, `tests/`, `prompts/`, or `Containerfile`. Changes anywhere else
    (especially `.github/` — the pipeline's own gates) are rejected and fail the run. Never touch
-   `.git`.
+   `.git`; do not create commits, tags, or branches — leave every edit in the working tree.
 4. **Keep docs consistent.** If you change behavior, anchors, or the adaptation surface, update
    `docs/upstream-contract.md` and `tests/contract.sh` so all three describe the same reality.
    Release notes: adaptation changes are visible in the release commits themselves; the decision
@@ -127,7 +127,7 @@ this tag" with the reason each trigger did not fire>
 <RELEASE | HOLD — one sentence of justification>
 ```
 
-Be concrete and honest: the verify job (build + smoke) makes the final decision, and your report
+Be concrete and honest: the verify job (static gates + contract recheck + build + smoke) makes the final decision, and your report
 is the human-readable audit trail. **Your report is posted verbatim to a public issue on a public
 repository — never include secrets, credentials, or internal endpoint URLs in it** (the pipeline
 redacts known secret values as a safety net; do not rely on that).

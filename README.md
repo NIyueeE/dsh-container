@@ -126,7 +126,9 @@ WebSocket headers and raised timeouts) — see [docs/deployment.md](docs/deploym
 | `DSH_TELEMETRY_MODE` | `DISABLED` | OTel feedback-upload policy; `FEEDBACK_ONLY` restores the upstream default (uploads on explicit feedback), `DISABLED` keeps the OTel path local. It does **not** control the DeepSeek session-log contributor ([security.md](docs/security.md)) |
 
 Everything else uses built-in defaults — dsh data at `~/.dsh`, cwd `$HOME`, writable caches under
-`~/.cargo` / `~/.local/share`, image-owned tools in `/usr/local/bin` and `/opt/rust`. The whole
+`~/.cargo` / `~/.local/share`, image-owned tools in `/usr/local/bin` and `/opt/rust`. dsh/agent
+temporary files default to `~/.dsh/tmp` (`TMPDIR`); `/tmp` itself stays ephemeral for the launch
+token, Caddyfile and `dsh-web` PID. The whole
 `/home/dsh` is the persistence boundary: mount it as one volume; image upgrades replace the
 toolchain, never the data. Details in [docs/build.md](docs/build.md) and
 [docs/deployment.md](docs/deployment.md).

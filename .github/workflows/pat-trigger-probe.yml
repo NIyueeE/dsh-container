@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   probe:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -85,7 +85,7 @@ jobs:
             wf_branch="_pat-probe-wf-${{ github.run_id }}"
             probe_file=".github/workflows/_pat-probe-${{ github.run_id }}.yml"
             git checkout -q -b "$wf_branch"
-            printf 'name: probe\non: workflow_dispatch\njobs:\n  p:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$probe_file"
+            printf 'name: probe\non: workflow_dispatch\njobs:\n  p:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: "true"\n' > "$probe_file"
             git add "$probe_file"
             git -c user.name="PAT trigger probe" -c user.email="actions@github.com" \
               commit -q -m "pat probe workflow file"

@@ -25,6 +25,8 @@
 # 运行时行为由 container/entrypoint.sh 控制:
 #   - dsh 数据目录使用上游默认 ~/.dsh(即 /home/dsh/.dsh), 不设 DSH_HOME;
 #     进程 cwd 直接使用 $HOME, 不预创建固定工作区子目录
+#   - dsh/agent 的临时目录默认 TMPDIR=~/.dsh/tmp(数据卷), 容器重建后仍在;
+#     /tmp 保持临时语义, launch token/Caddyfile/PID 不写进卷
 #   - dsh web 由 dsh-web 守护脚本托管, 崩溃/退出后自动重启;
 #     容器内可用 dsh-restart 手动重启 dsh web(无需重启整个容器)
 #   - dsh-web 以 `dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web ...`
@@ -79,7 +81,7 @@
 #   - 遥测默认关闭: entrypoint 导出 DSH_TELEMETRY_MODE=DISABLED(可覆盖),
 #     dsh 的 OTel 反馈上传(上游默认 FEEDBACK_ONLY)不把会话数据发往
 #     harness-telemetry.deepseeksvc.com
-#   - Caddy 反向代理监听 0.0.0.0:3081, 把 Host/Origin 改写为回环后转发到 dsh 的
+#   - Caddy 反向代理监听 0.0.0.0:3081, 保留浏览器 Host/Origin 原样转发到 dsh 的
 #     127.0.0.1:3080(UI 资源压缩由 dsh 自带 webserver 的 gzip 承担); 并补两条
 #     缓存策略: / 与 /index.html 两个索引入口 no-store(动态启动清单),
 #     内容哈希的 /assets/* immutable(dsh 自己不发缓存头, 否则每次导航重下
@@ -354,12 +356,21 @@ RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/ds
 
 # ---------------------------------------------------------------------------
 # 8. 拉取 dsh 官方源码并切换到指定 tag(默认 latest = 官方最新 tag)
+#    latest 用 git version sort 选最高 tag; 但 version sort 把同一核心的预发布
+#    版排在稳定版之后(如 0.2.1 < 0.2.1-rc.2), 而 semver 的稳定版更高 ——
+#    同一核心已有稳定版时改选稳定版。
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     git clone --filter=blob:none --no-checkout https://github.com/deepseek-ai/deepseek-harness.git /opt/deepseek-harness; \
     cd /opt/deepseek-harness; \
     if [ "${DSH_TAG}" = "latest" ]; then \
       DSH_TAG="$(git tag --sort=-v:refname --list 'dsh-v*' | head -n1)"; \
+      case "$DSH_TAG" in \
+        *-*) stable="${DSH_TAG%-*}"; \
+             if git rev-parse --verify --quiet "refs/tags/$stable" >/dev/null; then \
+               DSH_TAG="$stable"; \
+             fi ;; \
+      esac; \
       echo "resolved latest upstream dsh tag: $DSH_TAG"; \
     fi; \
     test -n "$DSH_TAG"; \

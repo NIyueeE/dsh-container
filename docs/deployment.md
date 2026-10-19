@@ -51,7 +51,10 @@ the most recent release.
   volume never hides dsh. To access user files directly from the host, switch the volume to a bind
   mount at `/home/dsh` and keep it owned by uid 1000; on SELinux hosts keep `:Z` in that
   bind-mount definition. Because all tools are image-owned, an empty bind mount loses nothing —
-  no seeding step is needed.
+  no seeding step is needed. dsh/agent temporary files default to `~/.dsh/tmp` (`TMPDIR`), so
+  scratch files also survive container recreation and can be cleared with `rm -rf ~/.dsh/tmp/*`.
+  `/tmp` itself stays ephemeral: the launch token, Caddyfile, `dsh-web` PID file and the
+  `XDG_RUNTIME_DIR` fallback are deliberately not persisted.
 
 ## 3. Podman Quadlet deployment (recommended)
 

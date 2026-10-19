@@ -82,7 +82,7 @@ sudo systemctl enable --now dsh.service
 | `DSH_TRUSTED_HOST` | *(空;从 `DSH_PUBLIC_URL` 派生)* | 逗号分隔的额外 authority(host 或 host:port),同时进入 dsh 围栏与 Caddy Host 允许列表 |
 | `DSH_TELEMETRY_MODE` | `DISABLED` | OTel 反馈上报策略;`FEEDBACK_ONLY` 恢复上游默认(显式反馈时上传),`DISABLED` 让 OTel 路径留在本地。它**不**控制 DeepSeek 会话日志贡献者([security.md](docs/security.md)) |
 
-其余全部使用内置默认值——dsh 数据在 `~/.dsh`,工作目录 `$HOME`,可写缓存在 `~/.cargo` / `~/.local/share`,镜像持有的工具在 `/usr/local/bin` 与 `/opt/rust`。整个 `/home/dsh` 是持久化边界:把它作为单一卷挂载;镜像升级替换工具链,从不动数据。细节见 [docs/build.md](docs/build.md) 与 [docs/deployment.md](docs/deployment.md)。
+其余全部使用内置默认值——dsh 数据在 `~/.dsh`,工作目录 `$HOME`,可写缓存在 `~/.cargo` / `~/.local/share`,镜像持有的工具在 `/usr/local/bin` 与 `/opt/rust`。dsh/agent 的临时文件默认在 `~/.dsh/tmp`(`TMPDIR`);`/tmp` 仍保持临时语义,只承载 launch token、Caddyfile 与 `dsh-web` PID。整个 `/home/dsh` 是持久化边界:把它作为单一卷挂载;镜像升级替换工具链,从不动数据。细节见 [docs/build.md](docs/build.md) 与 [docs/deployment.md](docs/deployment.md)。
 
 ## 文档
 

@@ -301,6 +301,12 @@ dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
 [ -n "$dsh_pid" ] || die "dsh web process not found for telemetry env check"
 "$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < "/proc/$1/environ" | grep -Fx "DSH_TELEMETRY_MODE=DISABLED"' _ "$dsh_pid" \
   || die "dsh web is not running with DSH_TELEMETRY_MODE=DISABLED"
+# 持久临时目录: dsh/agent 的 os.tmpdir() 落在卷上, /tmp 保持临时语义
+# (launch token/Caddyfile/PID 仍走 /tmp)。目录必须存在且为 0700。
+"$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < "/proc/$1/environ" | grep -Fx "TMPDIR=/home/dsh/.dsh/tmp"' _ "$dsh_pid" \
+  || die "dsh web is not running with TMPDIR=/home/dsh/.dsh/tmp"
+"$DOCKER" exec "$cid" sh -c 'test "$(stat -c %a "$HOME/.dsh/tmp")" = 700 && test -w "$HOME/.dsh/tmp"' \
+  || die "persistent TMPDIR ~/.dsh/tmp is missing or not 0700"
 # dsh 必须解析到镜像内版本 (卷中旧 npm 副本若存在也不得遮蔽)。
 "$DOCKER" exec "$cid" sh -c '[ "$(command -v dsh)" = "/usr/local/bin/dsh" ]' \
   || die "dsh does not resolve to the image-provided /usr/local/bin/dsh"

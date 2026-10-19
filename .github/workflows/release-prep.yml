@@ -64,7 +64,7 @@ env:
 jobs:
   contract:
     name: Contract check against upstream tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       new_tag: ${{ steps.resolve.outputs.new_tag }}
@@ -101,28 +101,48 @@ jobs:
           # 其他非零 = 传输错误 —— 必须重试后再放弃, 否则网络抖动会被误判成
           # "tag 不存在", 白白重跑 verify(甚至重复发版)。
           tag_exists=0
+          lookup_ok=0
           for _ in 1 2 3; do
             rc=0
             git ls-remote --exit-code --tags origin "refs/tags/$new_tag" >/dev/null 2>&1 || rc=$?
             if [ "$rc" = 0 ]; then
               tag_exists=1
+              lookup_ok=1
               break
             fi
-            [ "$rc" = 2 ] && break
+            if [ "$rc" = 2 ]; then
+              lookup_ok=1
+              break
+            fi
             echo "ls-remote transport error (rc=$rc); retrying..." >&2
             sleep 5
           done
+          # 重试耗尽仍无法判断时必须失败, 不能把网络错误当成"tag 不存在"
+          # 继续跑完整 prep/verify, 最后才在 tag push 处失败。
+          if [ "$lookup_ok" != 1 ]; then
+            echo "cannot determine whether $new_tag exists (git ls-remote failed); refusing to continue" >&2
+            exit 1
+          fi
           verdict="ready"
           if [ "$tag_exists" = 1 ]; then
             echo "tag $new_tag already exists in this repository; nothing to do"
             verdict="skipped"
           fi
-          # old_tag 兜底: dispatch 未携带时取本仓库最新 dsh-v* tag(sort -V 对
-          # 预发布段排序不完美, 但只用于圈定上游 compare 范围, 可接受)
+          # old_tag 兜底: dispatch 未携带时取本仓库最新 dsh-v* tag。sort -V 把
+          # 同一核心的预发布版排在稳定版之后, 与 semver 相反; 若最高项是预发布
+          # 且同核心稳定版存在, 改选稳定版(只用于圈定 compare 范围)。
           if [ -z "$old_tag" ]; then
             old_tag="$(git ls-remote --tags origin 'refs/tags/dsh-v*' \
               | sed -E 's#.*refs/tags/(dsh-v[0-9.]+.*)$#\1#' | grep -v '\^{}' \
               | sort -V | tail -n1 || true)"
+            case "$old_tag" in
+              *-*)
+                stable="${old_tag%-*}"
+                if git ls-remote --exit-code --tags origin "refs/tags/$stable" >/dev/null 2>&1; then
+                  old_tag="$stable"
+                fi
+                ;;
+            esac
           fi
           # issue 兜底: 找标题匹配的未关闭 tracker issue
           if [ -z "$issue" ]; then
@@ -284,7 +304,7 @@ jobs:
         needs.contract.outputs.fatal != 'yes' &&
         needs.contract.outputs.ancestor != 'yes'
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: write # 推 release-prep/<tag> 修复分支
@@ -399,6 +419,10 @@ jobs:
           # (见 Commit repair branch 步骤)。
           git config --unset-all 'http.https://github.com/.extraheader' || true
 
+      - name: Record workspace base commit
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Run dsh agent (drift repair + adaptation review)
         env:
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
@@ -440,7 +464,10 @@ jobs:
         id: commit
         env:
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
           GH_TOKEN: ${{ github.token }}
+          TERNARYBIT_API_KEY: ${{ secrets.TERNARYBIT_API_KEY }}
+          TERNARYBIT_URL: ${{ secrets.TERNARYBIT_URL }}
         run: |
           set -euo pipefail
           # 容器 job 经典坑: workspace 文件属主是宿主 runner 的 UID, 容器内
@@ -456,7 +483,11 @@ jobs:
           # 变更判定用 porcelain(覆盖已暂存与未跟踪 ??): git diff 只看"已
           # 跟踪且未暂存"的差异 —— agent 若自行 git add 或新建文件, diff
           # 判不出有改动, 修复会被静默丢弃(verify 跑在未修复的树上)。
-          git reset --quiet
+          # mixed reset 回到 agent 之前的 base(不是 agent 可能创建的 commit):
+          # 即使 agent 自己 commit 了, 改动也会重新出现在 working tree, 不会
+          # 被 porcelain 判成"无变化"而丢失。
+          [ -n "$BASE_SHA" ] || { echo "missing base commit sha" >&2; exit 1; }
+          git reset --quiet "$BASE_SHA"
           if [ -z "$(git status --porcelain)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "branch=" >> "$GITHUB_OUTPUT"
@@ -477,6 +508,26 @@ jobs:
           branch="release-prep/${NEW_TAG}"
           git checkout -b "$branch"
           git add -A
+          # 密钥防泄漏(纵深): agent 的 env 里有模型 key/URL, 它可以把值写进
+          # container/docs/tests/prompts 下的文件; issue/artifact 的脱敏不覆盖
+          # 即将推到公开仓库的 commit。提交前扫 staged 内容, 命中即 abort。
+          leak=0
+          for v in "$TERNARYBIT_API_KEY" "$TERNARYBIT_URL"; do
+            [ -n "$v" ] || continue
+            if git grep --cached -q -F -- "$v"; then
+              echo "refusing to commit: a known secret appears in the staged files:" >&2
+              git grep --cached -l -F -- "$v" >&2 || true
+              leak=1
+            fi
+          done
+          # 先把 diff 落盘再 grep: 管道 + pipefail 下 grep -q 提前退出会让
+          # git diff 收到 SIGPIPE(141), 命中反而被当成失败漏掉。
+          git diff --cached --no-color > /tmp/staged-repair.diff
+          if grep -qE 'github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{36}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{16,}' /tmp/staged-repair.diff; then
+            echo "refusing to commit: the staged diff contains a token-like string" >&2
+            leak=1
+          fi
+          [ "$leak" = 0 ] || exit 1
           git -c user.name="dsh-container release agent" \
               -c user.email="actions@github.com" \
               commit -m "fix: adapt to upstream $NEW_TAG (agent-prepared)"
@@ -484,7 +535,11 @@ jobs:
           # 已在 Write dsh agent config 步骤清除, agent 全程接触不到凭据。
           git remote add push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" 2>/dev/null \
             || git remote set-url push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git push push "HEAD:$branch"
+          # 上一次 verify 失败时远端分支已存在; 这是工作流专用的
+          # release-prep/<tag> 分支, 用 force 覆盖旧修复, 否则重试会因
+          # non-fast-forward 直接失败(docs/releasing.md 的 "re-runs are safe"
+          # 否则不成立)。
+          git push --force push "HEAD:$branch"
           {
             echo "changed=true"
             echo "branch=$branch"
@@ -507,7 +562,7 @@ jobs:
             cat /tmp/agent-report.md
             echo
             if [ -n "$BRANCH" ]; then
-              echo "Repair branch: \`$BRANCH\` — the verify job will build and smoke-test it before any release."
+              echo "Repair branch: \`$BRANCH\` — the verify job will run the static gates, contract check, build and smoke-test it before any release."
             else
               echo "The agent judged no repository changes necessary; the verify job will run on the default branch."
             fi
@@ -543,7 +598,7 @@ jobs:
           fi
 
   verify:
-    name: Build + smoke test (pre-release gate)
+    name: Static gates + build + smoke (pre-release gate)
     needs: [contract, prep]
     # prep 失败时不跑(等修复重试); prep 被跳过(契约干净)或成功时都跑。
     # !cancelled() 保证 prep 失败时本 job 显式 skipped 而不是被 needs 连坐。
@@ -554,15 +609,35 @@ jobs:
         needs.contract.outputs.verdict != 'skipped' &&
         (needs.prep.result == 'success' || needs.prep.result == 'skipped')
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions:
       contents: read
+    outputs:
+      # 下游 release 必须把 tag 打在这个 commit 上, 而不是重新 checkout 当前分支
+      # (main 在 16 分钟的 verify 期间可能已经前进)。
+      sha: ${{ steps.verify-sha.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           # 有修复分支时验证修复后的树; 干净路径验证默认分支
           ref: ${{ needs.prep.outputs.branch || github.ref }}
+
+      - name: Record verified commit
+        id: verify-sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # 与 image.yml 的 validate job 完全同一套静态门禁; 不再让 tag 推上去之后
+      # 才发现文档/插件/语法问题。
+      - name: Static validation (publish-gate parity)
+        run: tests/validate-static.sh
+
+      # 契约门禁在 agent 之后复跑一遍: 如果漂移没被修复(agent 按策略 HOLD),
+      # 这里直接失败, 不推一个 image.yml 注定拒绝的 tag。
+      - name: Re-run upstream contract on the prepared tree
+        env:
+          NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+        run: bash tests/contract.sh --tag "$NEW_TAG"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -581,8 +656,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            BUILD_GIT_SHA=${{ github.sha }}
-            BUILD_GIT_REF=${{ github.ref_name }}
+            BUILD_GIT_SHA=${{ steps.verify-sha.outputs.sha }}
+            BUILD_GIT_REF=${{ needs.prep.outputs.branch || github.ref_name }}
             BUILD_VERSION=latest
             DSH_TAG=${{ needs.contract.outputs.new_tag }}
 
@@ -612,7 +687,7 @@ jobs:
         needs.verify.result == 'success' &&
         needs.contract.outputs.verdict != 'skipped'
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write # 快进 main 与(降级路径)文档提示
@@ -622,9 +697,11 @@ jobs:
       # secrets 不能直接用于 if, 借 env 间接判断是否配置了发版 PAT
       HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
     steps:
+      # 固定到 verify 实际构建/冒烟的 commit。无 agent 时 main 可能在 verify
+      # 期间前进; 不能给未验证的 HEAD 打 tag。
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.prep.outputs.branch || github.ref }}
+          ref: ${{ needs.verify.outputs.sha }}
 
       # 降级保护: 新 tag 必须比本仓库现有最新 dsh-v* tag 更新(semver 语义, 与
       # upstream-tag.yml 的排序键一致)才允许发版 —— 防止误 dispatch 旧 tag 把
@@ -687,6 +764,9 @@ jobs:
       # Actions API, image.yml 必须出现 event=push 且 head_branch 等于新 tag
       # 的 run; 超时未出现则本 job 失败 → 后续 close 步骤不会执行, notify
       # 会把诊断贴到 tracker issue, issue 保持打开, 不会静默断链。
+      # 这里刻意只认 event=push: 本步骤验证的是 RELEASE_PAT 能否触发 push
+      # workflow; 事后手工补跑的 workflow_dispatch 不能证明这一点。tracker
+      # issue / health check 在 watcher 里接受任意 event 的 run。
       - name: Confirm image.yml was triggered by the tag push
         if: env.HAS_PAT == 'true' && steps.guard.outputs.refuse == 'no'
         id: trigger
@@ -783,7 +863,7 @@ jobs:
         (needs.contract.result == 'failure' || needs.prep.result == 'failure' ||
          needs.verify.result == 'failure' || needs.release.result == 'failure')
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       issues: write

@@ -46,7 +46,7 @@ concurrency:
 jobs:
   watch:
     name: Compare newest dsh-v* tags
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
       # 本 workflow 不 checkout, gh 的 issue/label 命令需要显式指定仓库
@@ -148,13 +148,16 @@ jobs:
                     kept=$((kept + 1))
                     continue
                   fi
-                  run_id="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" 2>/dev/null \
+                  # 不限定 event=push: 文档的恢复路径包括在 tag ref 上手工
+                  # dispatch image.yml, 那类 run 的 event 是 workflow_dispatch。
+                  # 只按 workflow 路径 + head_branch 匹配, 才认得出恢复结果。
+                  run_id="$(gh api "repos/$SELF_REPO/actions/runs?per_page=100" 2>/dev/null \
                     | jq -r --arg tag "$tag" \
                         '.workflow_runs[] | select(.path == ".github/workflows/image.yml" and .head_branch == $tag) | .id' \
                     | head -n1 || true)"
                   if [ -n "$run_id" ]; then
                     gh issue close "$num" --comment \
-                      "Caught up: \`$tag\` was pushed and triggered image.yml run $run_id; no upstream release is pending." \
+                      "Caught up: \`$tag\` has an image.yml run ($run_id); no upstream release is pending." \
                       >/dev/null || true
                     closed=$((closed + 1))
                   else
@@ -176,13 +179,15 @@ jobs:
             # 发布健康检查: "本仓库已有该 tag" 不等于"发布成功"。手工推 tag 后
             # 构建失败/被取消时不会有人提醒(2026-09-22 dsh-v0.1.7-alpha.1 两次
             # 失败 + 一次取消就是这样漏掉的, 当时也没有 tracker issue 可挂靠)。
-            # 这里对**最新** dsh-v* tag 检查 image.yml 最近一次 push 运行的结论:
-            # 不是 completed/success 就开一个提醒 issue(标题去重, 成功后自动关)。
+            # 这里对**最新** dsh-v* tag 检查 image.yml 最近一次运行的结论:
+            # completed/success 才关 issue; queued/in_progress 视为 pending 不动;
+            # 其余 completed 结论(失败/取消/跳过)才开提醒。手工补跑的
+            # workflow_dispatch run 同样计入(不再限定 event=push)。
             # tag push 触发的运行有 2-6 分钟创建延迟, 因此只由定时/手动运行判定。
             if [ "${{ github.event_name }}" != "push" ] && [ -n "$self_tag" ]; then
               # 注意不能用 `|| echo '{}'` 兜底: API 抖动会被读成"从未跑过"并开出
               # 一个公开 issue。查询失败就让 job 失败(list_tags 同款策略)。
-              runs="$(gh api "repos/$SELF_REPO/actions/runs?event=push&per_page=100" 2>/dev/null)"
+              runs="$(gh api "repos/$SELF_REPO/actions/runs?per_page=100" 2>/dev/null)"
               latest="$(jq -r --arg tag "$self_tag" '
                 [.workflow_runs[]?
                  | select(.path == ".github/workflows/image.yml" and .head_branch == $tag)]
@@ -197,14 +202,25 @@ jobs:
                   break
                 fi
               done
-              if [ "${latest%% *}" = "completed/success" ]; then
+              # 排队/运行中的 run 不是失败: 保持现有 health issue 状态不变,
+              # 等下一次 cron 看到 completed 结论再决定。否则每轮定时检查只要
+              # 撞上一次正在构建的 tag run, 就会误开 "not published"。
+              latest_pending=0
+              case "${latest%% *}" in
+                queued/*|in_progress/*|waiting/*|requested/*|pending/*)
+                  echo "image.yml run for $self_tag is still pending; leaving health state unchanged" >&2
+                  latest_pending=1
+                  ;;
+                *) latest_pending=0 ;;
+              esac
+              if [ "$latest_pending" = 0 ] && [ "${latest%% *}" = "completed/success" ]; then
                 if [ -n "$health_issue" ]; then
                   gh issue close "$health_issue" --comment \
                     "image.yml completed successfully for \`$self_tag\`; the image and Release are published." \
                     >/dev/null || true
                   echo "closed release-health issue #$health_issue (pipeline succeeded)"
                 fi
-              elif [ -z "$health_issue" ]; then
+              elif [ "$latest_pending" = 0 ] && [ -z "$health_issue" ]; then
                 gh issue create \
                   --title "$health_title" \
                   --body "$(printf '%s\n' \

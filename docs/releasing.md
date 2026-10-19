@@ -13,6 +13,11 @@ Each release pushes one multi-platform image (Linux `amd64` + `arm64`) with thre
 The version tag keeps the full `dsh-` prefix and is not published as a bare `v*` tag, so it never
 collides with older container-image tags such as `v0.2.2`.
 
+Re-pushing an **older** `dsh-v*` tag (the manual fallback) still publishes that version tag and its
+`<commit-sha>` tag, but it does **not** move `latest` and does not mark the GitHub Release as
+Latest — the `image.yml` merge job compares against the newest existing `dsh-v*` tag. This is the
+manual-path counterpart of the `release-prep` downgrade guard.
+
 ## CI release workflow
 
 Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/image.yml):
@@ -20,8 +25,9 @@ Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/
 - **main / PR / manual dispatch**: build (amd64) + smoke test a temporary image only — **nothing is pushed
   to GHCR**. CI validates that the image is usable, nothing more.
 - **`dsh-v*` tag (release)**: the workflow checks out the matching upstream
-  `deepseek-ai/deepseek-harness` tag (`DSH_TAG=<tag>`), runs the static upstream-contract check
-  (`tests/contract.sh --tag <tag>`) as a publish gate, builds and smoke-tests the amd64 image, and
+  `deepseek-ai/deepseek-harness` tag (`DSH_TAG=<tag>`), runs the shared static gate and the static
+  upstream-contract check (`tests/contract.sh --tag <tag>`) as publish gates, builds and
+  smoke-tests the amd64 image, and
   only after the smoke test passes publishes it by digest. In parallel, the arm64 image is built on
   GitHub's free native Arm runner (`ubuntu-24.04-arm`) — no QEMU emulation. Once both platform
   digests exist, a merge job combines them into one multi-arch image and applies
@@ -98,17 +104,21 @@ tag push or manual dispatch.
   the same tag is re-dispatched **only if no `release-prep` run is queued or in progress** — a
   repeat dispatch would otherwise queue a second full build + smoke + agent run, and retrying after
   a failure stays intact;
-- **tags equal** → any open tracker issue is closed automatically — but only once the tag's push
-  has actually produced an `image.yml` run. If the tag exists yet no run ever started (a broken
-  push credential, e.g. a fine-grained `RELEASE_PAT` without the Workflows permission), the issue
-  stays open with a push-trigger hint instead of silently losing the signal.
+- **tags equal** → any open tracker issue is closed automatically — but only once an
+  `image.yml` run exists for the tag. The run may be **push-triggered or manually dispatched on
+  the tag ref** (the documented recovery path after a `RELEASE_PAT` trigger failure); the watcher
+  no longer filters on `event=push`. If the tag exists yet no run ever started (a broken push
+  credential, e.g. a fine-grained `RELEASE_PAT` without the Workflows permission), the issue
+  stays open with an `image.yml` run hint instead of silently losing the signal.
   The same run also does a **release health check** on the newest `dsh-v*` tag of this repository:
   if that tag's latest `image.yml` run is missing, failed, or was cancelled, it opens
   "Release pipeline not published: `<tag>`" and closes the issue automatically once a run
-  succeeds. This is the safety net for manually pushed tags, which skip the release-preparation
-  pipeline and would otherwise fail silently (`dsh-v0.1.7-alpha.1` was released that way: two
-  failed runs and one cancelled run went unnoticed). Runs triggered by a tag push skip the check
-  (Actions needs a few minutes to create the run); the daily schedule picks it up.
+  succeeds. A run that is still `queued`/`in_progress` is left alone (no false "not published"
+  issue while the build is running). This is the safety net for manually pushed tags, which skip
+  the release-preparation pipeline and would otherwise fail silently (`dsh-v0.1.7-alpha.1` was
+  released that way: two failed runs and one cancelled run went unnoticed). Runs triggered by a
+  tag push skip the check (Actions needs a few minutes to create the run); the daily schedule
+  picks it up.
 
 The upstream repository can be overridden with the `DSH_UPSTREAM_REPO` repository variable
 (default `deepseek-ai/deepseek-harness`), mirroring `vars.DSH_TAG` in `image.yml`. To re-check on
@@ -154,25 +164,30 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    list. The agent's inputs are pre-fetched and
    it is expected to work fully offline (no network is needed); the sandbox is file-effect
    containment, not an egress boundary.
-3. **verify** — checks out the repair branch (if any), builds the image from the new upstream tag
-   (`DSH_TAG=<tag>`, same Containerfile as the release) and runs `tests/smoke.sh`. The agent's own
-   claims are never trusted; CI decides.
+3. **verify** — checks out the repair branch (if any), records the exact commit, re-runs the
+   **same static gates as `image.yml`** (`tests/validate-static.sh`), re-runs `tests/contract.sh`
+   against the repaired tree, builds the image from the new upstream tag (`DSH_TAG=<tag>`, same
+   Containerfile as the release) and runs `tests/smoke.sh`. The agent's own claims are never
+   trusted; CI decides. Because contract is re-checked **after** the agent, a drift the agent
+   chose to HOLD fails here instead of pushing a tag that `image.yml` would reject.
 4. **release** — a downgrade guard first refuses any tag that is not semver-newer than the newest
    `dsh-v*` tag already in this repository (so mis-dispatched old tags cannot pull `latest`
    backwards). Then the repair branch is fast-forwarded to `main` (if any) and the `dsh-v*` tag is
-   pushed with the `RELEASE_PAT` secret. Immediately after the push the pipeline polls the Actions
+   pushed **at the exact commit verify built** (not whatever `main`/the branch points to at
+   release time) with the `RELEASE_PAT` secret. Immediately after the push the pipeline polls the Actions
    API until an `image.yml` run appears for the tag; if no run shows up within the polling window
    (~8 minutes; the API can take 2–6 minutes to create the run) the
    release job fails, the tracker issue stays open and the failure note explains the credential
    fix. Only after that confirmation is the tracker issue closed.
-5. **publish** — the PAT push triggers `image.yml` (described above), which re-runs the same smoke
-   suite as the final gate before publishing the multi-arch image and creating the GitHub Release.
+5. **publish** — the PAT push triggers `image.yml` (described above), which re-runs the same
+   static gates, contract check and smoke suite as the final gate before publishing the multi-arch
+   image and creating the GitHub Release.
 6. **notify** — if any stage fails, a failure note with per-job results and a link to the run is
    posted to the tracker issue, which stays open for manual follow-up. A failed pipeline never
    publishes anything.
 
-The release is validated end to end (contract → smoke) before the tag is pushed; `image.yml`
-re-runs the same smoke suite as the final gate.
+The release is validated end to end (static gates → contract → smoke) before the tag is pushed;
+`image.yml` re-runs the same static gates, contract check and smoke suite as the final gate.
 
 #### Why the final tag push needs a user PAT
 
@@ -205,7 +220,8 @@ Two caveats, both now guarded:
 
 - **On demand**: Actions → "Release prep" → "Run workflow" with the `new_tag` input. Re-runs are
   safe: an already-released tag skips the whole pipeline, the downgrade guard blocks backwards
-  releases, and every failure lands on the tracker issue.
+  releases, every failure lands on the tracker issue, and a retry with new agent changes
+  force-updates the workflow-owned `release-prep/<tag>` branch (no non-fast-forward dead end).
 - **Audit trail**: agent reports, contract reports and failure notes all land on the tracker issue;
   full logs live in the workflow runs.
 - **PAT expiry**: when `RELEASE_PAT` expires, every stage still runs and the pipeline stops at
@@ -215,9 +231,12 @@ Two caveats, both now guarded:
   write`, the tag push succeeds but no `image.yml` run is created; the release job's trigger
   confirmation fails, the tracker issue stays open with the diagnosis, and the watcher keeps it
   open until a run actually appears. Fix the permission, then either delete and re-push the tag or
-  run `image.yml` manually on the tag ref (Actions → Image → Run workflow → ref = the tag).
+  run `image.yml` manually on the tag ref (Actions → Image → Run workflow → ref = the tag). The
+  watcher counts that manual run, so the tracker/health issues close once it succeeds.
 - **Agent repair branches** (`release-prep/<tag>`) are pushed even when a later stage fails, so
-  proposed repairs stay inspectable; only a fully green `verify` lets the release job touch `main`.
+  proposed repairs stay inspectable; a retry force-updates the branch with the latest repair. Only
+  a fully green `verify` lets the release job touch `main`, and the tag is pinned to the commit
+  that `verify` actually built.
 
 Configuration for `release-prep.yml`:
 

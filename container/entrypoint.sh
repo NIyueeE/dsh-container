@@ -6,7 +6,8 @@
 #      rust 工具链树 /opt/rust, 随镜像更新整体重置; 数据卷(/home/dsh 整体
 #      挂载)只放数据与缓存: dsh 数据 ~/.dsh(上游默认, 不设 DSH_HOME)、
 #      CARGO_HOME=~/.cargo(registry/cache 与 cargo install 自装工具)、
-#      uv/pnpm 数据 ~/.local/share/{uv,pnpm}。PATH 镜像优先(/usr/local/bin
+#      uv/pnpm 数据 ~/.local/share/{uv,pnpm}; dsh/agent 临时文件默认
+#      TMPDIR=~/.dsh/tmp(卷上), /tmp 仍是临时的。PATH 镜像优先(/usr/local/bin
 #      最前), 卷上遗留的旧副本遮蔽不了镜像内版本(手动清理见
 #      docs/releasing.md § Upgrading data volumes to the image-owned toolchain)。
 #   3. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081), 经
@@ -42,6 +43,16 @@ if [ -z "$HOME" ]; then
   exit 1
 fi
 export HOME
+
+# 持久化 dsh/agent 的临时文件: dsh 是 Node, os.tmpdir() 读 TMPDIR, agent 的
+# shell/子进程继承同一变量。默认落到数据卷上的 ~/.dsh/tmp, 因此容器重建后
+# 仍在; /tmp 本身保持临时语义 —— launch token、Caddyfile、PID 文件与
+# XDG_RUNTIME_DIR 的兜底目录都不会被写进卷。用户显式设置 TMPDIR 时尊重用户。
+if [ -z "${TMPDIR:-}" ]; then
+  export TMPDIR="$HOME/.dsh/tmp"
+  mkdir -p "$TMPDIR"
+  chmod 700 "$TMPDIR" 2>/dev/null || true
+fi
 
 # 分层: 工具链归镜像(系统层), 卷只放数据/缓存/自装工具:
 # - dsh 数据不设置 DSH_HOME, 使用上游默认 ~/.dsh

@@ -50,6 +50,15 @@ export HOME
 # 与 entrypoint.sh 及 Containerfile 的 ENV PATH 是同一条链路, 必须同步)。
 export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:${PNPM_HOME:-$HOME/.local/share/pnpm}/bin:$PATH"
 
+# 与 entrypoint.sh 同步: 独立执行 dsh-web 时也给 dsh/agent 一个持久临时目录。
+# dsh 是 Node, os.tmpdir() 读 TMPDIR; /tmp 本身仍是临时的(launch token、
+# Caddyfile、PID 文件不走这里)。entrypoint 已设置时这里不会覆盖。
+if [ -z "${TMPDIR:-}" ]; then
+  export TMPDIR="$HOME/.dsh/tmp"
+  mkdir -p "$TMPDIR"
+  chmod 700 "$TMPDIR" 2>/dev/null || true
+fi
+
 # 内部端口: entrypoint 解析 --port 后经 DSH_WEB_PORT 传入(默认 3080)。
 # 独立执行(不经 entrypoint)时自身也解析 --port <N>/--port=<N> —— 否则
 # dsh web 监听 N 而 Caddy 仍转发到默认端口, 每个请求静默 502。
