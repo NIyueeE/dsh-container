@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dsh-container 镜像冒烟测试: 对给定镜像做端到端验证, 覆盖 launch token
-# 登录重定向、浏览器会话 cookie、Host/Origin 围栏、前端补丁、遥测默认关闭、
+# 登录重定向、浏览器会话 cookie、Host/Origin 围栏、前端后处理、遥测默认关闭、
 # 工具链分层布局、内置常用工具与容器内 podman 运行期环境、supervisor 重启与
 # basic auth 全链路。
 # 由 .github/workflows/image.yml 与 release-prep.yml 共同调用; 本地可用
@@ -9,7 +9,7 @@
 # 用法: tests/smoke.sh <image> [--expect-dsh-version X.Y.Z]
 #   <image>                 已构建(load/存在本地)的镜像引用
 #   --expect-dsh-version    发布构建时传入镜像内 dsh 应等于的版本号
-#                           (不含 dsh-v 前缀, 如 0.1.2-rc.1)
+#                           (不含 dsh-v 前缀, 如 0.2.1-rc.2)
 # 环境变量:
 #   DOCKER    docker 二进制, 默认 docker; podman 用户可 DOCKER=podman
 #   其他依赖: curl, awk, sed; 需要空闲端口 3081、127.0.0.1:3082 与 127.0.0.1:3083
@@ -341,8 +341,8 @@ direct_api="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' -X PO
 [ "$direct_api" = "401" ] || die "direct dsh (3080) /api without cookie returned $direct_api, expected 401"
 
 # 设置 > 打开配置文件按钮隐藏: 容器无桌面, 上游 openSettingsDocument 无
-# headless 兜底 —— 插件包 settingsController 实例的 describe(旧 tag 上再翻
-# provider 的 documentPath), 上游 describe 即返回 hasDocument:false。
+# headless 兜底 —— 插件包 settingsController 实例的 describe, 上游 describe
+# 即返回 hasDocument:false。
 settings_body="$(curl -sS -b "$cookie_jar" -X POST http://127.0.0.1:3081/api/settings/describe \
   -H 'content-type: application/json' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
@@ -354,13 +354,11 @@ dl_gone="$(curl -sS -b "$cookie_jar" -D - -o /dev/null http://127.0.0.1:3081/dow
 printf '%s' "$dl_gone" | grep -qi 'content-disposition: attachment' \
   && die "removed download endpoint still serves /download/settings.yaml"
 
-# 传输层声明(老 tag 兼容): __DSH_TRANSPORT__={ownsHost:true} 仍在索引的
-# <head> 里, 但它不再是安全机制 —— Caddy 保留 Host/Origin, dsh 的围栏才是。
-transport_injection='<script>globalThis["__DSH_TRANSPORT__"] = {"ownsHost":true}</script>'
-[[ "$index_html" == *"$transport_injection"* ]] \
-  || die "served index lacks the __DSH_TRANSPORT__ ownsHost injection"
-[[ "${index_html%%</head>*}" == *"$transport_injection"* ]] \
-  || die "the transport injection is not inside <head>"
+# 最低支持 0.2.1-alpha.3: 不再注入 __DSH_TRANSPORT__ —— 0.2.1 上它唯一剩下的消费者
+# 是设置文档 controller, 而按钮已由 hasDocument:false 隐藏; 这个负向断言防止
+# 兼容层被无意间重新加回来。
+[[ "$index_html" != *"__DSH_TRANSPORT__"* ]] \
+  || die "served index unexpectedly carries the retired __DSH_TRANSPORT__ row"
 
 # Host 允许列表: 默认只接受 loopback; 未授权的 dsh.test/evil.test 必须 403。
 # 这正是 DNS rebinding 的防线 —— 不能像旧实现那样把任意 Host 改写成 loopback。
@@ -476,8 +474,8 @@ index_restart="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
   || die "GET / after restart failed"
 [[ "$index_restart" == *'<title>DeepSeek Harness</title>'* ]] \
   || die "served index.html after restart lacks the expected title"
-[[ "${index_restart%%</head>*}" == *"$transport_injection"* ]] \
-  || die "transport injection missing from the index <head> after dsh web restart"
+[[ "$index_restart" != *"__DSH_TRANSPORT__"* ]] \
+  || die "retired __DSH_TRANSPORT__ row reappeared after dsh web restart"
 
 # basic auth 模式: 未带凭据 401; 带凭据后浏览器完成 token 登录; root/API 200;
 # 受信任的 Host dsh.test 也必须能登录; WebSocket 只靠 dsh cookie(不要求 basic auth)。

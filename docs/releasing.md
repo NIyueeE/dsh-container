@@ -6,7 +6,7 @@ Each release pushes one multi-platform image (Linux `amd64` + `arm64`) with thre
 
 | Tag | Source | Description |
 |---|---|---|
-| `dsh-v*` (e.g. `dsh-v0.1.2-alpha.4`) | upstream dsh tags | the release artifact; image tag, release page tag, and built dsh source tag are all the same upstream tag |
+| `dsh-v*` (e.g. `dsh-v0.2.1-rc.2`) | upstream dsh tags | the release artifact; image tag, release page tag, and built dsh source tag are all the same upstream tag |
 | `latest` | newest `dsh-v*` release | points to the most recent release; what the examples pull |
 | `<commit-sha>` | release builds | exactly reproducible |
 
@@ -30,8 +30,8 @@ Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/
 
   The contract gate matters for **manually pushed** tags: it is the only place that checks upstream
   anchors when a tag is pushed without going through the release-preparation pipeline below
-  (`dsh-v0.1.7-alpha.1` was released that way). A `MISS` there means the tag predates an adaptation
-  fix — run the pipeline (or fix the drift) and re-push.
+  (`dsh-v0.1.7-alpha.1` was released that way). A `MISS` there means upstream drift, and a tag
+  below 0.2.1-alpha.3 is rejected outright — run the pipeline (or fix the drift) and re-push.
 
 ### Release notes
 
@@ -53,10 +53,10 @@ below (the pre-toolchain-layout cleanup commands).
 
 For a tag build, one version string flows through the whole release:
 
-- upstream dsh tag `dsh-v0.1.2-alpha.4` → release page `dsh-v0.1.2-alpha.4` → image tag
-  `ghcr.io/niyueee/dsh-container:dsh-v0.1.2-alpha.4`
+- upstream dsh tag `dsh-v0.2.1-rc.2` → release page `dsh-v0.2.1-rc.2` → image tag
+  `ghcr.io/niyueee/dsh-container:dsh-v0.2.1-rc.2`
 - `Containerfile` checks out that same tag before `pnpm install` / `pnpm run build:official`
-- OCI label `org.opencontainers.image.version` = `dsh-v0.1.2-alpha.4`, via the `BUILD_VERSION`
+- OCI label `org.opencontainers.image.version` = `dsh-v0.2.1-rc.2`, via the `BUILD_VERSION`
   build arg (`latest` for non-release builds, which are never published)
 
 Releases are created by pushing the matching tag to this repository (the automated
@@ -64,11 +64,11 @@ release-preparation pipeline below does this automatically; the commands remain 
 fallback):
 
 ```bash
-git tag dsh-v0.1.2-alpha.4
-git push origin dsh-v0.1.2-alpha.4
+git tag dsh-v0.2.1-rc.2
+git push origin dsh-v0.2.1-rc.2
 ```
 
-For local/manual builds, pin directly with `--build-arg DSH_TAG=dsh-v0.1.2-alpha.4` (see
+For local/manual builds, pin directly with `--build-arg DSH_TAG=dsh-v0.2.1-rc.2` (see
 [build.md](build.md)).
 
 ## Tracking upstream releases
@@ -81,7 +81,7 @@ upstream tag is pushed here. Two automated helpers keep the repository in sync w
 Dependabot cannot watch another repository's git tags, so a small scheduled workflow does it.
 Running daily (plus on every `dsh-v*` tag push and on manual dispatch), it compares the newest
 `dsh-v*` tag of `deepseek-ai/deepseek-harness` with the newest `dsh-v*` tag of this repository
-(semver-aware, so a stable tag outranks its pre-releases: `dsh-v0.1.2-alpha.5` < `dsh-v0.1.2`).
+(semver-aware, so a stable tag outranks its pre-releases: `dsh-v0.2.1-alpha.5` < `dsh-v0.2.1`).
 The schedule is `30 11 * * *` — nominally 19:30 Beijing, deliberately ~6 h ahead of the intended
 landing time: Actions' `schedule` is best-effort queueing, and 41 measured runs landed 4.1–8.9 h
 late (mean +5.4 h, worsening), so the earlier `30 12 * * *` actually ran between 00:30 and 05:30
@@ -140,14 +140,14 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    image of the previous release tag, and its model config arrives as a load-time `--patch`
    overlay rather than a flat `settings.yaml` — see the secrets table below), reviews the pre-fetched
    upstream diff and checkout against the contract, and applies a minimal repair (typically
-   re-anchoring the `container/plugin/` transport-signal injection or one of its build-time
-   post-processing steps); drift in security-defining
+   re-anchoring the plugin's upstream API dependency or one of its build-time post-processing
+   steps); drift in security-defining
    contract items is reported, never worked around. On **every** run — drift or not — it also
    checks the § Simplification triggers table in
    [upstream-contract.md](upstream-contract.md) against the upstream diff: when an upstream
-   change makes one of this image's hacks redundant (the transport-owner injection, launch-token
-   login redirect, settings-document button hide via the `describe` wrapper / `documentPath` flip,
-   inline-image extraction, client minification, ...), it deletes the hack instead of keeping
+   change makes one of this image's hacks redundant (launch-token login redirect,
+   settings-document button hide via the `describe` wrapper, inline-image extraction, client
+   minification, ...), it deletes the hack instead of keeping
    it, and reports the outcome in an "Adaptation review" section. It pushes a `release-prep/<tag>`
    branch and posts its report to the tracker issue — that report is the adaptation decision
    record for the tag, and the changes themselves appear in the release's auto-generated commit

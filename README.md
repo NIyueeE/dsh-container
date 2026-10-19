@@ -47,17 +47,18 @@ cookie; there is no separate login form.
 | Toolchain | Node.js 22 LTS, pnpm, uv, Rust/cargo (+ rustfmt/clippy), git + git-lfs, build-essential, Caddy, podman + crun, gh, yq — image-owned real binaries, upgraded with the image |
 | Agent CLI tools | ripgrep, fd, python3, zip, openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch, plus a diagnostics set (dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, bc, moreutils, pv, uuid-runtime), xdg-user-dirs (UI default workspace) and dev tooling (just, shellcheck) — baked into the system layer, so a fresh container never re-downloads them (runtime `apt install` would be lost on recreation) |
 | Nested containers | podman in-container (rootless) with `XDG_RUNTIME_DIR`, subuid/subgid and the network/sysctl defaults preconfigured; the host runtime must allow unprivileged user namespaces + `/dev/fuse` + `/dev/net/tun` and must not mask the container's `/proc` (`--security-opt unmask=ALL`, Quadlet `Unmask=ALL`, Docker `systempaths=unconfined`); resource limits (`--memory`/`--cpus`) inside nested containers are not enforced (cgroup v2 constraint) — see [docs/deployment.md](docs/deployment.md) § In-container podman |
-| dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable); no runtime auto-update |
+| dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable, minimum 0.2.1-alpha.3); no runtime auto-update |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`); preserves the browser `Host`/`Origin`, redirects the first visit to dsh's login token, and keeps optional basic auth |
 | Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |
-| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): writes dsh's launch token for the proxy login redirect (the browser holds the session cookie), hides the headless-hostile "Open config file" button (`describe` reports no local document), keeps the upstream `__DSH_TRANSPORT__` declaration for older tags, and serves the build-time-extracted images from `/container-assets/*` |
+| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): writes dsh's launch token for the proxy login redirect (the browser holds the session cookie), hides the headless-hostile "Open config file" button (`describe` reports no local document), and serves the build-time-extracted images from `/container-assets/*` |
 | Observability | OCI labels, `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`), passwordless sudo; `/home/dsh` is the persisted user layer |
 
 ## Container-adapt plugin
 
-All container-side adaptation of upstream dsh lives in **one Cordis plugin**, shipped with the
-image at `/opt/dsh-container-plugin` and mounted into the web profile via `dsh --patch`:
+All container-side adaptation of upstream dsh (0.2.1-alpha.3 and newer) lives in **one Cordis plugin**,
+shipped with the image at `/opt/dsh-container-plugin` and mounted into the web profile via
+`dsh --patch`:
 
 - **Launch-token redirect** — the plugin writes dsh's process launch token to
   `/tmp/dsh-caddy/launch-token`; Caddy 302s a browser without a session cookie to `/?token=...`, and
@@ -68,11 +69,6 @@ image at `/opt/dsh-container-plugin` and mounted into the web profile via `dsh -
   report `hasDocument: false`, so the button never renders (upstream's own UI logic). Settings
   persist on the mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them per profile in
   `~/.dsh/profiles/<profile>/cordis.patch.yml`; the legacy `settings.yaml` is imported once).
-- **Transport-owner declaration (compatibility)** — older upstream tags compute `isLoopback` from
-  `location.hostname` unless a shell declares itself the transport owner; the plugin still
-  contributes the `__DSH_TRANSPORT__ = { ownsHost: true }` row for them. On 0.2.x its only
-  consumer is the settings-document controller, which is already hidden, and Caddy now preserves
-  Host/Origin — so it is not a security mechanism.
 - **Payload post-processing** — three build-time steps run after `pnpm run build:official`:
   images inlined at ≥ 100 KiB are extracted to `/container-assets/<content-hash>` (served
   `immutable` by the plugin, fetched only when the screen that uses them opens), the client

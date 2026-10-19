@@ -54,21 +54,18 @@ Access control still lives at the proxy/network edge:
 launch-token URL, and it grants no trust. The browser-visible authority must still be named by
 `DSH_TRUSTED_HOST` (the image derives it from `DSH_PUBLIC_URL` when the variable is unset).
 
-Upstream's browser code still gates the settings-document affordance on the page authority. The
-container-adapt plugin contributes the `__DSH_TRANSPORT__ = { ownsHost: true }` row for older tags
-whose browser-side privileged surface consumes `isLoopback`; on 0.2.x the only consumer is the
-settings-document controller, and the plugin already forces `hasDocument: false`, so the row is a
-compatibility layer rather than a security mechanism. The proxy no longer changes Host/Origin to
-make that work.
+The settings-document affordance is gated on the page authority: the browser creates its
+controller only when `$host.isLoopback` is true (loopback access such as an SSH tunnel). On such a
+page the container-adapt plugin forces `hasDocument: false`, and remote authorities do not create
+the controller at all. The proxy preserves Host/Origin and does not inject `__DSH_TRANSPORT__`.
 
 The same plugin keeps the headless-hostile settings-document affordance out of the UI:
 upstream's "Open config file" would spawn the native text-editor command into nothing in a
 container. The plugin wraps the settings controller's `describe` method so `settings/describe`
-reports `hasDocument: false` (and flips the provider's `documentPath` on pre-v0.1.7 upstream
-tags), so the browser never renders the button. No download endpoint exists — settings live on the
-mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them in the active profile's plugin
-configuration, `~/.dsh/profiles/<profile>/cordis.patch.yml`, with the legacy `settings.yaml`
-imported once), and only the user who mounts the volume and uid 1000 can read it.
+reports `hasDocument: false`, so the browser never renders the button. No download endpoint exists
+— settings live on the mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them in the active
+profile's plugin configuration, `~/.dsh/profiles/<profile>/cordis.patch.yml`, with the legacy
+`settings.yaml` imported once), and only the user who mounts the volume and uid 1000 can read it.
 
 Consequences:
 

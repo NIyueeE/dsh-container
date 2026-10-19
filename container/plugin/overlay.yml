@@ -4,8 +4,6 @@
 # 插件的运行期职责:
 #   - 把 launch token 写给 Caddy 的登录重定向(浏览器自己持有 dsh 会话 cookie);
 #   - 隐藏"打开配置文件"按钮(describe 的 hasDocument 翻转, 见 index.js 头注);
-#   - 向上游的结构化索引注入表推一行 __DSH_TRANSPORT__={ownsHost:true}(老 tag 的
-#     浏览器侧特权界面兼容层; Caddy 保留 Host/Origin 后它不再是安全机制);
 #   - 以 /container-assets/* 提供构建期抽出的客户端图片(见 scripts/)。
 # 实例级可变参数(runtimeDir)走本条目下面的 config 字段, 不读环境变量。
 # 上游的 settings-controller 行保持挂载: 按钮隐藏后 openSettingsDocument

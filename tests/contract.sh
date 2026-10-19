@@ -4,11 +4,11 @@
 # 本脚本是该文档的机器可核对形态 —— 两者需同步更新)。
 #
 # 与 tests/smoke.sh 的分工: contract.sh 在"构建镜像之前"用几秒钟判定是否有
-# 兼容漂移(补丁锚点/CLI 契约/围栏机制), 让 release-prep 流水线尽早决定
+# 兼容漂移(上游 API 锚点/CLI 契约/围栏机制), 让 release-prep 流水线尽早决定
 # 走"直接发版"还是"唤醒 agent 修复"; smoke.sh 则在构建后做行为级验证。
 #
 # 用法:
-#   tests/contract.sh --tag dsh-v0.1.2-rc.1 [--repo OWNER/REPO] [--dir PATH]
+#   tests/contract.sh --tag dsh-v0.2.1-rc.2 [--repo OWNER/REPO] [--dir PATH]
 #     --tag   上游 dsh-v* tag(必填)
 #     --repo  上游仓库, 默认 deepseek-ai/deepseek-harness
 #     --dir   已有 checkout 路径(本地调试用, 跳过 clone)
@@ -44,6 +44,23 @@ if ! [[ "$TAG" =~ ^dsh-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
   echo "error: --tag must look like dsh-vX.Y.Z[-pre], got: $TAG" >&2
   exit 1
 fi
+# 最低支持 0.2.1-alpha.3: 更早的 tag 没有兼容层, 直接拒绝(Containerfile 同样会 fail fast)。
+version="${TAG#dsh-v}"; version="${version%%-*}"
+vmajor="${version%%.*}"; rest="${version#*.}"
+vminor="${rest%%.*}"; vpatch="${rest#*.}"
+case "${vmajor}${vminor}${vpatch}" in
+  *[!0-9]*|'') echo "error: unsupported tag $TAG: minimum supported upstream dsh is 0.2.1-alpha.3" >&2; exit 1 ;;
+esac
+if [ "$vmajor" -eq 0 ] && { [ "$vminor" -lt 2 ] || { [ "$vminor" -eq 2 ] && [ "$vpatch" -lt 1 ]; }; }; then
+  echo "error: unsupported tag $TAG: minimum supported upstream dsh is 0.2.1-alpha.3" >&2
+  exit 1
+fi
+case "$TAG" in
+  dsh-v0.2.1-alpha.[0-2])
+    echo "error: unsupported tag $TAG: 0.2.1-alpha.3 is the first tag without the loopback settings-persistence gate" >&2
+    exit 1
+    ;;
+esac
 
 WORK=""
 if [ -z "$DIR" ]; then
@@ -79,27 +96,6 @@ found_in() { # <rel-root> <fixed-string> -> 0/1
     --exclude='*.md' --exclude='*.i18n.yaml' \
     -e "$2" "$ROOT/$1" >/dev/null 2>&1
 }
-
-# critical: 传输层声明的源锚点。
-# 源码锚点: connection 的 isLoopback 计算必须仍带 ownsHost 分支 —— 容器适配插件
-# 为老 tag 保留 __DSH_TRANSPORT__={ownsHost:true} 行; 0.2.x 上只剩 settings-document
-# controller 消费 isLoopback(已被 hasDocument:false 隐藏), 所以这行不是安全机制。
-# 若上游改名/去掉该分支, 老 tag 兼容层即失去意义(行为级断言在 smoke 的索引
-# 渲染检查与 tests/plugin-unit.mjs)。
-if [ -f "$ROOT/packages/client/connection/src/client/index.ts" ]; then
-  f="$ROOT/packages/client/connection/src/client/index.ts"
-  if grep -qF 'isLoopbackHostname(pageLocation.hostname)' "$f" \
-      && grep -qF 'transport?.ownsHost === true' "$f"; then
-    echo "PASS connection.isLoopback.source"
-    pass=$((pass + 1))
-  else
-    echo "MISS connection.isLoopback.source (isLoopback expression changed or removed)"
-    MISSED+=("connection.isLoopback.source"); miss=$((miss + 1))
-  fi
-else
-  echo "MISS connection.isLoopback.source (packages/client/connection/src/client/index.ts not found)"
-  MISSED+=("connection.isLoopback.source"); miss=$((miss + 1))
-fi
 
 # critical: /api 信任围栏 —— Caddy 现在保留浏览器 Host/Origin, 由 dsh 的
 # 围栏直接判定; 外部 authority 必须经 --trusted-host 授权。围栏仍按 HTTP 头
@@ -143,9 +139,8 @@ fi
 
 # critical: 容器适配插件(container/plugin/)依赖的上游 API 锚点 —— launch
 # token 写入用 ctx.connection.authenticatedUrl() 取进程 token、webServer.port
-# 定位内部端口; "打开配置文件"按钮隐藏依赖两条上游行为: describe 的
-# hasDocument 取值方式(v0.1.7+ 是硬编码 true, 更早是 provider.documentPath
-# 推导), 以及 SettingsDocumentAction 在状态非 ready 时不渲染。
+# 定位内部端口; "打开配置文件"按钮隐藏依赖两条上游行为: describe 硬编码
+# hasDocument: true, 以及 SettingsDocumentAction 在状态非 ready 时不渲染。
 if grep -qF 'authenticatedUrl' "$ROOT/packages/client/connection/src/rpc.ts"; then
   echo "PASS plugin.authenticated_url"
   pass=$((pass + 1))
@@ -153,18 +148,14 @@ else
   echo "MISS plugin.authenticated_url (Connection.authenticatedUrl missing or renamed)"
   MISSED+=("plugin.authenticated_url"); miss=$((miss + 1))
 fi
-# v0.1.7+: describe 硬编码 hasDocument: true —— 插件的 describe 包装是唯一
-# 的抑制手段, 该硬编码就是"补丁必须存在"的证据(消失反而是好事: 说明上游
-# 改了机制, 需重新核对插件)。
+# describe 硬编码 hasDocument: true —— 插件的 describe 包装是唯一的抑制
+# 手段, 该硬编码就是"补丁必须存在"的证据(消失反而是好事: 说明上游改了
+# 机制, 需重新核对插件)。
 if grep -qF 'hasDocument: true' "$ROOT/packages/api/settings-controller/src/index.ts"; then
-  echo "PASS plugin.settings_document_hidden (v0.1.7+ describe hardcodes hasDocument; the plugin wraps it)"
-  pass=$((pass + 1))
-elif grep -qF 'hasDocument: settings.documentPath !== undefined' "$ROOT/packages/api/settings-controller/src/index.ts"; then
-  # 旧 tag: hasDocument 由 provider.documentPath 推导, 插件翻该属性。
-  echo "PASS plugin.settings_document_hidden (legacy: describe derives hasDocument from provider.documentPath; the plugin flips it)"
+  echo "PASS plugin.settings_document_hidden (describe hardcodes hasDocument; the plugin wraps it)"
   pass=$((pass + 1))
 else
-  echo "MISS plugin.settings_document_hidden (describe no longer derives/hardcodes hasDocument as expected; re-check the plugin adaptation)"
+  echo "MISS plugin.settings_document_hidden (describe no longer hardcodes hasDocument as expected; re-check the plugin adaptation)"
   MISSED+=("plugin.settings_document_hidden"); miss=$((miss + 1))
 fi
 if grep -qF "state.status !== 'ready'" "$ROOT/packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx"; then
@@ -201,14 +192,14 @@ else
   MISSED+=("server.trusted_hosts"); miss=$((miss + 1))
 fi
 
-# warn: --public-url 从 0.2.1-alpha.1 才有; dsh-web 会探测并跳过, 只退化公告
-# 地址, 不影响 token 重定向/围栏。老 tag 仍可构建。
+# critical: --public-url 是 0.2.1+ 的必备 flag; 最低支持版本即 0.2.1-alpha.3,
+# dsh-web 无条件传递它(除非调用方自己传了 --public-url)。
 if found_in "." "--public-url"; then
   echo "PASS web.public_url"
   pass=$((pass + 1))
 else
-  echo "WARN web.public_url (not present; dsh-web skips --public-url and advertises the bind address)"
-  warn=$((warn + 1))
+  echo "MISS web.public_url (not present; minimum supported dsh is 0.2.1-alpha.3 and dsh-web passes --public-url unconditionally)"
+  MISSED+=("web.public_url"); miss=$((miss + 1))
 fi
 
 echo "contract check: $pass pass, $miss miss, $warn warn"

@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 // 容器适配插件的单元验证(无镜像、无网络): 断言"只靠代码就能钉住"的契约 ——
-//   1. 向上游的结构化索引注入表推的是标准行
-//      ({kind:'global', name:'__DSH_TRANSPORT__', value:{ownsHost:true}}), 由上游渲染
-//      进 <head>(必须先于 type="module" 的 bundle 执行, connection 插件才读得到);
-//   2. launch token 文件按 0600 原子写出(Caddy 的登录重定向依赖它);
-//   3. Config 是 Standard Schema 校验器: 默认值/覆写生效, 非法输入被拒;
-//   4. /container-assets 路由按内容哈希服务抽出的图片(immutable 缓存头),
+//   1. launch token 文件按 0600 原子写出(Caddy 的登录重定向依赖它);
+//   2. Config 是 Standard Schema 校验器: 默认值/覆写生效, 非法输入被拒;
+//   3. /container-assets 路由按内容哈希服务抽出的图片(immutable 缓存头),
 //      并且拒绝未知名/路径穿越;
-//   5. 日志走 ctx.logger, 且自接的 exporter 只放行本插件自己的行
+//   4. 日志走 ctx.logger, 且自接的 exporter 只放行本插件自己的行
 //      (本 profile 没有任何 console exporter, 少了它就等于没有日志);
-//   6. settings/describe 被包裹成 hasDocument:false。
+//   5. settings/describe 被包裹成 hasDocument:false。
 // 端到端效果(真实 dsh / 真实浏览器)由 tests/smoke.sh 在镜像里断言。
 // 用法: node tests/plugin-unit.mjs
 import assert from 'node:assert/strict'
@@ -24,7 +21,6 @@ const ASSET_DIR = '/opt/dsh-container-plugin/assets'
 function createStubContext() {
   const effects = []
   const registrations = []
-  const listeners = new Map()
   const exporters = []
   const logs = []
   const ctx = {
@@ -36,7 +32,6 @@ function createStubContext() {
       },
     },
     connection: { authenticatedUrl: (url) => `${url}?token=stub` },
-    settings: {},
     settingsController: { describe: () => ({ hasDocument: true }) },
     logger: {
       info: message => logs.push(['info', message]),
@@ -47,17 +42,13 @@ function createStubContext() {
         return () => exporters.splice(exporters.indexOf(exporter), 1)
       },
     },
-    on: (event, handler) => {
-      listeners.set(event, handler)
-      return () => listeners.delete(event)
-    },
     effect: (callback, label) => {
       const disposer = callback()
       effects.push({ label, disposer })
       return disposer
     },
   }
-  return { ctx, effects, registrations, listeners, exporters, logs }
+  return { ctx, effects, registrations, exporters, logs }
 }
 
 /** 真 Writable 形态的假响应(路由用 stream.pipeline 写 body)。 */
@@ -93,10 +84,10 @@ async function callHandler(handler, url) {
 
 const scratch = await mkdtemp(join(tmpdir(), 'dsh-plugin-unit-'))
 
-const { ctx, registrations, listeners, exporters, logs } = createStubContext()
+const { ctx, registrations, exporters, logs } = createStubContext()
 const plugin = await import('../container/plugin/index.js')
 assert.equal(plugin.name, 'dsh-container-adapt', 'plugin name changed')
-assert.deepEqual(plugin.inject, ['webServer', 'connection', 'settings', 'settingsController'])
+assert.deepEqual(plugin.inject, ['webServer', 'connection', 'settingsController'])
 
 // Config 走 Standard Schema(Cordis resolveConfig 直接调 '~standard'.validate)。
 assert.equal(plugin.Config['~standard'].version, 1, 'Config must be a Standard Schema v1 validator')
@@ -126,17 +117,6 @@ assert.deepEqual(
   { kind: registrations[0].kind, path: registrations[0].path },
   { kind: 'prefix', path: '/container-assets' },
   'asset route must be the /container-assets prefix',
-)
-
-// 传输层声明: 推进行表的是上游的标准行类型(kind: 'global'), 而不是 tapIndex 字符串变换。
-const injection = listeners.get('webserver/index-inject')
-assert.equal(typeof injection, 'function', 'plugin must subscribe to webserver/index-inject')
-const table = []
-injection(table)
-assert.deepEqual(
-  table,
-  [{ kind: 'global', name: '__DSH_TRANSPORT__', value: { ownsHost: true } }],
-  'the transport declaration must be a structured global row',
 )
 
 // settings/describe 包装(遮蔽实例方法)与日志走 ctx.logger。
@@ -190,4 +170,4 @@ if (existsSync(ASSET_DIR)) {
 }
 
 await rm(scratch, { recursive: true, force: true })
-console.log('[plugin-unit] OK: structured transport row + Config + asset route contract')
+console.log('[plugin-unit] OK: launch token + Config + asset route + describe wrapper contract')

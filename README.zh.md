@@ -43,21 +43,20 @@ sudo systemctl enable --now dsh.service
 | 工具链 | Node.js 22 LTS、pnpm、uv、Rust/cargo(含 rustfmt/clippy)、git + git-lfs、build-essential、Caddy、podman + crun、gh、yq——镜像持有的真实二进制,随镜像升级 |
 | agent 常用工具 | ripgrep、fd、python3、zip、openssh-client、tmux、sqlite3、vim.tiny/nano、less、rsync、wget、tree、htop、tzdata、patch,外加一组诊断工具(dig/nc/socat/traceroute/iperf3/nft、file、ncdu、strace、zstd/lz4、bc、moreutils、pv、uuid-runtime)、xdg-user-dirs(UI 默认 workspace)与开发工具(just、shellcheck)——全部烘干进系统层,全新容器开箱即用、无需重新下载(运行期 `apt install` 会随容器重建丢失) |
 | 嵌套容器 | 容器内( rootless )podman 已预配置 `XDG_RUNTIME_DIR`、subuid/subgid 与网络/sysctl 默认值;宿主运行时需允许非特权用户命名空间 + `/dev/fuse` + `/dev/net/tun`,且不得对容器的 `/proc` 加 masked/只读子挂载(`--security-opt unmask=ALL`、Quadlet `Unmask=ALL`、Docker `systempaths=unconfined`);嵌套容器内的资源限制(`--memory`/`--cpus`)不生效(cgroup v2 约束)——见 [docs/deployment.md](docs/deployment.md) § In-container podman |
-| dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本);运行期无自动更新 |
+| dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本,最低 0.2.1-alpha.3);运行期无自动更新 |
 | 暴露方式 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`);保留浏览器 `Host`/`Origin`,首次访问重定向到 dsh 的登录 token,保留可选 basic auth |
 | 守护 | `dsh web` 退出自动重启;`docker exec dsh dsh-restart` 手动重启 |
-| 远程兼容 | 一个容器适配插件(`container/plugin/`,经 `dsh --patch` 挂载):把 dsh 的 launch token 写给代理登录重定向(浏览器自己持有会话 cookie)、无桌面环境下隐藏"打开配置文件"按钮(`describe` 报告无本地文档)、为老 tag 保留上游的 `__DSH_TRANSPORT__` 声明、`/container-assets/*` 提供构建期抽出的图片 |
+| 远程兼容 | 一个容器适配插件(`container/plugin/`,经 `dsh --patch` 挂载):把 dsh 的 launch token 写给代理登录重定向(浏览器自己持有会话 cookie)、无桌面环境下隐藏"打开配置文件"按钮(`describe` 报告无本地文档)、`/container-assets/*` 提供构建期抽出的图片 |
 | 可观测性 | OCI labels、`HEALTHCHECK`(curl 3080 + 3081) |
 | 运行用户 | uid 1000(`dsh`),免密 sudo;`/home/dsh` 为持久化用户层 |
 
 ## 容器适配插件
 
-对上游 dsh 的全部容器侧适配收敛在**一个 Cordis 插件**里,随镜像装在
+对上游 dsh(0.2.1-alpha.3 及更新版本)的全部容器侧适配收敛在**一个 Cordis 插件**里,随镜像装在
 `/opt/dsh-container-plugin`,经 `dsh --patch` 挂载进 web profile:
 
 - **launch token 登录重定向** —— 插件把 dsh 进程的 launch token 写到 `/tmp/dsh-caddy/launch-token`;Caddy 对没有会话 cookie 的浏览器 302 到 `/?token=...`,dsh 随后 Set-Cookie(`HttpOnly; SameSite=Strict`)。容器不再注入或改写会话,浏览器自己持有。
 - **隐藏"打开配置文件"按钮** —— 上游该操作没有无桌面兜底,在容器里会 spawn `xdg-open` 扑空;插件让 `settings/describe` 报告 `hasDocument: false`,按钮按上游自身 UI 逻辑不再渲染。设置项持久化在挂载卷的 `~/.dsh` 下(上游 v0.1.7+ 按 profile 存于 `~/.dsh/profiles/<profile>/cordis.patch.yml`;旧版 `settings.yaml` 只导入一次)。
-- **传输层归属声明(兼容层)** —— 老 tag 的浏览器代码仍按 `location.hostname` 判断 `isLoopback`,除非 shell 声明自己拥有 Host;插件为它们保留 `__DSH_TRANSPORT__ = { ownsHost: true }` 行。0.2.x 上该标记只剩 settings-document controller 一个消费者,而按钮已被隐藏;Caddy 现在保留 Host/Origin,所以它不再是安全机制。
 - **产物后处理** —— `pnpm run build:official` 之后跑三步:≥ 100 KiB 的内联图片抽成 `/container-assets/<内容哈希>`(由插件以 `immutable` 提供,只在真正打开对应界面时才取)、客户端 bundle 用 esbuild 压缩、刷新 `.dsh-build` 构建记录使其继续与交付产物一致。
 
 插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分(体现在该次发布的 commit 列表中,见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。

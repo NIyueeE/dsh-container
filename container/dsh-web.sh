@@ -95,17 +95,7 @@ for a in "$@"; do
   esac
 done
 
-# 上游 --public-url 从 0.2.1-alpha.1 才有; 老 tag 上跳过, 只退化公告地址。
-# 用 help 探测而不是版本号比较, 避免 pre-release 排序问题。
-PUBLIC_URL_SUPPORTED=0
-help_text="$(dsh --profile web --help 2>/dev/null || true)"
-case "$help_text" in
-  *--public-url*) PUBLIC_URL_SUPPORTED=1 ;;
-esac
-if [ "$PUBLIC_URL_SUPPORTED" = 0 ] && [ "$public_url_arg" = 0 ]; then
-  echo "[dsh-web] upstream dsh does not support --public-url; advertised URL stays the bind address" >&2
-fi
-
+# 最低支持 dsh 0.2.1: --public-url 是必备 flag, 不需要 help 探测/降级。
 # authority 解析: 只接受 host[:port] 或 [IPv6][:port]; 拒绝空白/斜杠/注入字符。
 trim() {
   local s="$1"
@@ -218,7 +208,7 @@ start_dsh_web() {
   : > "$LOG"
   rm -f "$TOKEN_FILE"
   local -a extra=()
-  if [ "$PUBLIC_URL_SUPPORTED" = 1 ] && [ "$public_url_arg" = 0 ]; then
+  if [ "$public_url_arg" = 0 ]; then
     extra+=(--public-url "$DSH_PUBLIC_URL")
   fi
   local h

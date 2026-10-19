@@ -7,16 +7,12 @@
 //      headless 兜底(会 spawn 原生文本编辑器命令扑空)—— 让 settings/describe
 //      报告 hasDocument:false, 浏览器侧 SettingsDocumentAction 按上游自身逻辑
 //      (status !== 'ready' → 不渲染)让按钮整个消失, 不引入任何浏览器侧代码;
-//   3. 保留传输层归属声明 __DSH_TRANSPORT__ = { ownsHost: true }(老 tag 兼容):
-//      上游 0.1.x 的浏览器侧特权界面仍消费 isLoopback; 0.2.x 上该标记只剩
-//      settings-document controller 一个消费者, 而按钮已被 hasDocument:false
-//      隐藏。Caddy 现在保留 Host/Origin, 它不再是安全机制, 只是老 tag 的兼容层;
-//   4. 提供构建期抽出的客户端图片(/container-assets/<内容哈希>.<ext>): 见
+//   3. 提供构建期抽出的客户端图片(/container-assets/<内容哈希>.<ext>): 见
 //      scripts/extract-inline-assets.js —— 上游把 8 张引导插画内联成 base64,
 //      占合并包 49%, 抽成文件后只在真正进入该页时才请求。
 //
 // 遵循上游插件规范: 导出 name/inject/apply/Config; 只用 inject 声明过的服务;
-// 资源注册走 ctx.effect/ctx.on 的 disposer; 日志走 ctx.logger; 实例级可变参数是
+// 资源注册走 ctx.effect 的 disposer; 日志走 ctx.logger; 实例级可变参数是
 // Config 字段(从 overlay 条目的 config 传入), 不读环境变量。
 //
 // 上游核对:
@@ -26,15 +22,13 @@
 //     天然带 HttpOnly/SameSite=Strict, 并绑定浏览器实际使用的 authority;
 //   - dsh 的 Host/Origin 围栏原样生效: 外部 authority 由 dsh-web 的
 //     --trusted-host 授权, Caddy 只转发, 不改写;
-//   - settings-controller 的 describe() 在 v0.1.7-alpha.1+ 硬编码
-//     hasDocument: true, provider 接口已删除 documentPath —— 翻 provider 属性
-//     失效, 改为包 settingsController 实例的 describe。Gateway 调远程方法是
-//     invoke 期在实例上动态取值后再 Reflect.apply 带上 receiver
-//     (packages/api/gateway/src/index.ts), 实例自有属性即遮蔽原型方法;
-//   - 更早的 tag: describe 由 provider 的 documentPath 推导
-//     (hasDocument = settings.documentPath !== undefined), 遮蔽该属性即可;
-//   - 按钮渲染门两种版本一致: SettingsDocumentAction 仅在 store 由 describe
-//     镜像推导出 status==='ready'(即 hasDocument:true)时渲染。
+//   - settings-controller 的 describe() 硬编码 hasDocument: true —— 没有
+//     provider 侧属性可翻, 只能包 settingsController 实例的 describe。
+//     Gateway 调远程方法是 invoke 期在实例上动态取值后再 Reflect.apply 带上
+//     receiver(packages/api/gateway/src/index.ts), 实例自有属性即遮蔽原型
+//     方法;
+//   - 按钮渲染门: SettingsDocumentAction 仅在 store 由 describe 镜像推导出
+//     status==='ready'(即 hasDocument:true)时渲染。
 //
 // 幂等与稳健性:
 // - 每次 dsh web 启动(含崩溃重启、dsh-restart)都会重新写一次 token;
@@ -51,7 +45,7 @@ import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
 export const name = 'dsh-container-adapt'
-export const inject = ['webServer', 'connection', 'settings', 'settingsController']
+export const inject = ['webServer', 'connection', 'settingsController']
 
 /**
  * launch token 状态文件所在目录: 默认值与 `container/dsh-web.sh` 的 `RUNTIME_DIR`
@@ -177,8 +171,8 @@ function exportOwnLogs(ctx) {
 }
 
 /**
- * 强制 settings/describe 报告 hasDocument:false —— v0.1.7+ 上游已把它写死
- * 成 true, provider 侧无属性可翻。
+ * 强制 settings/describe 报告 hasDocument:false —— 上游把它写死成 true,
+ * provider 侧没有可翻的属性。
  *
  * 为什么是"遮蔽实例方法"这种写法: Cordis 没有"只改一个方法返回值"的标准入口 ——
  * `ctx.intercept(name, config)` 只合并**服务配置**(不碰实现), `reflect.set(name,
@@ -206,27 +200,6 @@ function forceNoSettingsDocument(controller, logger) {
   Object.defineProperty(controller, 'describe', { value: wrapped, configurable: true })
   logger.info('settings describe wrapped: hasDocument forced to false')
 }
-
-/**
- * 传输层归属声明: 结构化索引注入行。上游契约
- * (packages/client/connection/src/client/index.ts)规定 `__DSH_TRANSPORT__` 由
- * "自己拥有 Host 的 shell"设置, 唯一消费点是
- * `isLoopback: transport?.ownsHost === true || …`; 上游桌面 shell
- * (apps/web/src/main.ts)与 worker 预览页(experimental/webworker-runtime)都这么用,
- * 上游 connection 插件贡献 `__DSH_CONNECTION_RECOVERY__` 用的也是这一行类型。
- *
- * 现在 Caddy 保留浏览器 Host/Origin, 不再改写, 所以这行**不再是安全机制**:
- * 0.2.x 上 `isLoopback` 的消费点只剩 settings-document controller, 而按钮已由
- * hasDocument:false 隐藏; 保留它是为了老 tag(0.1.x)的浏览器侧特权界面兼容。
- * 上游一旦把最低支持版本提到不再消费它, 就按 docs/upstream-contract.md 的
- * simplification trigger 删除。
- *
- * 用结构化的 `global` 行而不是 `tapIndex` 字符串变换: 后者是上游给"行表达不了的
- * 标记"留的逃生门(见 host/webserver/src/injections.ts 头注), 而这一行本身就是
- * JSON 可序列化数据 —— 由上游负责转义与摆放(渲染进 <head>、先于所有脚本行),
- * 并且同样喂给 worker 静态渲染路径, 我们不再自己找 <head> 锚点。
- */
-const TRANSPORT_GLOBAL_ROW = { kind: 'global', name: '__DSH_TRANSPORT__', value: { ownsHost: true } }
 
 /**
  * 提供构建期抽出的客户端图片(见 scripts/extract-inline-assets.js)。只认内容哈希
@@ -268,23 +241,10 @@ export function apply(ctx, config) {
 
   // 2) 隐藏"打开配置文件"按钮: 上游把 hasDocument 当作"本地文档可用"信号,
   //    只有它为真时 SettingsDocumentAction 才渲染。容器无桌面且该操作无
-  //    headless 兜底。两条路并存(见文件头"上游核对"):
-  //    - 旧 tag: describe 由 provider.documentPath 推导, 遮蔽该属性
-  //      (spec.filename 不受影响, prepareDocument 照常);
-  //    - v0.1.7+: describe 硬编码 true, 包 controller 实例的 describe。
-  if ('documentPath' in ctx.settings) {
-    Object.defineProperty(ctx.settings, 'documentPath', { value: undefined })
-  }
+  //    headless 兜底, 因此包 controller 实例的 describe(见文件头"上游核对")。
   forceNoSettingsDocument(ctx.settingsController, ctx.logger)
 
-  // 3) 传输层声明: 向上游的结构化索引注入表推一行(老 tag 兼容; 见上方说明)。
-  //    每次渲染索引时读取当前表, 因此这里只需注册一次监听, ctx.on 的 disposer
-  //    随插件卸载自动撤销。
-  ctx.on('webserver/index-inject', (table) => {
-    table.push({ ...TRANSPORT_GLOBAL_ROW })
-  })
-
-  // 4) 抽图路由: webServer.register() 返回 disposer, 用 ctx.effect 登记
+  // 3) 抽图路由: webServer.register() 返回 disposer, 用 ctx.effect 登记
   //    (上游 gateway 注册 mux 路由同款写法)。
   if (!existsSync(ASSET_DIR)) {
     ctx.logger.warn(`${ASSET_DIR} is missing; extracted client images will 404`)

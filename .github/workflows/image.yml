@@ -107,11 +107,11 @@ jobs:
       - name: README parity
         run: python3 tests/validate-docs.py parity
 
-      - name: container-adapt plugin contract (transport injection + extracted-asset route)
+      - name: container-adapt plugin contract (launch token + extracted-asset route)
         run: |
           set -euo pipefail
-          # 纯 node、无依赖: 断言 __DSH_TRANSPORT__ 注入的位置契约(紧跟 <head>,
-          # 先于 shell 的 module script)与 /container-assets 路由行为(immutable、
+          # 纯 node、无依赖: 断言 launch token 的原子写出、settings/describe 的
+          # hasDocument:false 包装, 与 /container-assets 路由行为(immutable、
           # 拒绝路径穿越与未知名)。真实镜像上的端到端断言在 tests/smoke.sh。
           node tests/plugin-unit.mjs
           # 构建期后处理脚本的语法; 真正执行需要完整 dsh checkout 与 esbuild,
@@ -170,7 +170,7 @@ jobs:
         id: image
         run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      # 本仓库 release tag 与官方仓库 tag 完全一致(如 dsh-v0.1.2-alpha.3);
+      # 本仓库 release tag 与官方仓库 tag 完全一致(如 dsh-v0.2.1-rc.2);
       # DSH_TAG 与 BUILD_VERSION 都直接使用该 tag。非发布构建 label 为 latest。
       - name: Compute build args
         id: args
@@ -340,7 +340,7 @@ jobs:
       contents: write
     steps:
       # 镜像构建 + 冒烟通过后才创建 Release 页面;
-      # 页面 tag 使用官方仓库 tag(如 dsh-v0.1.2-alpha.3)。
+      # 页面 tag 使用官方仓库 tag(如 dsh-v0.2.1-rc.2)。
       # 发布说明只有上游同名 tag 的 release notes(折叠引用, 上游是各版本迁移细节的
       # 权威)、上游链接与 generate_release_notes 追加的本仓库提交清单;
       # 本镜像自己的升级/适配说明不在这里逐版重复 —— 持久文档见

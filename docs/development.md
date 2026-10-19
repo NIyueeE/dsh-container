@@ -10,7 +10,7 @@ container/
   dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the launch token, runs the Caddy proxy with login redirect, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
   healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
-  plugin/                # container-adapt plugin at /opt/dsh-container-plugin: launch-token writer for the Caddy login redirect, settings-document button hide, __DSH_TRANSPORT__ index injection for older tags, /container-assets route; scripts/ holds the three build-time post-processing steps (extract inline images, esbuild minify, build-record refresh)
+  plugin/                # container-adapt plugin at /opt/dsh-container-plugin: launch-token writer for the Caddy login redirect, settings-document button hide, /container-assets route; scripts/ holds the three build-time post-processing steps (extract inline images, esbuild minify, build-record refresh)
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)
@@ -18,7 +18,7 @@ tests/
   smoke.sh               # end-to-end image smoke test (CI + `just test`)
   contract.sh            # static upstream-contract check against a dsh-v* tag
   triage-diff.sh         # code-level agent admission gate for release-prep (diff triage)
-  plugin-unit.mjs        # container-adapt plugin contract (injection row, Config, route, logger)
+  plugin-unit.mjs        # container-adapt plugin contract (launch token, Config, route, logger)
 prompts/
   release-prep.md        # system prompt for the headless dsh release agent
 docs/
@@ -84,8 +84,8 @@ node /opt/deepseek-harness/node_modules/.pnpm/playwright@1.61.1/node_modules/pla
 
 What must hold on the processed tree: zero console/page errors, **every** `__DSH_BOOT__.entries`
 entry activated (a partial boot logs `web boot: N entries did not activate`), the settings panel
-opening (that path depends on the injected `__DSH_TRANSPORT__` row), and the extracted
-`/container-assets/*.png` files fetching and decoding. A payload can pass `node --check` and the
+opening (the plugin hides the document button; no `__DSH_TRANSPORT__` row is injected), and the
+extracted `/container-assets/*.png` files fetching and decoding. A payload can pass `node --check` and the
 loader-registration self-check and still fail here: identifier-renaming minification did exactly
 that (58 of 65 entries failed, because concatenated artifacts share one script scope and renamed
 helpers collide across files — see `container/plugin/scripts/minify-client.mjs`).

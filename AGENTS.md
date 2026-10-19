@@ -10,6 +10,9 @@ A container image for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 built on `debian:13-slim` and published to GHCR as `ghcr.io/niyueee/dsh-container`. Users pull the
 image and run it with Docker/Podman; this repo is not an application you run directly.
 
+**Supported upstream dsh: 0.2.1-alpha.3 and newer.** The image has no compatibility layer for
+older tags; `Containerfile` rejects a `DSH_TAG` below 0.2.1-alpha.3.
+
 **Global agent instructions** live at `~/.dsh/AGENTS.md` (`$DSH_HOME`, first) and
 `~/.agents/AGENTS.md` (`$DSH_AGENTS_HOME`, second) — dsh loads both as a user-global baseline
 before any project file. The image deliberately ships **no** default there; a copy-pasteable
@@ -24,7 +27,7 @@ container-environment note for that file lives in
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + launch-token wait + Caddy reverse proxy with token login redirect (auto-restart, `caddy reload` on token rotation), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
-| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) writes dsh's launch token for Caddy's login redirect (the browser holds the session cookie), hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`, plus a `documentPath` flip on pre-v0.1.7 tags; upstream's own UI never renders it), keeps the `__DSH_TRANSPORT__ = { ownsHost: true }` row for older tags (on 0.2.x only the settings-document controller consumes `isLoopback`, and it is hidden), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
+| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) writes dsh's launch token for Caddy's login redirect (the browser holds the session cookie), hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`; upstream's own UI never renders it), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -32,7 +35,7 @@ container-environment note for that file lives in
 | `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`, but re-dispatches a tag only when no `release-prep` run is queued or in progress (a repeat dispatch would queue a second build + smoke + agent run; retry after a failure stays). Its cron carries a deliberate ~6 h lead (`30 11 * * *`) because Actions' `schedule` lands 4–9 h late. It closes a tracker issue only once that tag's push has actually produced an `image.yml` run (a tag that never triggered the pipeline keeps the issue open with a hint). It also runs a **release health check** on our newest `dsh-v*` tag: a latest `image.yml` run that is missing, failed, or cancelled opens a "Release pipeline not published" issue, closed automatically once a run succeeds (the safety net for manually pushed tags, which skip release-prep) |
 | `.github/workflows/release-prep.yml` | Automated release preparation: contract check → code-level diff triage (`tests/triage-diff.sh` admits the agent only on drift or adaptation-surface hits; fence drift and mis-dispatched tags fail fast) → dsh headless agent (drift repair + adaptation review, exits early with `NO_ACTION_NEEDED` when there is nothing to do — upstream changes that make a hack redundant are deleted, see `docs/upstream-contract.md` § Simplification triggers; its model/provider config is passed as a load-time `--patch` overlay, **never** as the flat `$DSH_HOME/settings.yaml`, which dsh v0.1.7+ only imports *after* the loader settles — too late for a fresh Actions home, the 2026-09-22 `dsh-v0.1.7-alpha.2` prep failure) → build + smoke on the repaired tree → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
 | `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
-| `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for patch anchors, CLI flags, and the request fence before any image is built |
+| `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for upstream API anchors, CLI flags, and the request fence before any image is built |
 | `tests/triage-diff.sh` | Code-level agent admission gate: contract verdict + complete upstream changed-file list → decides whether the release-prep agent enters (drift or adaptation-surface hit), or the run proceeds without it |
 | `tests/validate-docs.py` | Stdlib-only doc gate extracted from `image.yml`: `links` (every relative doc link resolves) and `parity` (README/README.zh heading, link and code-fence counts); run by CI and by `just lint` |
 | `prompts/release-prep.md` | System prompt for the dsh headless agent that repairs contract drift in the `release-prep.yml` prep job |
@@ -123,8 +126,8 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 
    External configuration: `DSH_PUBLIC_URL` (`--public-url`, advertisement/agent context; default
    `http://127.0.0.1:3081/`) and `DSH_TRUSTED_HOST` (comma-separated extra authorities; derived
-   from `DSH_PUBLIC_URL` when unset). `--public-url` is probed via `dsh --profile web --help` and
-   skipped on tags that predate it. Basic auth remains `DSH_PROXY_USER` +
+   from `DSH_PUBLIC_URL` when unset). `--public-url` is always passed (0.2.1-alpha.3 is the
+   minimum supported tag). Basic auth remains `DSH_PROXY_USER` +
    `DSH_PROXY_PASSWORD` (Caddyfile `basicauth` on distro caddy 2.6 — renamed `basic_auth` upstream
    in 2.7; password bcrypt-hashed via `caddy hash-password`, fed over stdin). Setting only one auth
    variable is a startup error, not a silent no-auth fallback.
@@ -133,10 +136,9 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    volume; a dsh restart rotates the launch token (Caddy reload), while old browser cookies remain
    valid. The container has no browser, so `dsh-web` appends `--no-open` unless the caller already
    passed it. Inside the container, `dsh-restart` can be used to restart dsh web without restarting
-   the whole container. The plugin also owns the served-side adaptations: the
-   `__DSH_TRANSPORT__` row for older tags (contract item 1) and the `/container-assets/*` route
-   for the extracted images; the route is registered through `ctx.effect`, and `ctx.on` owns the
-   row subscription, so both dispose with the plugin.
+   the whole container. The plugin also owns the served-side adaptation: the
+   `/container-assets/*` route for the extracted images; it is registered through `ctx.effect`, so
+   it disposes with the plugin.
 
 ### Hard constraints from upstream dsh (do not fight these)
 
@@ -155,21 +157,18 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   default"; `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control. dsh binds
   `127.0.0.1:3080` (not published), so direct access is a container-internal path, not a
   same-network-container bypass.
-- **Upstream's browser code still gates the settings-document affordance on the page authority for
-  older tags.** The container-adapt plugin keeps the `__DSH_TRANSPORT__ = { ownsHost: true }` row
-  for those tags (rendered as an inline `<head>` script; upstream's own declaration for a shell
-  that owns the Host — the desktop shell and worker-preview tunnel use it the same way). On 0.2.x
-  the only `isLoopback` consumer is the settings-document controller, which `hasDocument:false`
-  already hides; the row is a compatibility layer, not a security mechanism. Caddy no longer
-  rewrites Host/Origin. No upstream build artifact is modified for this. (No `index.html` rewrite
-  beyond that row is needed — upstream ships its own insecure-context `randomUuid()` in
-  `@deepseek-ai/dsh-util-crypto`.)
+- **The settings-document affordance is gated on the page authority.** On 0.2.1 the browser
+  creates its controller only when `$host.isLoopback` is true (loopback access such as an SSH
+  tunnel); the plugin forces `hasDocument: false` so the button never renders there either. Caddy
+  preserves Host/Origin, and the image does not inject `__DSH_TRANSPORT__` or rewrite
+  `index.html`. No upstream build artifact is modified for this; upstream ships its own
+  insecure-context `randomUuid()` in `@deepseek-ai/dsh-util-crypto`.
 - **`settings/openSettingsDocument` has no headless fallback upstream** (unlike preset/workspace
   opens, which check `canOpenPath`): the plugin keeps the button out of the UI entirely — it wraps
   the `settingsController` instance's `describe` so `settings/describe` reports
-  `hasDocument: false` (upstream v0.1.7+ hardcodes `hasDocument: true` and dropped the provider's
-  `documentPath`; on older tags the plugin additionally flips `documentPath`), and upstream's
-  `SettingsDocumentAction` renders nothing (`status !== 'ready'`). No client code, no download
+  `hasDocument: false` (upstream hardcodes `hasDocument: true` and has no provider-side
+  `documentPath`), and upstream's `SettingsDocumentAction` renders nothing
+  (`status !== 'ready'`). No client code, no download
   endpoint, no `settings-controller` row override — the overlay is a single plugin include.
 - dsh's agent workspace is the process cwd — the entrypoint must `cd "$HOME"` (or, for tests,
   whichever directory it is configured to use).
@@ -258,7 +257,7 @@ just debug      # run in the foreground with port 3081 published
 just restart-dsh # restart dsh web inside the running "dsh" container
 just test       # smoke-test an already built image (tests/smoke.sh)
 just lint       # bash -n + shellcheck + doc-link/README-parity checks (no container)
-just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
+just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
 ```
 
 - The justfile passes `--format docker` only for podman (Docker has no such flag). podman needs it
@@ -306,10 +305,10 @@ just contract dsh-v0.1.2-rc.1  # static upstream-contract check for one tag
    cookie, and setting only one auth variable must exit nonzero. Also start one container with
    `HTTP_PROXY`/`NODE_USE_ENV_PROXY=1` to prove the internal `--noproxy` probes still work.
    Always test inside the built image (the dev machine may lack `caddy`).
-6. If you touched the container-adapt plugin (the index-injection row, the `/container-assets`
-   route, the `Config` field, or one of the three build-time post-processing scripts), run
+6. If you touched the container-adapt plugin (the `/container-assets` route, the `Config`
+   field, or one of the three build-time post-processing scripts), run
    `node tests/plugin-unit.mjs` (pure node, no image) and, in the built image, the smoke
-   assertions: the served index carries the `__DSH_TRANSPORT__` row inside `<head>`, the plugin's
+   assertions: the served index carries no `__DSH_TRANSPORT__` row, the plugin's
    own `ctx.logger` line reaches the container log, the served combined bundle inlines no image
    ≥ 100 KiB, `/container-assets/<hash>` answers with `image/*` + `immutable`, and the delivered
    build record matches the delivered artifacts. **If you change the minification profile, also

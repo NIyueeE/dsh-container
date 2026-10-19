@@ -13,9 +13,10 @@
 # 可复现性: 基础镜像 tag、rust 工具链、uv 版本、dsh 源码 tag 均可通过构建参数固定;
 # pnpm 版本从所构建 tag 的 packageManager 读取并安装到系统层。Caddy/podman 来自
 # apt 仓库, dsh 依赖树由官方 pnpm-lock.yaml 锁定, 默认构建安装官方最新 tag。
+# 最低支持上游 dsh 0.2.1-alpha.3; 更早的 tag 不再兼容, 构建时直接失败。
 # 生产发布建议固定 DSH_TAG:
 #   podman build --format docker \
-#                --build-arg DSH_TAG=dsh-v0.1.2-alpha.4 \
+#                --build-arg DSH_TAG=dsh-v0.2.1-rc.2 \
 #                --build-arg RUST_TOOLCHAIN=1.88.0 \
 #                -t dsh-container .
 # BUILD_VERSION 写入 OCI 版本 label: CI 打 dsh-v* tag 时传官方仓库 tag,
@@ -37,9 +38,6 @@
 #     设置 > 打开配置文件按钮隐藏: 无桌面容器里上游该操作没有 headless
 #     兜底(会 spawn xdg-open 扑空), 插件让 settings/describe 返回
 #     hasDocument:false, 按钮按上游自身逻辑不渲染;
-#     老 tag 的浏览器端 isLoopback 门由插件向上游的结构化索引注入表推一行
-#     __DSH_TRANSPORT__={ownsHost:true} 兼容(Caddy 保留 Host/Origin 后它不再
-#     是安全机制; 0.2.x 上只剩 settings-document controller 消费, 已被隐藏);
 #     构建期后处理三件套(都在 plugin/scripts/, 顺序固定):
 #       1. extract-inline-assets.js 把 >=100 KiB 的内联 data URL 图片抽成真实
 #          文件(8 张引导插画占合并包 49%, 且每个用户只用得到 1 张), 由插件的
@@ -363,6 +361,25 @@ RUN set -eux; \
       echo "resolved latest upstream dsh tag: $DSH_TAG"; \
     fi; \
     test -n "$DSH_TAG"; \
+    version="${DSH_TAG#dsh-v}"; \
+    version="${version%%-*}"; \
+    vmajor="${version%%.*}"; \
+    rest="${version#*.}"; \
+    vminor="${rest%%.*}"; \
+    vpatch="${rest#*.}"; \
+    case "${vmajor}${vminor}${vpatch}" in \
+      *[!0-9]*|'') echo "unsupported DSH_TAG $DSH_TAG: minimum supported upstream dsh is 0.2.1-alpha.3" >&2; exit 1 ;; \
+    esac; \
+    if [ "$vmajor" -eq 0 ] && { [ "$vminor" -lt 2 ] || { [ "$vminor" -eq 2 ] && [ "$vpatch" -lt 1 ]; }; }; then \
+      echo "unsupported DSH_TAG $DSH_TAG: minimum supported upstream dsh is 0.2.1-alpha.3" >&2; \
+      exit 1; \
+    fi; \
+    case "$DSH_TAG" in \
+      dsh-v0.2.1-alpha.[0-2]) \
+        echo "unsupported DSH_TAG $DSH_TAG: 0.2.1-alpha.3 is the first tag without the loopback settings-persistence gate" >&2; \
+        exit 1; \
+        ;; \
+    esac; \
     git checkout "$DSH_TAG"; \
     git rev-parse HEAD
 
@@ -456,7 +473,7 @@ EXPOSE 3081
 # /dev/fuse、/dev/net/tun、unmask /proc 等条件见 docs/deployment.md
 # "In-container podman"。
 
-# Caddy 把 0.0.0.0:3081 改写头后转发到 dsh 的 127.0.0.1:$DSH_WEB_PORT;
+# Caddy 在 0.0.0.0:3081 保留 Host/Origin 原样转发到 dsh 的 127.0.0.1:$DSH_WEB_PORT;
 # healthcheck 同时要求 dsh 和代理可响应。dsh web 对无会话的根请求返回 401,
 # 因此存活判据是 curl 退出码(连接成功)而不是 HTTP 200。内部端口由脚本从
 # pid1 环境的 DSH_WEB_PORT 读取(entrypoint 解析 --port 后写入), 兜底 3080。

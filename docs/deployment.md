@@ -80,7 +80,8 @@ redirected to dsh's launch token, and the browser keeps the session cookie from 
 ## 4. Updating dsh and the image
 
 dsh is built into the image at `/opt/deepseek-harness` and there is no runtime npm auto-update.
-To run a different dsh version, publish/use an image built from that upstream tag:
+To run a different dsh version, publish/use an image built from that upstream tag (minimum
+0.2.1-alpha.3; `Containerfile` rejects older tags):
 
 **Upgrading from v0.2.x images:** those images npm-installed dsh into the persisted volume
 (`~/.local`). The stale copy is inert — PATH is image-first, so the image-provided dsh always
@@ -147,11 +148,9 @@ session cookie — there is no server-side cookie injection. **Basic auth
 non-loopback deployment (see [security.md](security.md)); `/api/remote.mux` is exempt and uses the
 session cookie because browsers do not reliably attach `Authorization` to WebSocket upgrades.
 
-Upstream's browser code still gates the settings-document affordance on the page authority for
-older tags; the plugin contributes `__DSH_TRANSPORT__ = { ownsHost: true }` for those tags. On
-0.2.x its only consumer is the settings-document controller, already hidden by
-`hasDocument: false` — it is a compatibility layer, not a security mechanism. The plugin also
-hides the headless-hostile "Open config file" button and serves the extracted images.
+The settings-document affordance is gated on the page authority: a loopback page (an SSH
+tunnel) creates its controller, and the plugin reports `hasDocument: false` so the button never
+renders; remote authorities do not create it. The plugin also serves the extracted images.
 
 **The settings-document button is hidden** — "Open config file" (Settings) has no headless
 fallback upstream and would spawn `xdg-open` into nothing in a container. The plugin makes
@@ -585,7 +584,7 @@ tag (pin `DSH_TAG`), then run it on hosts that only need access to `ghcr.io` for
 
 ```bash
 podman build --format docker \
-             --build-arg DSH_TAG=dsh-v0.1.2-alpha.4 \
+             --build-arg DSH_TAG=dsh-v0.2.1-rc.2 \
              -t dsh-container .
 ```
 
@@ -636,10 +635,8 @@ current dsh web process; it does not change the dsh version.
 The `/api` browser-trust fence is now real: it rejects a `Host` that is neither loopback nor in
 dsh's trusted list. Set `DSH_PUBLIC_URL` to the browser-facing URL (the image derives the authority)
 or add the authority to `DSH_TRUSTED_HOST`; Caddy's Host allowlist uses the same list. If the
-settings page shows `settings are unavailable in this browser`, check the authority again — on
-older upstream tags the served index also needs the `__DSH_TRANSPORT__ = { ownsHost: true }` row
-(the container-adapt plugin provides it); an outer proxy that strips or rewrites the index body
-would remove it.
+settings page shows `settings are unavailable in this browser`, check the authority again; the
+image does not inject `__DSH_TRANSPORT__` or rewrite the index body.
 
 **Podman rootless + bind mounts**
 If you bind-mount a host directory at `/home/dsh`, make sure it is owned by your uid and

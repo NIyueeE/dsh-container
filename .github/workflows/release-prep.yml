@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       new_tag:
-        description: 'Upstream dsh-v* tag to prep and release (e.g. dsh-v0.1.2-rc.1)'
+        description: 'Upstream dsh-v* tag to prep and release (e.g. dsh-v0.2.1-rc.2)'
         required: true
         type: string
 

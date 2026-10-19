@@ -30,7 +30,7 @@ full rationale and the persistence matrix live in
 | Build arg | Default | Description |
 |---|---|---|
 | `BASE_IMAGE` | `debian:13-slim` | Base image (pinned for reproducible builds; override only if you also adjust the `/home/dsh` user-layer assumptions) |
-| `DSH_TAG` | `latest` | Upstream dsh git tag to build (`latest` resolves the newest upstream `dsh-v*` tag at build time). The image is immutable at runtime — there is no in-container dsh auto-update |
+| `DSH_TAG` | `latest` | Upstream dsh git tag to build (`latest` resolves the newest upstream `dsh-v*` tag at build time); minimum supported tag is `dsh-v0.2.1-alpha.3` (alpha.1/alpha.2 still gate settings persistence on the page authority), and lower tags fail the build. The image is immutable at runtime — there is no in-container dsh auto-update |
 | `BUILD_VERSION` | `latest` | Written to the OCI label `org.opencontainers.image.version`; CI passes the upstream dsh tag on `dsh-v*` tag builds (see [releasing.md](releasing.md)) |
 | `RUST_TOOLCHAIN` | `stable` | Rust toolchain (e.g. `1.88.0`) |
 | `UV_VERSION` | `latest` | uv version installed by the official standalone installer script (`latest` resolves the newest uv release at build time) |
@@ -86,7 +86,7 @@ drops it):
 
 ```bash
 podman build --format docker \
-             --build-arg DSH_TAG=dsh-v0.1.2-alpha.4 \
+             --build-arg DSH_TAG=dsh-v0.2.1-rc.2 \
              --build-arg RUST_TOOLCHAIN=1.88.0 \
              -t dsh-container .
 ```

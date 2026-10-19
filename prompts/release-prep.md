@@ -23,7 +23,7 @@ New upstream tag: **$NEW_TAG** (also exported as environment variable `NEW_TAG`)
 | `/tmp/upstream` | Shallow checkout of upstream dsh at `$NEW_TAG` |
 | `/tmp/upstream-diff.json` | GitHub compare payload (previous release tag → `$NEW_TAG`), or a single-commit view if no previous tag existed |
 | `tests/contract.sh` | The executable form of the contract (the check that reported drift) |
-| `container/plugin/` | The single adaptation point: `index.js` (launch-token writer for the Caddy login redirect, settings-document button hide via the provider `documentPath` flip, the `__DSH_TRANSPORT__` index-injection row for older tags, the `/container-assets` route, the logger exporter), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
+| `container/plugin/` | The single adaptation point: `index.js` (launch-token writer for the Caddy login redirect, settings-document button hide via the `describe` wrapper, the `/container-assets` route, the logger exporter), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
 | `tests/smoke.sh` | Behavioral gate (read-only for you — docker is not available in your environment) |
 
 Environment: `IS_ANCESTOR=yes` when the compare payload shows `$NEW_TAG` is *behind* the previously
@@ -42,13 +42,12 @@ or these paths were hit). Focus your review on those paths and the § Simplifica
    cosmetic edits.
 1. **Minimal repair; prefer deletion over patching.** When a Simplification trigger fires,
    deleting the hack (and its contract item / smoke assertions / docs) is the preferred change.
-   Otherwise the typical fix is re-anchoring the contract item in `container/plugin/` — the
-   `__DSH_TRANSPORT__` index-injection row (its anchor is the `ownsHost` arm in
-   `packages/client/connection/src/client/index.ts`) or one of the three build-time
-   post-processing steps. Rewriting upstream build artifacts is not an option: the only code that
+   Otherwise the typical fix is re-anchoring the plugin's upstream API dependency
+   (`authenticatedUrl` / `settings/describe`) or one of the three build-time post-processing
+   steps. Rewriting upstream build artifacts is not an option: the only code that
    runs after `build:official` is `container/plugin/scripts/`, and it must leave a matching
    `.dsh-build` record behind.
-2. **Follow the update protocol** in `docs/upstream-contract.md` § Update protocol. Items 2–4
+2. **Follow the update protocol** in `docs/upstream-contract.md` § Update protocol. Items 1–3
    (request fence / trustedHosts, `--port`/`--trusted-host`/`--public-url`, `--no-open`) define the
    image's security posture: if those drifted, make **no changes at all** — even if a workaround
    seems straightforward — and end your report with a HOLD recommendation explaining the drift for
@@ -58,22 +57,18 @@ or these paths were hit). Focus your review on those paths and the § Simplifica
    `container/`, `docs/`, `tests/`, `prompts/`, or `Containerfile`. Changes anywhere else
    (especially `.github/` — the pipeline's own gates) are rejected and fail the run. Never touch
    `.git`.
-4. **Patch candidates are built-form strings.** Upstream sources use TypeScript
-   (`pageLocation === undefined`); the served bundle is esbuild output (`pageLocation === void 0`).
-   Derive the built form from the source carefully. Keep existing candidates as fallbacks and add
-   the new one first unless it replaces them.
-5. **Keep docs consistent.** If you change behavior, anchors, or the adaptation surface, update
+4. **Keep docs consistent.** If you change behavior, anchors, or the adaptation surface, update
    `docs/upstream-contract.md` and `tests/contract.sh` so all three describe the same reality.
    Release notes: adaptation changes are visible in the release commits themselves; the decision
    record lives in your report (see below), which is linked from the tracker issue.
-6. Do not run docker (unavailable), do not run the full dsh build, do not touch anything unrelated
+5. Do not run docker (unavailable), do not run the full dsh build, do not touch anything unrelated
    (no CI changes, no version bumps, no reformatting).
-7. **Ancestor tags**: if `IS_ANCESTOR=yes` (or the compare payload shows `$NEW_TAG` behind the
+6. **Ancestor tags**: if `IS_ANCESTOR=yes` (or the compare payload shows `$NEW_TAG` behind the
    previously released tag), this is a mis-dispatch of an older version. Lead the report with a
    prominent note, keep the analysis short, and recommend HOLD — do not invest in a full repair.
-8. If the diff shows the drift report was a false alarm (contract anchors are actually intact),
+7. If the diff shows the drift report was a false alarm (contract anchors are actually intact),
    change nothing and say so in the report — then still run the Adaptation review.
-9. **Be efficient**: the job has a hard timeout (~60 minutes). Read the contract, check the diff,
+8. **Be efficient**: the job has a hard timeout (~60 minutes). Read the contract, check the diff,
    decide, make minimal edits, report — in that order, without exploratory detours.
 
 ## Report (your final message — posted verbatim to the tracker issue)
