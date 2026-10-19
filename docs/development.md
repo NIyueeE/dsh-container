@@ -19,7 +19,7 @@ tests/
   smoke.sh               # end-to-end image smoke test (CI + `just test`)
   contract.sh            # static upstream-contract check against a dsh-v* tag
   triage-diff.sh         # code-level agent admission gate for release-prep (diff triage)
-  plugin-unit.mjs        # container-adapt plugin contract (launch token, Config, route, logger, client half)
+  plugin-unit.mjs        # container-adapt plugin contract (launch token, Config, route, logger, client card execution)
 prompts/
   release-prep.md        # system prompt for the headless dsh release agent
 docs/
@@ -44,6 +44,7 @@ Run before committing (the CI runs the same checks):
 
 ```sh
 just lint                                            # shellcheck + plugin JS syntax + docs
+node tests/plugin-unit.mjs                           # host/client plugin contract
 docker compose -f examples/compose.yaml config --quiet
 just --list                                           # justfile parses
 python3 - <<'PY'                                      # README parity

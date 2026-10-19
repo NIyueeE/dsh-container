@@ -131,7 +131,7 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
 ```
 
 1. **contract** — `tests/contract.sh` statically checks the upstream tag against
-   [upstream-contract.md](upstream-contract.md) (patch anchors, CLI flags, request fence) in
+   [upstream-contract.md](upstream-contract.md) (upstream API anchors, CLI flags, request fence) in
    seconds, before any image is built. If this repository already has the tag, the run skips
    (repeated and manual dispatches are idempotent).
 2. **prep** (only when the code-level triage admits it: contract drift outside the security fence,

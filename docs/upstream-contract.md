@@ -61,7 +61,7 @@ Notes:
 | Item | Meaning when present |
 |---|---|
 | `web.token_url` (`token=` in source) | Informational; the one-time login URL flow is verified behaviorally by smoke (token extraction → `303` Set-Cookie → browser session works) |
-| `client.ui_card` (`plugins.item` + `dsh.client`) | UI-only built-in card in the Plugins page; smoke asserts the boot row. A missing card does not break the container's core paths |
+| `client.ui_card` (`plugins.item` + `dsh.client`) | UI-only built-in card in the Plugins page; smoke asserts the boot row and `tests/plugin-unit.mjs` executes the bundle and renders the copy. A missing card does not break the container's core paths |
 
 ## Behavioral contract (verified by `tests/smoke.sh`, not statically checkable)
 
