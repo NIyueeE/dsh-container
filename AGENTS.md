@@ -27,7 +27,7 @@ container-environment note for that file lives in
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint` |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + launch-token wait + Caddy reverse proxy with token login redirect (auto-restart, `caddy reload` on token rotation), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
-| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) writes dsh's launch token for Caddy's login redirect (the browser holds the session cookie), hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`; upstream's own UI never renders it), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
+| `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) writes dsh's launch token for Caddy's login redirect (the browser holds the session cookie), hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`; upstream's own UI never renders it), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; its client half (`lib/client.js` + `dsh.client`) registers a built-in `plugins.item` card (no enable/disable switch) with a summary and project link; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
@@ -306,10 +306,12 @@ just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
    `HTTP_PROXY`/`NODE_USE_ENV_PROXY=1` to prove the internal `--noproxy` probes still work.
    Always test inside the built image (the dev machine may lack `caddy`).
 6. If you touched the container-adapt plugin (the `/container-assets` route, the `Config`
-   field, or one of the three build-time post-processing scripts), run
+   field, the client half, or one of the three build-time post-processing scripts), run
    `node tests/plugin-unit.mjs` (pure node, no image) and, in the built image, the smoke
-   assertions: the served index carries no `__DSH_TRANSPORT__` row, the plugin's
-   own `ctx.logger` line reaches the container log, the served combined bundle inlines no image
+   assertions: the served index carries no `__DSH_TRANSPORT__` row and includes the
+   `@dsh-container/adapt` boot row, the Plugins page card and project link render (headless
+   browser), the plugin's own `ctx.logger` line reaches the container log, the served combined
+   bundle inlines no image
    ≥ 100 KiB, `/container-assets/<hash>` answers with `image/*` + `immutable`, and the delivered
    build record matches the delivered artifacts. **If you change the minification profile, also
    verify a processed tree in a headless browser** (`docs/development.md` § Verifying a processed

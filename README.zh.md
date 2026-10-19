@@ -46,7 +46,7 @@ sudo systemctl enable --now dsh.service
 | dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本,最低 0.2.1-alpha.3);运行期无自动更新 |
 | 暴露方式 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`);保留浏览器 `Host`/`Origin`,首次访问重定向到 dsh 的登录 token,保留可选 basic auth |
 | 守护 | `dsh web` 退出自动重启;`docker exec dsh dsh-restart` 手动重启 |
-| 远程兼容 | 一个容器适配插件(`container/plugin/`,经 `dsh --patch` 挂载):把 dsh 的 launch token 写给代理登录重定向(浏览器自己持有会话 cookie)、无桌面环境下隐藏"打开配置文件"按钮(`describe` 报告无本地文档)、`/container-assets/*` 提供构建期抽出的图片 |
+| 远程兼容 | 一个容器适配插件(`container/plugin/`,经 `dsh --patch` 挂载):把 dsh 的 launch token 写给代理登录重定向(浏览器自己持有会话 cookie)、无桌面环境下隐藏"打开配置文件"按钮(`describe` 报告无本地文档)、`/container-assets/*` 提供构建期抽出的图片,并在插件页注册内置卡片 |
 | 可观测性 | OCI labels、`HEALTHCHECK`(curl 3080 + 3081) |
 | 运行用户 | uid 1000(`dsh`),免密 sudo;`/home/dsh` 为持久化用户层 |
 
@@ -57,6 +57,7 @@ sudo systemctl enable --now dsh.service
 
 - **launch token 登录重定向** —— 插件把 dsh 进程的 launch token 写到 `/tmp/dsh-caddy/launch-token`;Caddy 对没有会话 cookie 的浏览器 302 到 `/?token=...`,dsh 随后 Set-Cookie(`HttpOnly; SameSite=Strict`)。容器不再注入或改写会话,浏览器自己持有。
 - **隐藏"打开配置文件"按钮** —— 上游该操作没有无桌面兜底,在容器里会 spawn `xdg-open` 扑空;插件让 `settings/describe` 报告 `hasDocument: false`,按钮按上游自身 UI 逻辑不再渲染。设置项持久化在挂载卷的 `~/.dsh` 下(上游 v0.1.7+ 按 profile 存于 `~/.dsh/profiles/<profile>/cordis.patch.yml`;旧版 `settings.yaml` 只导入一次)。
+- **插件页内置卡片** —— 一个很小的客户端 half 注册 `plugins.item` 卡片(没有启用/关闭开关),展示一句简介,详情页说明插件职责并链接项目仓库。
 - **产物后处理** —— `pnpm run build:official` 之后跑三步:≥ 100 KiB 的内联图片抽成 `/container-assets/<内容哈希>`(由插件以 `immutable` 提供,只在真正打开对应界面时才取)、客户端 bundle 用 esbuild 压缩、刷新 `.dsh-build` 构建记录使其继续与交付产物一致。
 
 插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分(体现在该次发布的 commit 列表中,见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。

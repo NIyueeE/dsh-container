@@ -50,7 +50,7 @@ a human owns that change.
 | `/tmp/upstream` | Shallow checkout of upstream dsh at `$NEW_TAG` |
 | `/tmp/upstream-diff.json` | GitHub compare payload (previous release tag → `$NEW_TAG`), or a single-commit view if no previous tag existed |
 | `tests/contract.sh` | The executable form of the contract (the check that reported drift) |
-| `container/plugin/` | The single adaptation point: `index.js` (launch-token writer for the Caddy login redirect, settings-document button hide via the `describe` wrapper, the `/container-assets` route, the logger exporter), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
+| `container/plugin/` | The single adaptation point: `index.js` (launch-token writer for the Caddy login redirect, settings-document button hide via the `describe` wrapper, the `/container-assets` route, the logger exporter), `lib/client.js` (client half: built-in Plugins page `plugins.item` card), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
 | `tests/smoke.sh` | Behavioral gate (read-only for you — docker is not available in your environment) |
 
 Environment: `IS_ANCESTOR=yes` when the compare payload shows `$NEW_TAG` is *behind* the previously

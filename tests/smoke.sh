@@ -157,6 +157,10 @@ index_html="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
   || die "GET / with session cookie failed"
 [[ "$index_html" == *'<title>DeepSeek Harness</title>'* ]] \
   || die "served index.html does not contain the expected title"
+# 客户端 half 必须被 client-modules 扫描进 __DSH_BOOT__(Plugins 页的内置卡片);
+# 这只是发现性断言, 卡片内容由 Playwright/人工预览覆盖。
+[[ "$index_html" == *'"@dsh-container/adapt"'* ]] \
+  || die "client half @dsh-container/adapt missing from __DSH_BOOT__"
 
 # /assets/* 是 Vite 构建的内容哈希产物, 但 dsh 自己不给这棵树发任何缓存头
 # (实测无 Cache-Control/ETag/Last-Modified) —— 少了 Caddy 补的 immutable, 浏览器

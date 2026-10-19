@@ -137,6 +137,17 @@ else
   warn=$((warn + 1))
 fi
 
+# warn: 客户端 half 只影响 Plugins 页的内置卡片, 不影响容器主链路;
+# 它依赖 dsh.client 发现机制与 plugins.item 插槽契约。
+if grep -qF "plugins.item" "$ROOT/packages/client/ui-plugin-manager/src/client/slot-contract.ts" \
+    && grep -qF "dsh.client" "$ROOT/packages/client/modules/src/index.ts"; then
+  echo "PASS client.ui_card"
+  pass=$((pass + 1))
+else
+  echo "WARN client.ui_card (plugins.item slot or dsh.client discovery changed; the built-in card may disappear, the container keeps working)"
+  warn=$((warn + 1))
+fi
+
 # critical: 容器适配插件(container/plugin/)依赖的上游 API 锚点 —— launch
 # token 写入用 ctx.connection.authenticatedUrl() 取进程 token、webServer.port
 # 定位内部端口; "打开配置文件"按钮隐藏依赖两条上游行为: describe 硬编码

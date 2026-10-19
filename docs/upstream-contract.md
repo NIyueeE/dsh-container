@@ -61,6 +61,7 @@ Notes:
 | Item | Meaning when present |
 |---|---|
 | `web.token_url` (`token=` in source) | Informational; the one-time login URL flow is verified behaviorally by smoke (token extraction → `303` Set-Cookie → browser session works) |
+| `client.ui_card` (`plugins.item` + `dsh.client`) | UI-only built-in card in the Plugins page; smoke asserts the boot row. A missing card does not break the container's core paths |
 
 ## Behavioral contract (verified by `tests/smoke.sh`, not statically checkable)
 
@@ -93,6 +94,10 @@ Notes:
    (HTML, never an attachment).
 6. Data lives at upstream's default `~/.dsh`; the agent workspace is the process cwd
    (`$HOME` in the container).
+7. The served boot graph includes `@dsh-container/adapt`; the Plugins page shows a built-in
+   "Container adaptation" card (no enable/disable switch) whose detail page carries the summary
+   and project link. Smoke asserts the boot row; the visual card is covered by the headless
+   browser check.
 
 ## Anticipated tightening scenarios
 
@@ -144,6 +149,7 @@ in the release note (the commits themselves) and the tracker issue (the Adaptati
 | Build post-processing: `extract-inline-assets.js` (large inline images → served files) + `minify-client.mjs` (esbuild) | Upstream emits large image assets as files instead of inlining them, or minifies its own client bundles | grep an upstream client bundle for `data:image/…;base64` blobs; check the client build config for a minifier | Drop the now-redundant script + its Containerfile step and relax the matching smoke assertion (the "no inline image ≥ 100 KiB" assertion stays as long as it holds) |
 | Caddy launch-token login redirect (plugin `launch-token` writer + Caddy `redir`) | Upstream ships a headless/auto-login session mechanism (static cookie file / `--session-cookie`-style flag / pre-seeded signing secret), or a stable login URL that needs no token file | grep upstream CLI flags and connection startup for non-browser auth entry points | Drop the token writer and Caddy redirect; let users open the printed token URL (or the official mechanism); simplify `dsh-web.sh` state/reload |
 | Hidden settings-document button (`describe` wrapper in the plugin) | Upstream adds a headless fallback for `openSettingsDocument` (`{opened:false, path}` like `openAgentPresetDirectory`), a config knob to hide the action, or moves the document into the right-sidebar preview (`dsh-resource://file/...` infrastructure already exists) | read upstream `settings-controller` return types and `SettingsDocumentAction` client code | Delete the wrapper (`forceNoSettingsDocument`) from the plugin; adjust contract item 6 and the smoke describe assertions |
+| Plugins page card (client half `lib/client.js` + `dsh.client`) | Upstream auto-lists non-bundle/overlay plugins in the built-in section, or provides a metadata/card API for them | inspect `plugins.item`, the plugin inventory, and the overlay entry's package metadata | Delete the client half and its `dsh.client`/`plugins.item` metadata; keep the host half |
 | Caddy Host allowlist + `--trusted-host` plumbing | Upstream adds a proxy-aware/dynamic trust source or wildcard trust that makes the static allowlist unnecessary — not expected (the fence is deliberately authority-based) | `contract.sh` fence/CLI checks | No action (expected to stay) |
 | `DSH_TELEMETRY_MODE=DISABLED` default in entrypoint | Upstream defaults telemetry to `DISABLED` | read `packages/bundle/base/cordis.patch.yml` telemetry row default | Drop the env default from `container/entrypoint.sh` |
 
@@ -161,7 +167,7 @@ table below instead, so the decision record still exists.
 
 | Tag | Scope | Outcome |
 |---|---|---|
-| `dsh-v0.1.7-alpha.1` | 1299-commit diff vs `dsh-v0.1.6-alpha.2`; all five simplification triggers re-checked by hand (`tests/contract.sh`: 9 pass / 0 miss / 1 warn) | **No simplification fires at the time.** The browser-side loopback gate was still patched then; the transport row and the `documentPath` flip described in that review are historical and were removed when the support floor moved to 0.2.1-alpha.3; no headless `openSettingsDocument` fallback landed; `DSH_TELEMETRY_MODE` still gates `session-telemetry-otel`; upstream still rejects `--host 0.0.0.0`. Two gaps found and closed: the index is also served at `/index.html` (the Caddy `@index` rule matches both entries) and the telemetry mapping had no static anchor (the telemetry item above) |
+| `dsh-v0.1.7-alpha.1` | 1299-commit diff vs `dsh-v0.1.6-alpha.2`; all simplification triggers re-checked by hand (`tests/contract.sh`: 9 pass / 0 miss / 1 warn) | **No simplification fires at the time.** The browser-side loopback gate was still patched then; the transport row and the `documentPath` flip described in that review are historical and were removed when the support floor moved to 0.2.1-alpha.3; no headless `openSettingsDocument` fallback landed; `DSH_TELEMETRY_MODE` still gates `session-telemetry-otel`; upstream still rejects `--host 0.0.0.0`. Two gaps found and closed: the index is also served at `/index.html` (the Caddy `@index` rule matches both entries) and the telemetry mapping had no static anchor (the telemetry item above) |
 
 ## Update protocol
 

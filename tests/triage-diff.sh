@@ -65,12 +65,14 @@ FATAL_IDS="server.request_fence"
 # - packages/client/connection/        /api 围栏 + authenticatedUrl
 # - packages/api/settings-controller/  settings describe/hasDocument 契约
 # - packages/client/ui-settings-general/  SettingsDocumentAction 渲染门
+# - packages/client/modules/            dsh.client 扫描与浏览器 bundle 服务
+# - packages/client/ui-plugin-manager/  plugins.item 卡片插槽契约
 # - packages/bundle/web-app/           webserver 配置面(compression 等) + web CLI 契约
 #                                      (--port/--no-open 在 src/startup.ts)与登录 URL
 #                                      宣告(src/index.ts authenticatedUrl)
 # - apps/cli/src/                      launcher 根 flag(--patch/--profile)
 # - packages/bundle/base/              遥测默认值等 bundle 层契约
-SURFACE_PAT='^(packages/client/connection/|packages/api/settings-controller/|packages/client/ui-settings-general/|packages/bundle/web-app/|apps/cli/src/|packages/bundle/base/)'
+SURFACE_PAT='^(packages/client/connection/|packages/api/settings-controller/|packages/client/ui-settings-general/|packages/client/modules/|packages/client/ui-plugin-manager/|packages/bundle/web-app/|apps/cli/src/|packages/bundle/base/)'
 
 ancestor=no
 [ "$STATUS" = "behind" ] && ancestor=yes

@@ -6,7 +6,8 @@
 //      并且拒绝未知名/路径穿越;
 //   4. 日志走 ctx.logger, 且自接的 exporter 只放行本插件自己的行
 //      (本 profile 没有任何 console exporter, 少了它就等于没有日志);
-//   5. settings/describe 被包裹成 hasDocument:false。
+//   5. settings/describe 被包裹成 hasDocument:false;
+//   6. 客户端 half 声明了 dsh.client 与 plugins.item 卡片(内置配置页)。
 // 端到端效果(真实 dsh / 真实浏览器)由 tests/smoke.sh 在镜像里断言。
 // 用法: node tests/plugin-unit.mjs
 import assert from 'node:assert/strict'
@@ -88,6 +89,19 @@ const { ctx, registrations, exporters, logs } = createStubContext()
 const plugin = await import('../container/plugin/index.js')
 assert.equal(plugin.name, 'dsh-container-adapt', 'plugin name changed')
 assert.deepEqual(plugin.inject, ['webServer', 'connection', 'settingsController'])
+
+// 客户端 half: 让插件出现在 Plugins 页的“内置插件配置”, 并保持可发现。
+const packageFile = new URL('../container/plugin/package.json', import.meta.url)
+const pkg = JSON.parse(await readFile(packageFile, 'utf8'))
+assert.equal(pkg.dsh.client.platform, 'web', 'the client half must declare its web platform')
+assert.equal(pkg.exports['./client'], './lib/client.js', 'the ./client export must point at the client bundle')
+assert.ok(
+  pkg.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-plugin-manager'),
+  'the client half must load after the Plugins page',
+)
+const clientSource = await readFile(new URL('../container/plugin/lib/client.js', import.meta.url), 'utf8')
+assert.match(clientSource, /plugins\.item/, 'the client half must register a plugins.item card')
+assert.match(clientSource, /https:\/\/github\.com\/NIyueeE\/dsh-container/, 'the card must link the project')
 
 // Config 走 Standard Schema(Cordis resolveConfig 直接调 '~standard'.validate)。
 assert.equal(plugin.Config['~standard'].version, 1, 'Config must be a Standard Schema v1 validator')

@@ -38,6 +38,7 @@
 #     设置 > 打开配置文件按钮隐藏: 无桌面容器里上游该操作没有 headless
 #     兜底(会 spawn xdg-open 扑空), 插件让 settings/describe 返回
 #     hasDocument:false, 按钮按上游自身逻辑不渲染;
+#     客户端 half(lib/client.js)在插件页注册内置卡片(简介 + 项目地址, 无开关);
 #     构建期后处理三件套(都在 plugin/scripts/, 顺序固定):
 #       1. extract-inline-assets.js 把 >=100 KiB 的内联 data URL 图片抽成真实
 #          文件(8 张引导插画占合并包 49%, 且每个用户只用得到 1 张), 由插件的

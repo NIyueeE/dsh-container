@@ -10,7 +10,7 @@ container/
   dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the launch token, runs the Caddy proxy with login redirect, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
   healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
-  plugin/                # container-adapt plugin at /opt/dsh-container-plugin: launch-token writer for the Caddy login redirect, settings-document button hide, /container-assets route; scripts/ holds the three build-time post-processing steps (extract inline images, esbuild minify, build-record refresh)
+  plugin/                # container-adapt plugin at /opt/dsh-container-plugin: host half (launch-token writer, settings-document button hide, /container-assets route), client half (built-in Plugins page card), and scripts/ (three build-time post-processing steps)
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)
@@ -18,7 +18,7 @@ tests/
   smoke.sh               # end-to-end image smoke test (CI + `just test`)
   contract.sh            # static upstream-contract check against a dsh-v* tag
   triage-diff.sh         # code-level agent admission gate for release-prep (diff triage)
-  plugin-unit.mjs        # container-adapt plugin contract (launch token, Config, route, logger)
+  plugin-unit.mjs        # container-adapt plugin contract (launch token, Config, route, logger, client half)
 prompts/
   release-prep.md        # system prompt for the headless dsh release agent
 docs/

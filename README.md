@@ -50,7 +50,7 @@ cookie; there is no separate login form.
 | dsh | Built from the official source tag into `/opt/deepseek-harness` (`DSH_TAG` pinnable, minimum 0.2.1-alpha.3); no runtime auto-update |
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`); preserves the browser `Host`/`Origin`, redirects the first visit to dsh's login token, and keeps optional basic auth |
 | Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |
-| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): writes dsh's launch token for the proxy login redirect (the browser holds the session cookie), hides the headless-hostile "Open config file" button (`describe` reports no local document), and serves the build-time-extracted images from `/container-assets/*` |
+| Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): writes dsh's launch token for the proxy login redirect (the browser holds the session cookie), hides the headless-hostile "Open config file" button (`describe` reports no local document), serves the build-time-extracted images from `/container-assets/*`, and registers a built-in card on the Plugins page |
 | Observability | OCI labels, `HEALTHCHECK` (curl 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`), passwordless sudo; `/home/dsh` is the persisted user layer |
 
@@ -69,6 +69,9 @@ shipped with the image at `/opt/dsh-container-plugin` and mounted into the web p
   report `hasDocument: false`, so the button never renders (upstream's own UI logic). Settings
   persist on the mounted volume under `~/.dsh` (upstream v0.1.7+ keeps them per profile in
   `~/.dsh/profiles/<profile>/cordis.patch.yml`; the legacy `settings.yaml` is imported once).
+- **Plugins page card** — a small client half registers a built-in `plugins.item` card (no
+  enable/disable switch) with a one-line summary and a detail page describing the plugin and linking
+  the project repository.
 - **Payload post-processing** — three build-time steps run after `pnpm run build:official`:
   images inlined at ≥ 100 KiB are extracted to `/container-assets/<content-hash>` (served
   `immutable` by the plugin, fetched only when the screen that uses them opens), the client
