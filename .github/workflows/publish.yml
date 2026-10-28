@@ -250,10 +250,15 @@ jobs:
         run: |
           set -euo pipefail
           raw="$(docker buildx imagetools inspect --raw "$IMAGE:$NEW_TAG")"
-          platforms="$(jq -r '[.manifests[]?.platform | "\(.os)/\(.architecture)"] | sort | join(",")' <<<"$raw")"
-          echo "platforms: $platforms"
+          # buildx 会把 provenance/SBOM attestation 作为 platform=unknown/unknown 的
+          # 附加 manifest 一起带上; 只数真实平台, 但要求恰好是 amd64+arm64。
+          platforms="$(jq -r '[.manifests[]?.platform
+                               | select(.os != "unknown")
+                               | "\(.os)/\(.architecture)"] | sort | join(",")' <<<"$raw")"
+          attestations="$(jq -r '[.manifests[]?.platform | select(.os == "unknown")] | length' <<<"$raw")"
+          echo "platforms: $platforms (attestations: $attestations)"
           [ "$platforms" = "linux/amd64,linux/arm64" ] \
-            || { echo "merged manifest platforms are '$platforms'" >&2; exit 1; }
+            || { echo "merged manifest platforms are '$platforms', expected linux/amd64,linux/arm64" >&2; exit 1; }
 
       - name: Compose release notes
         env:
