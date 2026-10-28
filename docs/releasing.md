@@ -26,12 +26,12 @@ Pushing to GitHub triggers [`.github/workflows/image.yml`](../.github/workflows/
   to GHCR**. CI validates that the image is usable, nothing more.
 - **`dsh-v*` tag (release)**: the workflow checks out the matching upstream
   `deepseek-ai/deepseek-harness` tag (`DSH_TAG=<tag>`), runs the shared static gate and the static
-  upstream-contract check (`tests/contract.sh --tag <tag>`) as publish gates, builds and
-  smoke-tests the amd64 image, and
-  only after the smoke test passes publishes it by digest. In parallel, the arm64 image is built on
-  GitHub's free native Arm runner (`ubuntu-24.04-arm`) — no QEMU emulation. Once both platform
-  digests exist, a merge job combines them into one multi-arch image and applies
-  `dsh-v*` + `<sha>` + `latest`. A broken image never gets a tag; the release is not created if
+  upstream-contract check (`tests/contract.sh --tag <tag>`) as publish gates, pushes each platform
+  by digest (no tags yet), and smoke-tests **that exact digest** — the tested artifact is the one
+  that gets published, and amd64 is built once instead of twice. In parallel, the arm64 image is
+  built and smoke-tested on GitHub's free native Arm runner (`ubuntu-24.04-arm`) — no QEMU
+  emulation. Once both platform digests exist, a merge job combines them into one multi-arch image
+  and applies `dsh-v*` + `<sha>` + `latest`. A broken image never gets a tag; the release is not created if
   the contract check, build, or smoke fails.
 
   The contract gate matters for **manually pushed** tags: it is the only place that checks upstream
@@ -88,13 +88,10 @@ Dependabot cannot watch another repository's git tags, so a small scheduled work
 Running daily (plus on every `dsh-v*` tag push and on manual dispatch), it compares the newest
 `dsh-v*` tag of `deepseek-ai/deepseek-harness` with the newest `dsh-v*` tag of this repository
 (semver-aware, so a stable tag outranks its pre-releases: `dsh-v0.2.1-alpha.5` < `dsh-v0.2.1`).
-The schedule is `30 11 * * *` — nominally 19:30 Beijing, deliberately ~6 h ahead of the intended
-landing time: Actions' `schedule` is best-effort queueing, and 41 measured runs landed 4.1–8.9 h
-late (mean +5.4 h, worsening), so the earlier `30 12 * * *` actually ran between 00:30 and 05:30
-Beijing. Expect the first runs to land loosely around 00:30–03:30 Beijing (±2 h is normal for this
-queue); adjust the nominal time if the spread drifts. The landing time only decides when *we* see
-the reminder; it does not delay detection, because a new upstream tag is also picked up by the next
-tag push or manual dispatch.
+The schedule is `0 */6 * * *` (every 6 hours), plus the usual `dsh-v*` tag push / manual
+dispatch. Actions' `schedule` is best-effort queueing: measured runs landed 4–9 h late, so a
+single daily run could take ~30 h to notice a new upstream tag; four runs a day cap the worst case
+at ~10–15 h.
 
 - **upstream ahead** → opens one issue ("New upstream dsh release available: …") with the release
   notes link, the upstream diff, and the manual `git tag` / `git push` commands (kept as the
@@ -153,18 +150,23 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    re-anchoring the plugin's upstream API dependency or one of its build-time post-processing
    steps); drift in security-defining
    contract items is reported, never worked around. The agent may write only the adaptation
-   surface (`container/`, `docs/`, `tests/`, `prompts/`, `Containerfile`) plus the three top-level
-   project docs (`AGENTS.md`, `README.md`, `README.zh.md`); `.github/` is never writable.
+   surface (`container/` except the version-floor gate, `docs/`, `Containerfile`) plus the three
+   top-level project docs (`AGENTS.md`, `README.md`, `README.zh.md`); `.github/`, `tests/` and
+   `prompts/` are the pipeline's own gates and are rejected by the workflow. If a repair genuinely
+   needs a change to `tests/contract.sh` or `tests/smoke.sh`, the agent HOLDs and a human applies
+   it before the tag is re-run.
    On **every** run — drift or not — it also
    checks the § Simplification triggers table in
    [upstream-contract.md](upstream-contract.md) against the upstream diff: when an upstream
    change makes one of this image's hacks redundant (launch-token login redirect,
    settings-document button hide via the `describe` wrapper, inline-image extraction, client
    minification, ...), it deletes the hack instead of keeping
-   it, and reports the outcome in an "Adaptation review" section. It pushes a `release-prep/<tag>`
-   branch and posts its report to the tracker issue — that report is the adaptation decision
-   record for the tag, and the changes themselves appear in the release's auto-generated commit
-   list. The agent's inputs are pre-fetched and
+   it, and reports the outcome in an "Adaptation review" section. The agent job itself is read-only
+   and has no repository write token: it emits a patch artifact plus the report. A separate
+   `commit` job checks out the verified base commit in a clean worktree, applies the patch,
+   re-checks the allowlist and secret scan, and pushes the `release-prep/<tag>` branch. The report
+   is posted to the tracker issue — that report is the adaptation decision record for the tag, and
+   the changes themselves appear in the release's auto-generated commit list. The agent's inputs are pre-fetched and
    it is expected to work fully offline (no network is needed); the sandbox is file-effect
    containment, not an egress boundary. The prep job runs in the image of the **previous** release
    tag, so that image must ship a usable sandbox backend for the agent's shell to work at all:

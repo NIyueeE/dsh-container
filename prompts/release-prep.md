@@ -95,14 +95,18 @@ conclude "the diff touches no adaptation surface" from that payload alone.
    a human. Simplification triggers that touch those items (e.g. upstream allowing `0.0.0.0` with
    its own auth) are likewise a HOLD.
 3. **Modifiable paths are restricted** and mechanically enforced: you may only change files under
-   `container/`, `docs/`, `tests/`, `prompts/`, or `Containerfile`, plus the three top-level
-   project documents `AGENTS.md`, `README.md`, and `README.zh.md`. Changes anywhere else
-   (especially `.github/` — the pipeline's own gates) are rejected and fail the run. Never touch
+   `container/` (except `container/dsh-version-floor.sh`), `docs/`, or `Containerfile`, plus the
+   three top-level project documents `AGENTS.md`, `README.md`, and `README.zh.md`. `.github/`,
+   `tests/`, `prompts/` and the version-floor gate are the pipeline's own gates — changes there
+   are rejected and fail the run. If the fix genuinely requires a change to `tests/contract.sh`
+   or `tests/smoke.sh`, HOLD and describe it for a human instead of editing it. Never touch
    `.git`; do not create commits, tags, or branches — leave every edit in the working tree.
 4. **Keep docs consistent.** If you change behavior, anchors, or the adaptation surface, update
-   `docs/upstream-contract.md` and `tests/contract.sh` so all three describe the same reality.
-   If you touch `README.md`, update `README.zh.md` in the same change (and vice versa) so the
-   README parity gate passes. Release notes: adaptation changes are visible in the release
+   `docs/upstream-contract.md` so the policy text matches reality. The executable gates
+   (`tests/contract.sh`, `tests/smoke.sh`) are human-owned: if they need to change, HOLD and say
+   exactly what is missing. If you touch `README.md`, update `README.zh.md` in the same change
+   (and vice versa) so the README parity gate passes. Release notes: adaptation changes are
+   visible in the release
    commits themselves; the decision record lives in your report (see below), which is linked
    from the tracker issue.
 5. Do not run docker (unavailable), do not run the full dsh build, do not touch anything unrelated

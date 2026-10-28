@@ -28,7 +28,9 @@ still gate settings persistence on `$host.isLoopback`; the image no longer injec
 `dsh-v0.2.1-rc.2` and stays valid for later tags unless a check reports drift.
 
 When a contract item changes, update **all three** of: this document, `tests/contract.sh`, and the
-affected enforcement point in `container/*.sh`.
+affected enforcement point in `container/*.sh`. The release-prep agent may edit this document and
+the `container/` code, but **not** the executable gates (`tests/contract.sh`, `tests/smoke.sh`):
+those are human-owned, so a change that needs them becomes a HOLD for review.
 
 ## Critical items (checked by `tests/contract.sh`)
 
@@ -153,9 +155,10 @@ in the release note (the commits themselves) and the tracker issue (the Adaptati
 | Caddy Host allowlist + `--trusted-host` plumbing | Upstream adds a proxy-aware/dynamic trust source or wildcard trust that makes the static allowlist unnecessary — not expected (the fence is deliberately authority-based) | `contract.sh` fence/CLI checks | No action (expected to stay) |
 | `DSH_TELEMETRY_MODE=DISABLED` default in entrypoint | Upstream defaults telemetry to `DISABLED` | read `packages/bundle/base/cordis.patch.yml` telemetry row default | Drop the env default from `container/entrypoint.sh` |
 
-When a trigger fires: implement the simplification within the restricted paths, keep
-`docs/upstream-contract.md` + `tests/contract.sh` + `tests/smoke.sh` consistent, and say so in
-the report's Adaptation review. When none fires, state that explicitly — "no simplification
+When a trigger fires: implement the simplification within the restricted paths, update
+`docs/upstream-contract.md`, and say so in the report's Adaptation review. `tests/contract.sh` and
+`tests/smoke.sh` are human-owned: if the trigger invalidates one of their assertions, HOLD with the
+exact change a human must make. When none fires, state that explicitly — "no simplification
 opportunity in this tag" is a valid and expected outcome.
 
 ## Adaptation review log
@@ -181,6 +184,8 @@ When `contract.sh` reports drift for a new upstream tag:
    repository's adaptation surface.
 3. For items 1–4 and 7, do **not** improvise a workaround; report the drift for human review —
    these define the image's security posture, CLI contract, or telemetry default.
-4. Update this document and `tests/contract.sh` so both describe the new reality.
+4. Update this document so it describes the new reality. `tests/contract.sh` and
+   `tests/smoke.sh` are human-owned gates: when the contract change requires editing them, HOLD
+   and state the exact assertion that must change; the release-prep agent cannot edit them.
 5. `tests/smoke.sh` remains the final gate: if behavior broke in a way the static checks cannot
    see, the release still stops there.
