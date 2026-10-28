@@ -351,6 +351,25 @@ jobs:
           # 上游源码 checkout, 让 agent 完全离线分析(无网络需求)
           git clone --quiet --depth 1 --branch "$NEW_TAG" \
             "https://github.com/$UPSTREAM_REPO.git" /tmp/upstream
+          # compare API 的 files 最多 300 条且按路径排序截断(.agents/ 在前,
+          # apps/ 与 packages/ 被切掉): agent 只读 JSON 会得出"上游只改了笔记"
+          # 的错误结论(2026-10-28 dsh-v0.2.2-alpha.2 的 HOLD 报告就是这么错的)。
+          # 用同一份 checkout 补出完整清单, 让 agent 的审查有权威输入。
+          files_source="git"
+          if [ -n "$OLD_TAG" ] \
+              && git -C /tmp/upstream fetch --quiet --depth 1 origin tag "$OLD_TAG" 2>/dev/null; then
+            git -C /tmp/upstream diff --name-only "$OLD_TAG" "$NEW_TAG" > /tmp/upstream-files.txt
+          else
+            # 拿不到旧 tag: 退回截断 payload, 但把来源标出来, prompt 会要求 agent
+            # 不要据此断言"没有适配面变更"。
+            files_source="compare-truncated"
+            jq -r '.files[]?.filename' /tmp/upstream-diff.json \
+              > /tmp/upstream-files.txt 2>/dev/null || : > /tmp/upstream-files.txt
+            echo "warning: could not compute the full changed-file list; using the truncated compare payload" >&2
+          fi
+          echo "UPSTREAM_FILES=/tmp/upstream-files.txt" >> "$GITHUB_ENV"
+          echo "UPSTREAM_FILES_SOURCE=$files_source" >> "$GITHUB_ENV"
+          echo "changed files: $(wc -l < /tmp/upstream-files.txt) (source=$files_source)"
           # 祖先信号: compare status=behind 表示 NEW_TAG 落后于已有发布
           # (误派发旧版本)。triage 门已把误派发挡在 agent 入场之前, 这里
           # 仍导出与 prompt 一致的大写名, 作为 agent 的早退指引。
@@ -426,6 +445,7 @@ jobs:
       - name: Run dsh agent (drift repair + adaptation review)
         env:
           NEW_TAG: ${{ needs.contract.outputs.new_tag }}
+          OLD_TAG: ${{ needs.contract.outputs.old_tag }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"

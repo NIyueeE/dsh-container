@@ -48,7 +48,8 @@ a human owns that change.
 |---|---|
 | `docs/upstream-contract.md` | The contract **and the § Simplification triggers table**. **Read this first.** |
 | `/tmp/upstream` | Shallow checkout of upstream dsh at `$NEW_TAG` |
-| `/tmp/upstream-diff.json` | GitHub compare payload (previous release tag → `$NEW_TAG`), or a single-commit view if no previous tag existed |
+| `/tmp/upstream-files.txt` | Changed-file list (previous release tag → `$NEW_TAG`); authoritative when `UPSTREAM_FILES_SOURCE=git`, the truncated compare fallback otherwise |
+| `/tmp/upstream-diff.json` | GitHub compare payload for `status` / `ahead_by` / commit messages. Its `files` array is **truncated at 300 entries and sorted by path** — never use it as the changed-file set |
 | `tests/contract.sh` | The executable form of the contract (the check that reported drift) |
 | `container/plugin/` | The single adaptation point: `index.js` (launch-token writer for the Caddy login redirect, settings-document button hide via the `describe` wrapper, the `/container-assets` route, the logger exporter), `lib/client.js` (client half: built-in Plugins page `plugins.item` card), `overlay.yml` (single plugin include), `scripts/` (build-time post-processing: extract inline images, esbuild minify, build-record refresh) |
 | `tests/smoke.sh` | Behavioral gate (read-only for you — docker is not available in your environment) |
@@ -58,6 +59,17 @@ released tag (i.e. a mis-dispatch of an older version) — check it before inves
 `SURFACE_HITS` lists the upstream paths within the adaptation surface that this tag actually
 changed (code-level diff triage already ran; you were admitted only because the contract drifted
 or these paths were hit). Focus your review on those paths and the § Simplification triggers.
+
+`UPSTREAM_FILES` points at the complete changed-file list and `UPSTREAM_FILES_SOURCE` says whether
+it is authoritative (`git`) or the truncated compare fallback (`compare-truncated`). If the source
+is `compare-truncated`, or the file is missing, compute the list yourself:
+
+    git -C /tmp/upstream fetch --depth 1 origin tag "$OLD_TAG" &&
+    git -C /tmp/upstream diff --name-only "$OLD_TAG" "$NEW_TAG"
+
+A 300-entry compare payload that happens to sit entirely under one prefix (for example
+`.agents/notes/`) is evidence of truncation, not evidence that nothing else changed. Never
+conclude "the diff touches no adaptation surface" from that payload alone.
 
 ## Rules
 
