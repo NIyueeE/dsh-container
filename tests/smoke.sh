@@ -383,7 +383,10 @@ origin_evil="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [ "$origin_evil" = "403" ] || die "API with evil Origin returned $origin_evil, expected 403"
 # 容器适配插件(container/plugin/)必须随镜像安装。
-"$DOCKER" exec "$cid" sh -c 'test -f /opt/dsh-container-plugin/index.js && test -f /opt/dsh-container-plugin/overlay.yml && test -f /opt/dsh-container-plugin/scripts/extract-inline-assets.js && test -f /opt/dsh-container-plugin/scripts/minify-client.mjs && test -f /opt/dsh-container-plugin/scripts/refresh-build-record.mjs && test -d /opt/dsh-container-plugin/assets' \
+# assets/ 只在 extract-inline-assets.js 真的抽出大图时才会创建; 上游改为 emit
+# 图片或不再内联 >=100 KiB 图片时目录可以不存在。是否验证 /container-assets
+# 路由由下方合并包里是否实际出现该前缀的引用决定。
+"$DOCKER" exec "$cid" sh -c 'test -f /opt/dsh-container-plugin/index.js && test -f /opt/dsh-container-plugin/overlay.yml && test -f /opt/dsh-container-plugin/scripts/extract-inline-assets.js && test -f /opt/dsh-container-plugin/scripts/minify-client.mjs && test -f /opt/dsh-container-plugin/scripts/refresh-build-record.mjs' \
   || die "container-adapt plugin files missing in the image"
 
 # 客户端产物: 内联大图必须已抽成 /container-assets/<内容哈希> 文件, 产物必须已
