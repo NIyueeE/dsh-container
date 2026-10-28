@@ -152,7 +152,10 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    upstream diff and checkout against the contract, and applies a minimal repair (typically
    re-anchoring the plugin's upstream API dependency or one of its build-time post-processing
    steps); drift in security-defining
-   contract items is reported, never worked around. On **every** run — drift or not — it also
+   contract items is reported, never worked around. The agent may write only the adaptation
+   surface (`container/`, `docs/`, `tests/`, `prompts/`, `Containerfile`) plus the three top-level
+   project docs (`AGENTS.md`, `README.md`, `README.zh.md`); `.github/` is never writable.
+   On **every** run — drift or not — it also
    checks the § Simplification triggers table in
    [upstream-contract.md](upstream-contract.md) against the upstream diff: when an upstream
    change makes one of this image's hacks redundant (launch-token login redirect,

@@ -83,13 +83,16 @@ or these paths were hit). Focus your review on those paths and the § Simplifica
    a human. Simplification triggers that touch those items (e.g. upstream allowing `0.0.0.0` with
    its own auth) are likewise a HOLD.
 3. **Modifiable paths are restricted** and mechanically enforced: you may only change files under
-   `container/`, `docs/`, `tests/`, `prompts/`, or `Containerfile`. Changes anywhere else
+   `container/`, `docs/`, `tests/`, `prompts/`, or `Containerfile`, plus the three top-level
+   project documents `AGENTS.md`, `README.md`, and `README.zh.md`. Changes anywhere else
    (especially `.github/` — the pipeline's own gates) are rejected and fail the run. Never touch
    `.git`; do not create commits, tags, or branches — leave every edit in the working tree.
 4. **Keep docs consistent.** If you change behavior, anchors, or the adaptation surface, update
    `docs/upstream-contract.md` and `tests/contract.sh` so all three describe the same reality.
-   Release notes: adaptation changes are visible in the release commits themselves; the decision
-   record lives in your report (see below), which is linked from the tracker issue.
+   If you touch `README.md`, update `README.zh.md` in the same change (and vice versa) so the
+   README parity gate passes. Release notes: adaptation changes are visible in the release
+   commits themselves; the decision record lives in your report (see below), which is linked
+   from the tracker issue.
 5. Do not run docker (unavailable), do not run the full dsh build, do not touch anything unrelated
    (no CI changes, no version bumps, no reformatting).
 6. **Ancestor tags**: if `IS_ANCESTOR=yes` (or the compare payload shows `$NEW_TAG` behind the

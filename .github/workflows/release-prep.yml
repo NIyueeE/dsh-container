@@ -496,10 +496,12 @@ jobs:
           fi
           # 安全: agent 修改路径白名单 —— .github/ 是本流水线的闸门本体,
           # agent(受提示注入影响的 LLM)永远不得改动; 白名单之外一律 fail
-          # loudly。对 porcelain 全部条目(含 ?? 未跟踪与重命名)做路径校验。
+          # loudly。适配面之外只放行三份顶层项目文档(AGENTS.md /
+          # README.md / README.zh.md)。对 porcelain 全部条目(含 ?? 未跟踪与
+          # 重命名)做路径校验。
           bad="$(git -c status.renames=false status --porcelain -z \
             | tr '\0' '\n' | sed -E 's/^.. //' \
-            | grep -vE '^(container/|docs/|tests/|prompts/|Containerfile)' || true)"
+            | grep -vE '^(container/|docs/|tests/|prompts/|Containerfile$|AGENTS\.md$|README\.md$|README\.zh\.md$)' || true)"
           if [ -n "$bad" ]; then
             echo "agent modified files outside the allowlist:" >&2
             echo "$bad" >&2
@@ -509,8 +511,8 @@ jobs:
           git checkout -b "$branch"
           git add -A
           # 密钥防泄漏(纵深): agent 的 env 里有模型 key/URL, 它可以把值写进
-          # container/docs/tests/prompts 下的文件; issue/artifact 的脱敏不覆盖
-          # 即将推到公开仓库的 commit。提交前扫 staged 内容, 命中即 abort。
+          # 白名单内的任何文件(含顶层 README/AGENTS); issue/artifact 的脱敏不
+          # 覆盖即将推到公开仓库的 commit。提交前扫 staged 内容, 命中即 abort。
           leak=0
           for v in "$TERNARYBIT_API_KEY" "$TERNARYBIT_URL"; do
             [ -n "$v" ] || continue
