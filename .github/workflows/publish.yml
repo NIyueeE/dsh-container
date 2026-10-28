@@ -34,7 +34,6 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       sha: ${{ steps.resolve.outputs.sha }}
       refused: ${{ steps.resolve.outputs.refused }}
-      published: ${{ steps.resolve.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -59,8 +58,11 @@ jobs:
           newest="$(NEW_TAG="$NEW_TAG" EXISTING="$tags" node tests/newest-tag.mjs)"
           if [ "$newest" = "true" ]; then refused=false; else refused=true; fi
 
-          # 幂等: 只有"这个 tag 当前指向的 commit 已经发过 Release"才跳过。
-          # 同名 tag 被重推到新 commit 时必须重新发布 —— 否则重发永远是个 no-op。
+          # 记录 tag 当前指向的 commit(注解 tag 需解引用), 只用于摘要排障。
+          # 不做"发布过就跳过"的短路: Release 挂在 tag 名下, 无法区分"同一 commit
+          # 重跑"与"tag 被移到新 commit 后重发", 而后者必须重新构建
+          # (dsh-v0.2.2-alpha.2 的首次重发就是这样被误判成 no-op 的)。
+          # 重复执行的代价只是一次构建; merge 与 Release edit 本身幂等。
           tag_sha=""
           if tag_ref="$(gh api "repos/$REPO/git/ref/tags/$NEW_TAG" 2>/dev/null)"; then
             tag_sha="$(jq -r '.object.sha' <<<"$tag_ref")"
@@ -68,17 +70,11 @@ jobs:
               tag_sha="$(gh api "repos/$REPO/git/tags/$tag_sha" --jq '.object.sha' 2>/dev/null || true)"
             fi
           fi
-          published=false
-          if [ -n "$tag_sha" ] && [ "$tag_sha" = "$sha" ] && gh release view "$NEW_TAG" >/dev/null 2>&1; then
-            published=true
-          fi
-
           {
             echo "image=$image"
             echo "version=$version"
             echo "sha=$sha"
             echo "refused=$refused"
-            echo "published=$published"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Publish guard"
@@ -89,7 +85,6 @@ jobs:
             echo "| commit | \`$sha\` |"
             echo "| refused (older than newest) | \`$refused\` |"
             echo "| tag points at | \`${tag_sha:-unknown}\` |"
-            echo "| already published (same commit) | \`$published\` |"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$refused" = true ]; then
             echo "refusing to publish $NEW_TAG: not newer than the newest dsh-v* tag" >&2
@@ -99,7 +94,7 @@ jobs:
   light:
     name: Static gates (light)
     needs: guard
-    if: needs.guard.outputs.refused != 'true' && needs.guard.outputs.published != 'true'
+    if: needs.guard.outputs.refused != 'true'
     permissions:
       contents: read
       packages: read # the called workflow's smoke job asks for it (it is skipped here)
@@ -188,9 +183,8 @@ jobs:
   smoke:
     name: Smoke (heavy, both architectures)
     needs: [guard, build-amd64, build-arm64]
-    # 已经发布过(published=true) 或构建被跳过时不要重建: 只有两个 digest 都在才冒烟。
+    # 两个 digest 都在才冒烟(build 被跳过时不要空跑)。
     if: >-
-      needs.guard.outputs.published != 'true' &&
       needs.build-amd64.result == 'success' &&
       needs.build-arm64.result == 'success'
     permissions:
