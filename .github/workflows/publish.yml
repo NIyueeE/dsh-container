@@ -59,9 +59,19 @@ jobs:
           newest="$(NEW_TAG="$NEW_TAG" EXISTING="$tags" node tests/newest-tag.mjs)"
           if [ "$newest" = "true" ]; then refused=false; else refused=true; fi
 
-          # 幂等: 已经发过就什么都不做(重跑同一 tag 不应重新构建/覆盖)。
+          # 幂等: 只有"这个 tag 当前指向的 commit 已经发过 Release"才跳过。
+          # 同名 tag 被重推到新 commit 时必须重新发布 —— 否则重发永远是个 no-op。
+          tag_sha=""
+          if tag_ref="$(gh api "repos/$REPO/git/ref/tags/$NEW_TAG" 2>/dev/null)"; then
+            tag_sha="$(jq -r '.object.sha' <<<"$tag_ref")"
+            if [ "$(jq -r '.object.type' <<<"$tag_ref")" = "tag" ]; then
+              tag_sha="$(gh api "repos/$REPO/git/tags/$tag_sha" --jq '.object.sha' 2>/dev/null || true)"
+            fi
+          fi
           published=false
-          if gh release view "$NEW_TAG" >/dev/null 2>&1; then published=true; fi
+          if [ -n "$tag_sha" ] && [ "$tag_sha" = "$sha" ] && gh release view "$NEW_TAG" >/dev/null 2>&1; then
+            published=true
+          fi
 
           {
             echo "image=$image"
@@ -78,7 +88,8 @@ jobs:
             echo "| tag | \`$NEW_TAG\` |"
             echo "| commit | \`$sha\` |"
             echo "| refused (older than newest) | \`$refused\` |"
-            echo "| already published | \`$published\` |"
+            echo "| tag points at | \`${tag_sha:-unknown}\` |"
+            echo "| already published (same commit) | \`$published\` |"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$refused" = true ]; then
             echo "refusing to publish $NEW_TAG: not newer than the newest dsh-v* tag" >&2
