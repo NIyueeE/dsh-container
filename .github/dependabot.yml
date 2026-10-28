@@ -3,18 +3,25 @@
 # package-ecosystem: github-actions / docker / npm 等), 所以上游 dsh 的
 # dsh-v* tag 由 .github/workflows/upstream-tag.yml 的定时任务监视。
 # 这里只覆盖本仓库能直接 pin 的依赖:
-#   - github-actions: image.yml 里的 action 版本 pin
-#     (actions/checkout、docker/*、softprops/action-gh-release)
-#   - docker: Containerfile 的 debian:13-slim 基础镜像
-#     (uv 已改用官方安装脚本安装, 不再是 COPY --from 的镜像 pin)
+#   - github-actions: 所有 workflow 里 pin 到 commit SHA 的 action(带 vN 注释,
+#     Dependabot 会同时更新 SHA 和注释)
+#   - docker: Containerfile 的基础镜像。注意 BASE_IMAGE 是 ARG 里的 digest pin,
+#     Dependabot 无法穿透 ARG 自动更新, 需要手动 bump digest(见 docs/build.md)
 version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    labels: ["dependencies", "github-actions"]
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    labels: ["dependencies", "docker"]
+    open-pull-requests-limit: 3

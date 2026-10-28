@@ -39,10 +39,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Dispatch path — push probe tag and verify the trigger
         if: github.event_name == 'workflow_dispatch'
@@ -128,11 +129,12 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           # 能走到这里, 本身就证明 PAT 推送的 tag 触发了本 workflow。
           # 自清理: 删除自己的探针 tag(GITHUB_TOKEN 即可; 删除不触发 workflow)。
-          tag="${{ github.ref_name }}"
+          tag="$TAG"
           gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$tag" \
             || { echo "FAIL: could not delete probe tag $tag; remove it manually" >&2; exit 1; }
           echo "PROBE PASS: push-event run for $tag reached the worker; probe tag deleted."

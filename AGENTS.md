@@ -23,7 +23,7 @@ container-environment note for that file lives in
 
 | Path | Purpose |
 |---|---|
-| `Containerfile` | Image build: Debian slim base, Node LTS + pnpm, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors plus a diagnostics set: dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, just, shellcheck), `uv tool`-installed yq (`/opt/uv-tools`), source-built dsh (`/opt/deepseek-harness`), entrypoint |
+| `Containerfile` | Image build: Debian slim base (digest-pinned), Node 24 LTS + pnpm, musl-tools + the static `landlock-run` launcher, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors plus a diagnostics set: dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, just, shellcheck), `uv tool`-installed yq (`/opt/uv-tools`), source-built dsh (`/opt/deepseek-harness`), entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint`; also sets `TMPDIR=~/.dsh/tmp` (persistent dsh/agent scratch; `/tmp` itself stays ephemeral) |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + launch-token wait + Caddy reverse proxy with token login redirect (auto-restart, `caddy reload` on token rotation), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
@@ -32,15 +32,16 @@ container-environment note for that file lives in
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
-| `.github/workflows/image.yml` | CI: build + smoke test always — **except** commits whose diff is only `*.md`/`LICENSE` (classified from the real push/PR diff, fail-closed, never for `dsh-v*` tags), which take a docs-only lane that still runs every validation step plus a relative-link check; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags). All builds run the shared `tests/validate-static.sh` gate; tag builds additionally run `tests/contract.sh` as a publish gate (the only contract check a manually pushed tag gets), and a downgrade guard prevents an older re-pushed tag from moving `latest`/GitHub's Latest Release backwards; the Release body is composed from the upstream release notes quoted in a `<details>` block plus the auto-generated commit list — this image's own upgrade guidance lives in the docs, not on every Release page |
-| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`, but re-dispatches a tag only when no `release-prep` run is queued or in progress (a repeat dispatch would queue a second build + smoke + agent run; retry after a failure stays). Its cron carries a deliberate ~6 h lead (`30 11 * * *`) because Actions' `schedule` lands 4–9 h late. It closes a tracker issue once an `image.yml` run exists for the tag — push-triggered or manually dispatched on the tag ref (a tag with no run keeps the issue open with a hint). It also runs a **release health check** on our newest `dsh-v*` tag: a latest `image.yml` run that is missing, failed, or cancelled opens a "Release pipeline not published" issue, while a queued/in-progress run is left alone; the issue closes automatically once a run succeeds (the safety net for manually pushed tags, which skip release-prep) |
-| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → code-level diff triage (`tests/triage-diff.sh` admits the agent only on drift or adaptation-surface hits; fence drift and mis-dispatched tags fail fast) → dsh headless agent (drift repair + adaptation review, exits early with `NO_ACTION_NEEDED` when there is nothing to do — upstream changes that make a hack redundant are deleted, see `docs/upstream-contract.md` § Simplification triggers; its model/provider config is passed as a load-time `--patch` overlay, **never** as the flat `$DSH_HOME/settings.yaml`, which dsh v0.1.7+ only imports *after* the loader settles — too late for a fresh Actions home, the 2026-09-22 `dsh-v0.1.7-alpha.2` prep failure) → static gates (`tests/validate-static.sh`) + contract recheck + build + smoke on the repaired tree; a failed retry force-updates the workflow-owned repair branch, the commit is scanned for known secrets before push, and the release tag is pinned to the exact commit verify built → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
+| `.github/workflows/image.yml` | CI: build + smoke test always — **except** commits whose diff is only `*.md`/`LICENSE` (classified from the real push/PR diff, fail-closed, never for `dsh-v*` tags), which take a docs-only lane that still runs every validation step plus a relative-link check; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags). All builds run the shared `tests/validate-static.sh` gate; tag builds additionally run `tests/contract.sh` as a publish gate (the only contract check a manually pushed tag gets), and a downgrade guard prevents an older re-pushed tag from moving `latest`/GitHub's Latest Release backwards; tag builds push each platform by digest **before** smoke-testing that exact digest (so the tested artifact is the published one and amd64 is built once), arm64 is smoke-tested too, and every workflow runs actionlint + zizmor; the Release body is composed from the upstream release notes quoted in a `<details>` block plus the auto-generated commit list — this image's own upgrade guidance lives in the docs, not on every Release page |
+| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`, but re-dispatches a tag only when no `release-prep` run is queued or in progress (a repeat dispatch would queue a second build + smoke + agent run; retry after a failure stays). It runs every 6 hours (`0 */6 * * *`) — Actions' `schedule` lands 4–9 h late, so 4 runs/day cap detection latency at ~10–15 h. It closes a tracker issue once an `image.yml` run exists for the tag — push-triggered or manually dispatched on the tag ref (a tag with no run keeps the issue open with a hint). It also runs a **release health check** on our newest `dsh-v*` tag: a latest `image.yml` run that is missing, failed, or cancelled opens a "Release pipeline not published" issue, while a queued/in-progress run is left alone; the issue closes automatically once a run succeeds (the safety net for manually pushed tags, which skip release-prep) |
+| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → code-level diff triage (`tests/triage-diff.sh` admits the agent only on drift or adaptation-surface hits; fence drift and mis-dispatched tags fail fast) → dsh headless agent (drift repair + adaptation review, exits early with `NO_ACTION_NEEDED` when there is nothing to do — upstream changes that make a hack redundant are deleted, see `docs/upstream-contract.md` § Simplification triggers; its model/provider config is passed as a load-time `--patch` overlay, **never** as the flat `$DSH_HOME/settings.yaml`, which dsh v0.1.7+ only imports *after* the loader settles — too late for a fresh Actions home, the 2026-09-22 `dsh-v0.1.7-alpha.2` prep failure) → the agent job is **read-only** (no repository write token) and emits a patch artifact; a separate `commit` job applies it on a clean checkout of the verified base (allowlist: `container/` except the version floor, `docs/`, `Containerfile`, top-level docs; `tests/`, `prompts/`, `.github/` and the floor are rejected as gate files), re-scans for secrets and force-updates the workflow-owned repair branch → static gates (`tests/validate-static.sh`) + workflow lint + contract recheck + build + smoke on the repaired tree, and the release tag is pinned to the exact commit verify built → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
 | `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
 | `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for upstream API anchors, CLI flags, and the request fence before any image is built |
 | `tests/triage-diff.sh` | Code-level agent admission gate: contract verdict + complete upstream changed-file list → decides whether the release-prep agent enters (drift or adaptation-surface hit), or the run proceeds without it |
 | `tests/validate-docs.py` | Stdlib-only doc gate extracted from `image.yml`: `links` (every relative doc link resolves) and `parity` (README/README.zh heading, link and code-fence counts); run by CI and by `just lint` |
 | `tests/validate-static.sh` | Single-source static gate: shell syntax/shellcheck, plugin contract + JS syntax, docs, removed auto-update remnants, and (unless `--no-runtime`) compose/quadlet; used by `image.yml`, `release-prep.yml` verify, and `just lint` (which passes `--no-runtime`) |
-| `tests/newest-tag.mjs` | Semver-aware "is this the newest `dsh-v*` tag" helper used by the `image.yml` downgrade guard (same encoding as the `release-prep.yml` guard) |
+| `tests/semver.mjs`, `tests/newest-tag.mjs`, `tests/compare-tags.mjs` | One shared semver key for `dsh-v*` tags: `newest-tag.mjs` (downgrade guard; `STRICT=1` refuses an existing tag) and `compare-tags.mjs` (upstream watcher) both import `semver.mjs` |
+| `tests/validate-workflows.sh` | actionlint 1.7.7 + zizmor 1.31.1 in digest-pinned containers; run by `image.yml` validate, `release-prep` verify, and `just lint-workflows` |
 | `prompts/release-prep.md` | System prompt for the dsh headless agent that repairs contract drift in the `release-prep.yml` prep job |
 | `docs/upstream-contract.md` | The upstream contract: what this image depends on, where each item is enforced, and the drift-update protocol the agent follows |
 | `.github/dependabot.yml` | Dependabot version updates: weekly `github-actions` + `docker` ecosystems (action pins, base image) |
@@ -263,6 +264,7 @@ just debug      # run in the foreground with port 3081 published
 just restart-dsh # restart dsh web inside the running "dsh" container
 just test       # smoke-test an already built image (tests/smoke.sh)
 just lint       # tests/validate-static.sh --no-runtime (shellcheck, plugin, docs; no container)
+just lint-workflows  # actionlint + zizmor on .github/workflows (pinned containers)
 just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
 ```
 
@@ -271,11 +273,14 @@ just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
 - `just lint` calls `tests/validate-static.sh --no-runtime`, the same gate CI runs without the
   docker/systemd-only compose/quadlet checks, so a lint failure is reproducible before pushing.
   It requires `shellcheck` locally and fails loudly when it is missing rather than skipping.
-- Releasing: push a `dsh-v*` tag matching the upstream dsh repository tag → CI builds from
-  that upstream tag, smoke-tests amd64, then publishes amd64 by digest; arm64 builds in parallel
-  on GitHub's free native Arm runner (`ubuntu-24.04-arm`), and a merge job combines both into a
-  multi-arch image tagged `dsh-v*` + `<sha>` + `latest`, then creates a GitHub Release with the
-  same tag name. No QEMU emulation anywhere. Upstream tags are watched automatically: the
+- `just lint-workflows` runs `tests/validate-workflows.sh` (actionlint 1.7.7 + zizmor 1.31.1, both
+  digest-pinned containers). CI runs it in `image.yml` validate and `release-prep` verify; local
+  run needs docker or podman.
+- Releasing: push a `dsh-v*` tag matching the upstream dsh repository tag → CI pushes each
+  platform by digest and smoke-tests that exact digest (amd64 built once, arm64 on GitHub's free
+  native Arm runner `ubuntu-24.04-arm`; no QEMU), a merge job combines both into a multi-arch
+  image tagged `dsh-v*` + `<sha>` + `latest`, then creates a GitHub Release with the same tag
+  name. No QEMU emulation anywhere. Upstream tags are watched automatically: the
   scheduled `.github/workflows/upstream-tag.yml` opens a tracker issue when upstream publishes a
   new `dsh-v*` tag and closes it once an `image.yml` run exists for that tag (push-triggered or
   manually dispatched on the tag ref); on a new tag it also dispatches
@@ -296,12 +301,16 @@ just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
    plugin contract + JS syntax, docs links/parity, removed auto-update remnants). CI runs the same
    script without `--no-runtime` (adds compose/quadlet); `shellcheck --severity=warning` must
    be zero output; annotate genuine false positives with a targeted `# shellcheck disable=`.
-2. Examples parse: `docker compose -f examples/compose.yaml config --quiet` (or podman-compose)
-3. README/README.zh parity: equal heading count, link count, and code-fence count
+2. `just lint-workflows` — actionlint and zizmor must both be zero output. Do not silence workflow
+   errors; `run:` scripts get shellcheck from actionlint, so use env indirection for untrusted
+   `${{ ... }}` values instead of inline interpolation. Zizmor also flags unpinned actions,
+   excessive permissions, dangerous triggers and unsound expressions.
+3. Examples parse: `docker compose -f examples/compose.yaml config --quiet` (or podman-compose)
+4. README/README.zh parity: equal heading count, link count, and code-fence count
    (`python3 tests/validate-docs.py parity`)
-4. `just --list` parses with both the podman and docker branches in mind; Docker-only hosts must
+5. `just --list` parses with both the podman and docker branches in mind; Docker-only hosts must
    not receive podman-only flags.
-5. If you changed networking/trust behavior, verify end to end in a container: the first visit
+6. If you changed networking/trust behavior, verify end to end in a container: the first visit
    without a cookie must be **302** to `/?token=...` whose token matches `dsh web`'s printed
    token; following it must set an `HttpOnly; SameSite=Strict` cookie and return **200**;
    `POST /api/settings/describe` must return **200 with the cookie and 401 without it**; a
@@ -312,7 +321,7 @@ just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
    cookie, and setting only one auth variable must exit nonzero. Also start one container with
    `HTTP_PROXY`/`NODE_USE_ENV_PROXY=1` to prove the internal `--noproxy` probes still work.
    Always test inside the built image (the dev machine may lack `caddy`).
-6. If you touched the container-adapt plugin (the `/container-assets` route, the `Config`
+7. If you touched the container-adapt plugin (the `/container-assets` route, the `Config`
    field, the client half, or one of the three build-time post-processing scripts), run
    `node tests/plugin-unit.mjs` (pure node, no image) and, in the built image, the smoke
    assertions: the served index carries no `__DSH_TRANSPORT__` row and includes the

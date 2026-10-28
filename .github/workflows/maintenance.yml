@@ -1,0 +1,56 @@
+name: Maintenance
+
+# 周期性清理:
+#   - Actions cache: 仓库配额默认 10 GB, 多个 mode=max 构建会把它顶满并互相驱逐;
+#   - GHCR: 每次发布产生 dsh-v* / <sha> 版本, 旧的既不回滚也不该无限增长。
+# 只保留最近 12 个镜像版本(远多于 release-prep 需要的上一个 tag), 并删除所有
+# untagged 构建残留。手动 dispatch 也可以随时跑。
+on:
+  schedule:
+    - cron: "17 3 * * 1" # 每周一 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  actions: write  # 删除 cache
+  packages: write # 删除 GHCR 版本
+
+jobs:
+  cleanup:
+    name: Prune Actions caches and old image versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Delete Actions caches not accessed in 7 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          echo "deleting caches last accessed before $cutoff"
+          ids="$(gh api --paginate "repos/$REPO/actions/caches?per_page=100" \
+            --jq ".actions_caches[] | select(.last_accessed_at < \"$cutoff\") | .id")"
+          if [ -z "$ids" ]; then
+            echo "no stale caches"
+            exit 0
+          fi
+          while read -r id; do
+            [ -n "$id" ] || continue
+            gh api -X DELETE "repos/$REPO/actions/caches/$id" >/dev/null || true
+          done <<<"$ids"
+          echo "deleted $(wc -l <<<"$ids") cache(s)"
+
+      - name: Delete untagged image versions
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
+        with:
+          package-name: dsh-container
+          package-type: container
+          delete-only-untagged-versions: true
+          min-versions-to-keep: 0
+
+      - name: Keep the newest 12 tagged image versions
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
+        with:
+          package-name: dsh-container
+          package-type: container
+          min-versions-to-keep: 12

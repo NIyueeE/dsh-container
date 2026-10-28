@@ -1,21 +1,11 @@
 #!/usr/bin/env node
-// 判断 NEW_TAG 是否为本仓库现有的最新 dsh-v* tag。NEW_TAG 必须已经是完整
-// tag 名(如 dsh-v0.2.1-rc.2); EXISTING 是换行分隔的完整 tag 列表。
+// `NEW_TAG` 是否为本仓库最新/更新的 dsh-v* tag。
+// 输入: NEW_TAG(完整 tag 名), EXISTING(换行分隔的完整 tag 列表), STRICT=1 时
+// 把"等于"也算作不新(发布守卫用: 已存在的 tag 不允许再发一次)。
+// 输出: "true" | "false"。非法 NEW_TAG 或空输入直接失败(调用方 fail closed)。
 //
-// 与 upstream-tag.yml 的排序键一致: 核心版本各段定宽; 预发布段逐标识符编码
-// (数字段加 "0" 前缀并补零, 字母数字段加 "1" 前缀), 稳定版用 "~"。
-// 这样 0.1.2-alpha.4 < 0.1.2 < 0.1.10, 不依赖 git version sort。
-//
-// 输出: "true" | "false"。非法 tag 或空输入直接失败(调用方 fail closed)。
-const key = (v) => {
-  const m = /^dsh-v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(v)
-  if (!m) return null
-  const core = [m[1], m[2], m[3]].map((s) => s.padStart(8, '0')).join('.')
-  const pre = m[4]
-    ? m[4].split('.').map((id) => (/^\d+$/.test(id) ? '0' + id.padStart(12, '0') : '1' + id)).join('.')
-    : '~'
-  return core + '|' + pre
-}
+// 排序键在 ./semver.mjs 里, 与 upstream-tag.yml 用的 compare-tags.mjs 共用一份。
+import { key } from './semver.mjs'
 
 const current = key(process.env.NEW_TAG ?? '')
 if (current === null) {
@@ -23,6 +13,7 @@ if (current === null) {
   process.exit(1)
 }
 
+const strict = process.env.STRICT === '1'
 const existing = (process.env.EXISTING ?? '')
   .split('\n')
   .map((tag) => tag.trim())
@@ -30,4 +21,4 @@ const existing = (process.env.EXISTING ?? '')
   .map(key)
   .filter((k) => k !== null)
 
-process.stdout.write(existing.some((k) => k > current) ? 'false' : 'true')
+process.stdout.write(existing.some((k) => (strict ? k >= current : k > current)) ? 'false' : 'true')

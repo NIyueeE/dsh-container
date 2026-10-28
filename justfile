@@ -32,3 +32,7 @@ contract tag:
 # 跳过需要 docker/systemd 的 compose/quadlet)。shellcheck 缺失时明确失败。
 lint:
     tests/validate-static.sh --no-runtime
+
+# workflow 静态检查(actionlint, 固定 digest 容器; 需要 docker 或 podman)
+lint-workflows:
+    DOCKER={{container}} tests/validate-workflows.sh

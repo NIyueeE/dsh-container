@@ -20,13 +20,10 @@ name: Upstream dsh tag watch
 
 on:
   schedule:
-    # 名义 UTC 11:30 = 北京 19:30, 但 Actions 的 schedule 是"尽力而为"的排队,
-    # 实测落点远晚于名义时间: 本项目 41 次定时运行偏差 +4.1 ~ +8.9 小时
-    # (9 月均值 +4.5, 10 月 +6.4, 在变差), 上一版名义 12:30 UTC 实际落在
-    # UTC 16:30-21:30 = 北京 00:30-05:30。要落在北京 01:30 附近, 名义时间就得
-    # 提前约 6 小时 —— 这不是笔误。注: 排队延迟来自 Actions 侧的负载, 与"北京
-    # 是否低峰"无关, 因此提前量只决定我们什么时候看到提醒, 不改变发现的及时性。
-    - cron: "30 11 * * *"
+    # 每 6 小时一次。Actions 的 schedule 是"尽力而为"的排队, 实测落点比名义
+    # 时间晚 4-9 小时; 单次/天时最坏要 ~30h 才发现上游新 tag, 4 次/天可把最坏
+    # 延迟压到 ~10-15h。Image 完成时另有 workflow_run 立即做健康检查。
+    - cron: "0 */6 * * *"
   workflow_dispatch:
   push:
     tags: ['dsh-v*']
@@ -47,6 +44,7 @@ jobs:
   watch:
     name: Compare newest dsh-v* tags
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
       # 本 workflow 不 checkout, gh 的 issue/label 命令需要显式指定仓库
@@ -55,7 +53,12 @@ jobs:
       UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
       ISSUE_TITLE_PREFIX: 'New upstream dsh release available:'
       RELEASE_ISSUE_PREFIX: 'Release pipeline not published:'
+      EVENT_NAME: ${{ github.event_name }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Compare newest dsh-v* tags and open/close a tracker issue
         run: |
           set -euo pipefail
@@ -68,33 +71,7 @@ jobs:
           upstream_tags="$(list_tags "$UPSTREAM_REPO")"
           self_tags="$(list_tags "$SELF_REPO")"
 
-          comparison="$(
-            UPSTREAM_TAGS="$upstream_tags" SELF_TAGS="$self_tags" node <<'NODE'
-          // semver 排序键: 核心版本 X.Y.Z 各段定宽; 预发布段逐标识符编码
-          // (数字段定宽加 "0" 前缀, 字母数字段加 "1" 前缀), 稳定版无预发布段
-          // 用 "~"(ASCII 最大)。于是 0.1.2-alpha.4 < 0.1.2 < 0.1.10, 与
-          // semver 一致; GNU sort -V 做不到(它把 -alpha.4 排在 0.1.2 之后)。
-          const key = (tag) => {
-            const m = /^dsh-v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(tag);
-            if (!m) return null;
-            const core = [m[1], m[2], m[3]].map((s) => s.padStart(8, "0")).join(".");
-            const pre = m[4]
-              ? m[4].split(".").map((id) => (/^\d+$/.test(id) ? `0${id.padStart(12, "0")}` : `1${id}`)).join(".")
-              : "~";
-            return `${core}|${pre}`;
-          };
-          const newest = (names) => {
-            const tags = (names ?? "").split("\n").map((t) => t.trim()).filter(Boolean)
-              .map((t) => [key(t), t]).filter(([k]) => k !== null)
-              .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-            return tags.length ? tags[tags.length - 1][1] : "";
-          };
-          const up = newest(process.env.UPSTREAM_TAGS);
-          const self = newest(process.env.SELF_TAGS);
-          const upNewer = up !== "" && up !== self && key(up) > (key(self) ?? "");
-          console.log(JSON.stringify({ upstream: up, self, upNewer }));
-          NODE
-          )"
+          comparison="$(UPSTREAM_TAGS="$upstream_tags" SELF_TAGS="$self_tags" node tests/compare-tags.mjs)"
 
           upstream_tag="$(jq -r '.upstream' <<<"$comparison")"
           self_tag="$(jq -r '.self' <<<"$comparison")"
@@ -119,7 +96,7 @@ jobs:
 
           # 收集本仓库未关闭 issue(编号<TAB>标题); gh 失败则整体失败,
           # 避免因误判"提醒不存在"而重复开 issue
-          issue_list="$(gh issue list --state open --json number,title --jq '.[] | "\(.number)\t\(.title)"')"
+          issue_list="$(gh issue list --state open --limit 100 --json number,title --jq '.[] | "\(.number)\t\(.title)"')"
           mapfile -t issues <<<"$issue_list"
 
           title="$ISSUE_TITLE_PREFIX $upstream_tag"
@@ -143,7 +120,7 @@ jobs:
                   # 被 Actions 创建(实测延迟 2-6 分钟): 立即查询会误报
                   # "RELEASE_PAT 缺权限" 的假诊断到公开 issue。push 事件
                   # 触发的运行跳过验证, 交给每日 cron(那时 run 必已存在)。
-                  if [ "${{ github.event_name }}" = "push" ]; then
+                  if [ "$EVENT_NAME" = "push" ]; then
                     echo "push-triggered run: deferring image.yml run verification to the daily schedule"
                     kept=$((kept + 1))
                     continue
@@ -184,7 +161,7 @@ jobs:
             # 其余 completed 结论(失败/取消/跳过)才开提醒。手工补跑的
             # workflow_dispatch run 同样计入(不再限定 event=push)。
             # tag push 触发的运行有 2-6 分钟创建延迟, 因此只由定时/手动运行判定。
-            if [ "${{ github.event_name }}" != "push" ] && [ -n "$self_tag" ]; then
+            if [ "$EVENT_NAME" != "push" ] && [ -n "$self_tag" ]; then
               # 注意不能用 `|| echo '{}'` 兜底: API 抖动会被读成"从未跑过"并开出
               # 一个公开 issue。查询失败就让 job 失败(list_tags 同款策略)。
               runs="$(gh api "repos/$SELF_REPO/actions/runs?per_page=100" 2>/dev/null)"
