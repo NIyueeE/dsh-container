@@ -26,7 +26,7 @@ manual path; the watcher below pushes it for you when a new upstream tag appears
 git push origin dsh-v0.2.1-rc.2
         │
         ▼
-guard    refuse tags older than the newest dsh-v* ; skip when the Release already exists
+guard    refuse tags older than the newest dsh-v* ; a rerun always rebuilds
   │
 light    tests/validate-static.sh + tests/validate-workflows.sh   (reuses ci.yml)
   │
@@ -35,7 +35,7 @@ build    amd64 + arm64 in parallel, each pushed BY DIGEST (no tag yet)
 smoke    smoke.yml: both architectures, tests/smoke.sh, pure gate → ok
   │
 publish  imagetools create → :<tag> + :<sha> (+ :latest when newest)
-         assert the merged manifest lists both platforms
+         assert the merged manifest lists both real platforms (attestations ignored)
          gh release create/edit  →  close the tracker issue
 ```
 
