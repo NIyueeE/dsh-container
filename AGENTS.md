@@ -27,23 +27,21 @@ container-environment note for that file lives in
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint`; also sets `TMPDIR=~/.dsh/tmp` (persistent dsh/agent scratch; `/tmp` itself stays ephemeral) |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + launch-token wait + Caddy reverse proxy with token login redirect (auto-restart, `caddy reload` on token rotation), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
-| `container/dsh-version-floor.sh` | Shared build/contract floor (`0.2.1-alpha.3`); rejects older tags and is used by `Containerfile` and `tests/contract.sh` |
+| `container/dsh-version-floor.sh` | Shared build floor (`0.2.1-alpha.3`); rejects older tags, used by the `Containerfile` build |
 | `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) writes dsh's launch token for Caddy's login redirect (the browser holds the session cookie), hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`; upstream's own UI never renders it), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; its client half (`lib/client.js` + `dsh.client`) registers a built-in `plugins.item` card (no enable/disable switch) with a summary and project link; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
-| `.github/workflows/image.yml` | CI: build + smoke test always — **except** commits whose diff is only `*.md`/`LICENSE` (classified from the real push/PR diff, fail-closed, never for `dsh-v*` tags), which take a docs-only lane that still runs every validation step plus a relative-link check; push to GHCR + GitHub Release only on `dsh-v*` tags (matching upstream dsh tags). All builds run the shared `tests/validate-static.sh` gate; tag builds additionally run `tests/contract.sh` as a publish gate (the only contract check a manually pushed tag gets), and a downgrade guard prevents an older re-pushed tag from moving `latest`/GitHub's Latest Release backwards; tag builds push each platform by digest **before** smoke-testing that exact digest (so the tested artifact is the published one and amd64 is built once), arm64 is smoke-tested too, and every workflow runs actionlint + zizmor; the Release body is composed from the upstream release notes quoted in a `<details>` block plus the auto-generated commit list — this image's own upgrade guidance lives in the docs, not on every Release page |
-| `.github/workflows/upstream-tag.yml` | Scheduled watcher: compares the newest upstream `dsh-v*` tag with this repo's and opens a tracker issue (Dependabot cannot watch another repo's git tags); on a new tag it also `repository_dispatch`-es `release-prep.yml`, but re-dispatches a tag only when no `release-prep` run is queued or in progress (a repeat dispatch would queue a second build + smoke + agent run; retry after a failure stays). It runs every 6 hours (`0 */6 * * *`) — Actions' `schedule` lands 4–9 h late, so 4 runs/day cap detection latency at ~10–15 h. It closes a tracker issue once an `image.yml` run exists for the tag — push-triggered or manually dispatched on the tag ref (a tag with no run keeps the issue open with a hint). It also runs a **release health check** on our newest `dsh-v*` tag: a latest `image.yml` run that is missing, failed, or cancelled opens a "Release pipeline not published" issue, while a queued/in-progress run is left alone; the issue closes automatically once a run succeeds (the safety net for manually pushed tags, which skip release-prep) |
-| `.github/workflows/release-prep.yml` | Automated release preparation: contract check → code-level diff triage (`tests/triage-diff.sh` admits the agent only on drift or adaptation-surface hits; fence drift and mis-dispatched tags fail fast) → dsh headless agent (drift repair + adaptation review, exits early with `NO_ACTION_NEEDED` when there is nothing to do — upstream changes that make a hack redundant are deleted, see `docs/upstream-contract.md` § Simplification triggers; its model/provider config is passed as a load-time `--patch` overlay, **never** as the flat `$DSH_HOME/settings.yaml`, which dsh v0.1.7+ only imports *after* the loader settles — too late for a fresh Actions home, the 2026-09-22 `dsh-v0.1.7-alpha.2` prep failure) → the agent job is **read-only** (no repository write token) and emits a patch artifact; a separate `commit` job applies it on a clean checkout of the verified base (allowlist: `container/` except the version floor, `docs/`, `Containerfile`, top-level docs; `tests/`, `prompts/`, `.github/` and the floor are rejected as gate files), re-scans for secrets and force-updates the workflow-owned repair branch → static gates (`tests/validate-static.sh`) + workflow lint + contract recheck + build + smoke on the repaired tree, and the release tag is pinned to the exact commit verify built → push the `dsh-v*` tag via a fine-grained PAT secret (must carry the Workflows: read and write permission; post-push confirmation that the tag push actually triggered `image.yml`, failing the run otherwise; manual-instruction fallback on the tracker issue when no PAT is configured) |
-| `tests/smoke.sh` | End-to-end image smoke test, shared by `image.yml`, `release-prep.yml`, and `just test` (DOCKER=podman aware) |
-| `tests/contract.sh` | Static upstream-contract check — the machine form of `docs/upstream-contract.md`: greps an upstream tag for upstream API anchors, CLI flags, and the request fence before any image is built |
-| `tests/triage-diff.sh` | Code-level agent admission gate: contract verdict + complete upstream changed-file list → decides whether the release-prep agent enters (drift or adaptation-surface hit), or the run proceeds without it |
-| `tests/validate-docs.py` | Stdlib-only doc gate extracted from `image.yml`: `links` (every relative doc link resolves) and `parity` (README/README.zh heading, link and code-fence counts); run by CI and by `just lint` |
-| `tests/validate-static.sh` | Single-source static gate: shell syntax/shellcheck, plugin contract + JS syntax, docs, removed auto-update remnants, and (unless `--no-runtime`) compose/quadlet; used by `image.yml`, `release-prep.yml` verify, and `just lint` (which passes `--no-runtime`) |
-| `tests/semver.mjs`, `tests/newest-tag.mjs`, `tests/compare-tags.mjs` | One shared semver key for `dsh-v*` tags: `newest-tag.mjs` (downgrade guard; `STRICT=1` refuses an existing tag) and `compare-tags.mjs` (upstream watcher) both import `semver.mjs` |
-| `tests/validate-workflows.sh` | actionlint 1.7.7 + zizmor 1.31.1 in digest-pinned containers; run by `image.yml` validate, `release-prep` verify, and `just lint-workflows` |
-| `prompts/release-prep.md` | System prompt for the dsh headless agent that repairs contract drift in the `release-prep.yml` prep job |
-| `docs/upstream-contract.md` | The upstream contract: what this image depends on, where each item is enforced, and the drift-update protocol the agent follows |
+| `.github/workflows/ci.yml` | Light gate (always) and heavy-gate admission: `light` runs `tests/validate-static.sh` + `tests/validate-workflows.sh` on every `main` push, every PR, and as part of every publish; `smoke` calls `smoke.yml` on `main` pushes **only when the diff touches the runtime surface** (`Containerfile`, `container/`, `tests/smoke.sh`, `.github/workflows/smoke.yml`); a diff that cannot be computed forces the heavy gate (fail-closed). PRs run the light gate only. Also resolves the newest upstream `dsh-v*` for the heavy build args |
+| `.github/workflows/smoke.yml` | **The only heavy gate**, `workflow_call` only (plus a debug `workflow_dispatch`): matrix over `linux/amd64` (`ubuntu-24.04`) and `linux/arm64` (`ubuntu-24.04-arm`), each either building the image locally (`--load`) or pulling a published `@sha256:` digest, then running `tests/smoke.sh --expect-dsh-tag … --expect-platform …`; uploads `smoke-diagnostic-<arch>` (JSON + Markdown + log, 14 days) and appends the Markdown to the job summary; the `verdict` job emits `ok` and nothing else — it never tags, pushes, comments, or writes the repository |
+| `.github/workflows/publish.yml` | Tag-triggered publish (`push: tags: ['dsh-v*']`, the **only** release trigger): `guard` (downgrade refusal + skip when the Release already exists) → `light` (reuses `ci.yml`) → `build-amd64` / `build-arm64` pushed **by digest, untagged** → `smoke` (reuses `smoke.yml`, so the tested digests are exactly the ones that get merged) → `publish` (`imagetools create` for `:<tag>` + `:<sha>` + `:latest` when newest, manifest assertion that both platforms are present, Release create/edit, tracker-issue close) → `finalize` on failure (`failure() || cancelled()`), which deletes the git tag **only** when no image tag was created and the remote tag still points at the same commit, then PATCHes one status comment on the tracker issue with the failing check and the `gh run download` commands |
+| `.github/workflows/upstream-tag.yml` | 6-hourly watcher (`0 */6 * * *`; Actions' `schedule` lands 4–9 h late, so 4 runs/day cap detection latency at ~10–15 h) plus `dsh-v*` tag pushes and manual dispatch: compares the newest upstream `dsh-v*` with this repo's (semver-aware), opens one tracker issue per new tag, and — when `RELEASE_PAT` is configured — creates that tag at the tip of `main` and pushes it, which is what starts `publish.yml` (GITHUB_TOKEN and App-token pushes do not trigger workflows). Backs off for 24 h after a failed publish of the same tag; without the PAT it only comments the manual `git tag` / `git push` commands. Closes tracker issues once the tag has a GitHub Release, and runs a release health check on the newest tag (no Release ⇒ "Release pipeline not published" issue with the latest run link) |
+| `tests/smoke.sh` | The heavy gate's test suite: launch-token login redirect, session cookie, `Host`/`Origin`/`Sec-Fetch-Site` fence, workspace bootstrap, cache headers, plugin boot row and `/container-assets` post-processing, telemetry default, three-zone toolchain layout and volume shadowing, in-container rootless podman contract, sandbox launcher probe, supervisor restart/rotation, basic auth, trusted host, outbound-proxy regression, and image identity (provenance ↔ OCI labels ↔ platform ↔ tool versions). Fails closed: `--expect-dsh-tag` / `--expect-platform` are required, every wait has a timeout, `|| true` needs an `# ok:` reason (enforced by `validate-static.sh`), and every failure writes `smoke-diagnostic.{json,md}` with the check id, timings, container log tails and a reproduce command |
+| `tests/validate-docs.py` | Stdlib-only doc gate: `links` (every relative doc link resolves) and `parity` (README/README.zh heading, link and code-fence counts); run by the light gate and `just lint` |
+| `tests/validate-static.sh` | Single-source light gate: shell syntax/shellcheck, plugin contract + JS syntax, docs links/parity, removed auto-update remnants, the `smoke.sh` `\|\| true` audit, and (unless `--no-runtime`) compose/quadlet; used by `ci.yml`, the `publish.yml` light call, and `just lint` (which passes `--no-runtime`) |
+| `tests/semver.mjs`, `tests/newest-tag.mjs`, `tests/compare-tags.mjs` | One shared semver key for `dsh-v*` tags: `newest-tag.mjs` (publish downgrade guard; `STRICT=1` refuses an existing tag) and `compare-tags.mjs` (watcher + CI) both import `semver.mjs` |
+| `tests/validate-workflows.sh` | actionlint 1.7.7 + zizmor 1.31.1 in digest-pinned containers; run by the light gate and `just lint-workflows` |
+| `docs/upstream-contract.md` | The upstream contract: what this image depends on, how each item is enforced behaviorally by `tests/smoke.sh`, the anticipated-tightening matrix, and the human update protocol |
 | `.github/dependabot.yml` | Dependabot version updates: weekly `github-actions` + `docker` ecosystems (action pins, base image) |
 | `justfile` | Local build / debug / restart commands (podman or docker) |
 
@@ -184,7 +182,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 - **Never push.** The agent works in the local working tree only. Pushing branches, tags, or
   main to the remote is **not allowed** without an explicit user instruction for that push.
 - **Never tag or release on your own.** Creating/moving git tags and triggering release
-  pipeline runs (image.yml publish builds, GitHub Releases) are user-only actions. A finished
+  pipeline runs (publish builds, GitHub Releases) are user-only actions. A finished
   change is reported as local commit(s); the user decides when and how to push and release.
 - Before implementing a user-facing change, **present the approach first** (what will change,
   why, and its cost) and wait for approval — do not research-and-build-and-ship in one pass.
@@ -248,7 +246,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 - **Keep examples and docs in sync with code.** Changing ports, env vars, defaults, or entrypoint
   behavior requires updating all of: `container/entrypoint.sh` header, `Containerfile` comments,
   `examples/compose.yaml`, `examples/dsh.container`, `README.md` + `README.zh.md`,
-  `docs/deployment.md`, `docs/security.md`, and the CI smoke test in `.github/workflows/image.yml`
+  `docs/deployment.md`, `docs/security.md`, and the smoke test in `tests/smoke.sh` (run by `smoke.yml`)
   (it publishes `3081:3081` and curls `127.0.0.1:3081`).
 - **README.md is the single source of truth**; `README.zh.md` must mirror its structure exactly
   (same headings, links, and code fences; translate prose only — never code, commands, URLs,
@@ -262,10 +260,9 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 just build      # build ghcr.io/niyueee/dsh-container:local (podman or docker)
 just debug      # run in the foreground with port 3081 published
 just restart-dsh # restart dsh web inside the running "dsh" container
-just test       # smoke-test an already built image (tests/smoke.sh)
+just test IMAGE TAG [PLATFORM]  # smoke-test an already built image (needs its build tag + platform)
 just lint       # tests/validate-static.sh --no-runtime (shellcheck, plugin, docs; no container)
 just lint-workflows  # actionlint + zizmor on .github/workflows (pinned containers)
-just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
 ```
 
 - The justfile passes `--format docker` only for podman (Docker has no such flag). podman needs it
@@ -274,26 +271,22 @@ just contract dsh-v0.2.1-rc.2  # static upstream-contract check for one tag
   docker/systemd-only compose/quadlet checks, so a lint failure is reproducible before pushing.
   It requires `shellcheck` locally and fails loudly when it is missing rather than skipping.
 - `just lint-workflows` runs `tests/validate-workflows.sh` (actionlint 1.7.7 + zizmor 1.31.1, both
-  digest-pinned containers). CI runs it in `image.yml` validate and `release-prep` verify; local
-  run needs docker or podman.
-- Releasing: push a `dsh-v*` tag matching the upstream dsh repository tag → CI pushes each
-  platform by digest and smoke-tests that exact digest (amd64 built once, arm64 on GitHub's free
-  native Arm runner `ubuntu-24.04-arm`; no QEMU), a merge job combines both into a multi-arch
-  image tagged `dsh-v*` + `<sha>` + `latest`, then creates a GitHub Release with the same tag
-  name. No QEMU emulation anywhere. Upstream tags are watched automatically: the
-  scheduled `.github/workflows/upstream-tag.yml` opens a tracker issue when upstream publishes a
-  new `dsh-v*` tag and closes it once an `image.yml` run exists for that tag (push-triggered or
-  manually dispatched on the tag ref); on a new tag it also dispatches
-  `.github/workflows/release-prep.yml`, which runs the contract check, repairs drift with a
-  dsh headless agent and reviews the upstream diff for hack-simplification opportunities
-  (`docs/upstream-contract.md` § Simplification triggers; see `prompts/release-prep.md`),
-  re-validates with the shared static gate + contract recheck + build + smoke, pins the tag to the
-  verified commit, pushes
-  the release tag, and confirms the push actually triggered `image.yml` (a fine-grained
-  `RELEASE_PAT` needs the Workflows: read and write permission for that) — the manual `git tag`
-  flow above remains the fallback. `.github/workflows/pat-trigger-probe.yml` can pre-verify the
-  PAT's push-trigger capability on demand. `.github/dependabot.yml`
-  keeps action pins and the base image updated.
+  digest-pinned containers). The same script runs in `ci.yml`'s light gate (and therefore in every
+  publish); local run needs docker or podman.
+- Releasing is tag-driven: pushing a `dsh-v*` tag (matching the upstream dsh repository tag) is the
+  only release trigger. `.github/workflows/publish.yml` then runs the light gate, builds both
+  platforms by digest (amd64 on `ubuntu-24.04`, arm64 on GitHub's free native `ubuntu-24.04-arm`
+  runner — no QEMU), smoke-tests **those exact digests** via `smoke.yml`, merges them into one
+  multi-arch image tagged `dsh-v*` + `<sha>` + `latest`, and creates the GitHub Release. A failing
+  smoke run means no image tag, no Release, and (when nothing was merged) the git tag is deleted
+  again, so the repository never carries a tag for a failed publish.
+- Upstream tags are watched automatically: `.github/workflows/upstream-tag.yml` runs every 6 hours,
+  opens a tracker issue when upstream publishes a new `dsh-v*` tag, and — when `RELEASE_PAT` is
+  configured — creates the tag here and pushes it, which starts the publish pipeline. Without the
+  secret it comments the manual `git tag` / `git push` commands instead. Failures are reported on
+  that tracker issue with a link to the run and the `gh run download` command for the smoke
+  diagnostics; `.github/workflows/pat-trigger-probe.yml` can pre-verify the PAT's push-trigger
+  capability. `.github/dependabot.yml` keeps action pins and the base image updated.
 
 ## Validation checklist before committing
 

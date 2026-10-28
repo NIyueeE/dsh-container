@@ -9,35 +9,38 @@ container/
   entrypoint.sh          # entrypoint: HOME restoration, rustup-home ownership self-heal, XDG_RUNTIME_DIR provisioning, --port parsing, then exec dsh-web
   dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the launch token, runs the Caddy proxy with login redirect, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
-  dsh-version-floor.sh   # shared minimum-version check for Containerfile and tests/contract.sh
+  dsh-version-floor.sh   # shared minimum-version check used by the Containerfile build
   healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
   plugin/                # container-adapt plugin at /opt/dsh-container-plugin: host half (launch-token writer, settings-document button hide, /container-assets route), client half (built-in Plugins page card), and scripts/ (three build-time post-processing steps)
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
   dsh.container          # systemd Quadlet example (pulls the image)
 tests/
-  smoke.sh               # end-to-end image smoke test (CI + `just test`)
-  contract.sh            # static upstream-contract check against a dsh-v* tag
-  triage-diff.sh         # code-level agent admission gate for release-prep (diff triage)
+  smoke.sh               # the heavy gate: end-to-end image test, writes smoke-diagnostic.{json,md} (also `just test`)
   plugin-unit.mjs        # container-adapt plugin contract (launch token, Config, route, logger, client card execution)
-  validate-static.sh     # single-source static gate (shellcheck, plugin, docs, compose/quadlet) used by CI + verify + just lint
-  newest-tag.mjs         # semver-aware "is this the newest dsh-v* tag" helper for the image.yml downgrade guard
-prompts/
-  release-prep.md        # system prompt for the headless dsh release agent
+  validate-static.sh     # single-source light gate (shellcheck, plugin, docs, compose/quadlet) used by CI + publish + just lint
+  validate-workflows.sh  # actionlint + zizmor in digest-pinned containers
+  validate-docs.py       # doc link resolution + README/README.zh parity
+  semver.mjs             # shared semver key for dsh-v* tags
+  newest-tag.mjs         # semver-aware "is this the newest dsh-v* tag" helper (publish downgrade guard)
+  compare-tags.mjs       # upstream-vs-this-repo newest-tag comparison for the watcher and CI
 docs/
   deployment.md          # deployment & maintenance guide
   security.md            # security notes
   build.md               # build configuration & version pinning
   releasing.md           # image tags, publishing & release automation
-  upstream-contract.md   # the upstream contract (machine-checked by tests/contract.sh)
+  upstream-contract.md   # the upstream contract and its behavioral enforcement points
   development.md         # this file
-justfile                 # build / debug / restart / test / contract recipes
+justfile                 # build / debug / restart / test / lint recipes
 .github/
   dependabot.yml         # Dependabot: weekly github-actions + docker (base image) updates
 .github/workflows/
-  image.yml              # build + validate image; contract gate + publish + composed GitHub Release on dsh-v* tags
-  upstream-tag.yml       # daily watcher: tracks upstream dsh tags, dispatches release-prep, flags an unpublished tag
-  release-prep.yml       # automated release preparation: contract -> agent -> verify -> tag
+  ci.yml                 # light gate (static) on push/PR; heavy gate on main when the diff hits the runtime surface
+  smoke.yml              # the only heavy gate: builds/pulls both architectures and runs tests/smoke.sh
+  publish.yml            # tag-triggered publish: guard -> light -> both arches by digest -> smoke -> Release
+  upstream-tag.yml       # 6-hourly watcher: opens the tracker issue and pushes the tag (RELEASE_PAT)
+  maintenance.yml        # weekly cache + old image version cleanup
+  pat-trigger-probe.yml  # on-demand verification that RELEASE_PAT's push triggers workflows
 ```
 
 ## Validation checklist
@@ -86,14 +89,15 @@ helpers collide across files — see `container/plugin/scripts/minify-client.mjs
 
 ## CI lanes
 
-`image.yml` classifies every push and pull request from its **real diff**:
+Two gates, defined once each and reused everywhere:
 
-- **docs-only** (`*.md` or `LICENSE` touched, nothing else): the image build + smoke test are
-  skipped and only the validation job runs (plus a relative-link check over the docs). Tag builds
-  never take this lane, and anything undecidable (new branch, force push, shallow clone, manual
-  dispatch) falls back to the full build — the classifier fails closed.
-- **everything else** (code, examples, workflows, Containerfile, …): full build + smoke, exactly
-  as before.
+- **light** (`ci.yml` / `light`) — `tests/validate-static.sh` + `tests/validate-workflows.sh`.
+  Runs on every push to `main`, every pull request, and as part of every publish. It never builds
+  an image.
+- **heavy** (`smoke.yml`) — builds or pulls both architectures and runs `tests/smoke.sh` on each.
+  Runs on `main` pushes only when the diff touches the runtime surface (`Containerfile`,
+  `container/**`, `tests/smoke.sh`, `.github/workflows/smoke.yml`), and on every publish. A diff
+  that cannot be computed forces the heavy gate; PRs never run it.
 
 All workflows pin `ubuntu-24.04` (arm64: `ubuntu-24.04-arm`) instead of `ubuntu-latest`, so a
 release gate cannot change operating system under an in-flight release while GitHub migrates the

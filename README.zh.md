@@ -5,7 +5,7 @@
 **[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(`dsh`)的开箱即用容器——agent、完整工具链与反向代理集成于一个镜像,基于官方源码 tag 构建。**
 
 [![Release](https://img.shields.io/github/v/tag/NIyueeE/dsh-container?filter=dsh-v*&label=release&sort=semver)](https://github.com/NIyueeE/dsh-container/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/NIyueeE/dsh-container/image.yml?branch=main&label=CI)](https://github.com/NIyueeE/dsh-container/actions/workflows/image.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/NIyueeE/dsh-container/publish.yml?label=CI)](https://github.com/NIyueeE/dsh-container/actions/workflows/publish.yml)
 [![GHCR](https://img.shields.io/badge/ghcr.io-niyueee%2Fdsh--container-2088FF?logo=docker&logoColor=white)](https://github.com/NIyueeE/dsh-container/pkgs/container/dsh-container)
 [![Upstream dsh](https://img.shields.io/github/v/tag/deepseek-ai/deepseek-harness?filter=dsh-v*&label=upstream%20dsh&sort=semver)](https://github.com/deepseek-ai/deepseek-harness)
 [![License](https://img.shields.io/github/license/NIyueeE/dsh-container)](LICENSE)
@@ -60,7 +60,7 @@ sudo systemctl enable --now dsh.service
 - **插件页内置卡片** —— 一个很小的客户端 half 注册 `plugins.item` 卡片(没有启用/关闭开关),展示一句简介,详情页说明插件职责并链接项目仓库。
 - **产物后处理** —— `pnpm run build:official` 之后跑三步:≥ 100 KiB 的内联图片抽成 `/container-assets/<内容哈希>`(由插件以 `immutable` 提供,只在真正打开对应界面时才取)、客户端 bundle 用 esbuild 压缩、刷新 `.dsh-build` 构建记录使其继续与交付产物一致。
 
-插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,发布流水线会自动删除对应部分(体现在该次发布的 commit 列表中,见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器)。
+插件是唯一的适配维护点。上游若新增 API 使其中一部分冗余,对应部分会被删除而不是保留(体现在上游 tag 之后的那次 commit 中,见 [docs/upstream-contract.md](docs/upstream-contract.md) § 简化触发器——每次上游发版都会逐条核对的清单)。
 
 ## 网络与安全
 
@@ -91,8 +91,8 @@ sudo systemctl enable --now dsh.service
 | [docs/deployment.md](docs/deployment.md) | 部署与维护:Compose、Quadlet、远程访问、离线使用、FAQ |
 | [docs/security.md](docs/security.md) | 安全说明:网络暴露取舍、凭据、可信工作负载 |
 | [docs/build.md](docs/build.md) | 构建配置:构建参数、源码版本钉定、可复现构建 |
-| [docs/releasing.md](docs/releasing.md) | 发布自动化:上游 tag 监视、契约检查、agent 修复、自动发布 |
-| [docs/upstream-contract.md](docs/upstream-contract.md) | 本镜像依赖的上游行为,以及漂移的检测方式 |
+| [docs/releasing.md](docs/releasing.md) | 发布:tag 触发的发布流水线、轻/重门、上游 tag 监视、失败诊断 |
+| [docs/upstream-contract.md](docs/upstream-contract.md) | 本镜像依赖的上游行为,以及每条行为的强制方式 |
 | [docs/development.md](docs/development.md) | 目录结构与本地开发 |
 
 ## 许可证

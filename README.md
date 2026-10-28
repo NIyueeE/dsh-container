@@ -6,7 +6,7 @@
 container — agent, full toolchain, and a reverse proxy in one image, built from the official source tags.**
 
 [![Release](https://img.shields.io/github/v/tag/NIyueeE/dsh-container?filter=dsh-v*&label=release&sort=semver)](https://github.com/NIyueeE/dsh-container/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/NIyueeE/dsh-container/image.yml?branch=main&label=CI)](https://github.com/NIyueeE/dsh-container/actions/workflows/image.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/NIyueeE/dsh-container/publish.yml?label=CI)](https://github.com/NIyueeE/dsh-container/actions/workflows/publish.yml)
 [![GHCR](https://img.shields.io/badge/ghcr.io-niyueee%2Fdsh--container-2088FF?logo=docker&logoColor=white)](https://github.com/NIyueeE/dsh-container/pkgs/container/dsh-container)
 [![Upstream dsh](https://img.shields.io/github/v/tag/deepseek-ai/deepseek-harness?filter=dsh-v*&label=upstream%20dsh&sort=semver)](https://github.com/deepseek-ai/deepseek-harness)
 [![License](https://img.shields.io/github/license/NIyueeE/dsh-container)](LICENSE)
@@ -79,9 +79,9 @@ shipped with the image at `/opt/dsh-container-plugin` and mounted into the web p
   matching the delivered artifacts.
 
 This plugin is the single adaptation maintenance point. When upstream ships an API that makes part
-of it redundant, the release pipeline deletes that part automatically — the removal shows up in
-that release's commit list (see [docs/upstream-contract.md](docs/upstream-contract.md)
-§ Simplification triggers).
+of it redundant, that part is deleted rather than kept around — the removal shows up in the commit
+that follows the upstream tag (see [docs/upstream-contract.md](docs/upstream-contract.md)
+§ Simplification triggers for the checklist reviewed on every upstream release).
 
 ## Networking & security
 
@@ -140,8 +140,8 @@ toolchain, never the data. Details in [docs/build.md](docs/build.md) and
 | [docs/deployment.md](docs/deployment.md) | Deployment & maintenance: Compose, Quadlet, remote access, offline use, FAQ |
 | [docs/security.md](docs/security.md) | Security notes: network exposure tradeoff, credentials, trusted workloads |
 | [docs/build.md](docs/build.md) | Build configuration: build args, source tag pinning, reproducible builds |
-| [docs/releasing.md](docs/releasing.md) | Release automation: upstream tag watcher, contract check, agent repair, auto-publish |
-| [docs/upstream-contract.md](docs/upstream-contract.md) | The upstream behaviors this image depends on, and how drift is detected |
+| [docs/releasing.md](docs/releasing.md) | Releasing: tag-triggered publish, light/heavy gates, upstream tag watcher, failure diagnostics |
+| [docs/upstream-contract.md](docs/upstream-contract.md) | The upstream behaviors this image depends on, and how each one is enforced |
 | [docs/development.md](docs/development.md) | Directory structure and local development |
 
 ## License
