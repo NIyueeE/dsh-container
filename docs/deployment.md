@@ -365,7 +365,7 @@ container never spends its first minutes downloading them:
 |---|---|
 | Agent CLI basics | `git` + `git-lfs` (installed system-wide), `curl`, `wget`, `jq`, `ca-certificates`, `gnupg` |
 | Search & patch | `ripgrep` (`rg`), `fd`, `patch`, `diff`/`sed`/`awk` from the base |
-| Languages & runtimes | Node.js 22 LTS + npm/pnpm, uv, Rust/cargo with `rustfmt` + `clippy`, python3 (apt-managed; PEP 668 applies — prefer `uv run` / `uv pip` for project work), build-essential + libssl-dev for native builds, musl-tools (the static-musl `landlock-run` launcher behind dsh's `workspace-write` sandbox) |
+| Languages & runtimes | Node.js 24 LTS + npm/pnpm, uv, Rust/cargo with `rustfmt` + `clippy`, python3 (apt-managed; PEP 668 applies — prefer `uv run` / `uv pip` for project work), build-essential + libssl-dev for native builds, musl-tools (the static-musl `landlock-run` launcher behind dsh's `workspace-write` sandbox) |
 | Editors & pagers | `vim.tiny` (`vi`), `nano`, `less` |
 | Networking & debugging | `openssh-client`, `iputils-ping`, `iproute2` (`ss`/`ip`), `lsof`, `tree`, `htop` |
 | Network diagnostics | `dig`/`nslookup`/`host` (`bind9-dnsutils`), `nc`, `socat`, `traceroute`, `iperf3`, `nft` (`nftables`) — this image's operational surface is mostly network plumbing (Caddy → dsh, plus nested podman's slirp4netns), so connectivity, bandwidth and firewall-rule checks are first-class |

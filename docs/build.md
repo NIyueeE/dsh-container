@@ -29,11 +29,11 @@ full rationale and the persistence matrix live in
 
 | Build arg | Default | Description |
 |---|---|---|
-| `BASE_IMAGE` | `debian:13-slim` | Base image (pinned for reproducible builds; override only if you also adjust the `/home/dsh` user-layer assumptions) |
+| `BASE_IMAGE` | `debian:13-slim@sha256:89c1ea91…` | Base image, pinned by multi-arch digest for reproducible builds; bump the digest deliberately (Dependabot cannot follow an `ARG`). Override only if you also adjust the `/home/dsh` user-layer assumptions |
 | `DSH_TAG` | `latest` | Upstream dsh git tag to build (`latest` resolves the newest upstream `dsh-v*` tag at build time); minimum supported tag is `dsh-v0.2.1-alpha.3` (alpha.1/alpha.2 still gate settings persistence on the page authority), and lower tags fail the build. The image is immutable at runtime — there is no in-container dsh auto-update |
 | `BUILD_VERSION` | `latest` | Written to the OCI label `org.opencontainers.image.version`; CI passes the upstream dsh tag on `dsh-v*` tag builds (see [releasing.md](releasing.md)) |
-| `RUST_TOOLCHAIN` | `stable` | Rust toolchain (e.g. `1.88.0`) |
-| `UV_VERSION` | `latest` | uv version installed by the official standalone installer script (`latest` resolves the newest uv release at build time) |
+| `RUST_TOOLCHAIN` | `1.99.1` | Rust toolchain; pinned so a `stable` bump cannot silently change the image |
+| `UV_VERSION` | `0.13.6` | uv version installed by the official standalone installer script (`latest` still resolves the newest release at build time) |
 | `BUILD_GIT_SHA` / `BUILD_GIT_REF` | `unknown` | Written to the OCI labels `org.opencontainers.image.revision` / `org.opencontainers.image.ref.name` |
 
 Toolchain vs. data: the image owns the tools (read-only at runtime — the one exception is rustup's
@@ -94,7 +94,7 @@ drops it):
 ```bash
 podman build --format docker \
              --build-arg DSH_TAG=dsh-v0.2.1-rc.2 \
-             --build-arg RUST_TOOLCHAIN=1.88.0 \
+             --build-arg RUST_TOOLCHAIN=1.99.1 \
              -t dsh-container .
 ```
 

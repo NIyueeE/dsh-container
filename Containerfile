@@ -95,14 +95,16 @@
 # ---- 构建参数(全部有默认值) ----------------------------------------------
 # BASE_IMAGE 声明在 FROM 之前(全局作用域), 供 FROM 行使用; 其余 ARG 在 FROM
 # 之后重新声明才对本阶段可见。
-ARG BASE_IMAGE=debian:13-slim
+# 基础镜像按多架构 index digest 固定(2026-10-28 的 debian:13-slim), 需要时手动
+# 跟随 Dependabot/安全更新改 digest; 标签本身仍保留在注释里便于识别。
+ARG BASE_IMAGE=debian:13-slim@sha256:89c1ea91e897f0fe0a3731595330bc45b8bdef4047464a07116f891a94054b31
 
 FROM ${BASE_IMAGE}
 
 ARG DSH_TAG=latest
 ARG BUILD_VERSION=latest
-ARG RUST_TOOLCHAIN=stable
-ARG UV_VERSION=latest
+ARG RUST_TOOLCHAIN=1.99.1
+ARG UV_VERSION=0.13.6
 ARG BUILD_GIT_SHA=unknown
 ARG BUILD_GIT_REF=unknown
 ARG USERNAME=dsh
@@ -152,7 +154,7 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/home/dsh/.local/bin:/home/dsh/.cargo/bi
 #    0x201000=cap_net_admin,cap_sys_admin), 抓包套接字打不开, 装了也只会让
 #    使用者以为能用。just/shellcheck 是开发工具(见 docs/deployment.md 同节)。
 # ---------------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates \
     curl \
     gnupg \
@@ -214,7 +216,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     just \
     shellcheck \
     && mkdir -p -m 755 /etc/apt/keyrings \
-    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -291,9 +293,9 @@ RUN mkdir -p /etc/containers \
     && echo '{"default": [{"type": "insecureAcceptAnything"}]}' > /etc/containers/policy.json
 
 # ---------------------------------------------------------------------------
-# 4. 安装 Node.js 22.x LTS(系统层)
+# 4. 安装 Node.js 24.x LTS(系统层)
 # ---------------------------------------------------------------------------
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/node-setup.sh \
+RUN curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused https://deb.nodesource.com/setup_24.x -o /tmp/node-setup.sh \
     && bash /tmp/node-setup.sh \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* /tmp/node-setup.sh
@@ -312,7 +314,7 @@ RUN set -eux; \
       UV_URL="https://astral.sh/uv/${UV_VERSION}/install.sh"; \
     fi; \
     # astral.sh 的安装 URL 会 302 跳转, 必须带 -L 跟随, 否则存下的是 HTML 跳转页
-    curl -sSfL --proto '=https' --tlsv1.2 "$UV_URL" -o /tmp/uv-install.sh; \
+    curl -sSfL --retry 3 --retry-delay 2 --proto '=https' --tlsv1.2 "$UV_URL" -o /tmp/uv-install.sh; \
     sh /tmp/uv-install.sh; \
     rm -f /tmp/uv-install.sh; \
     uv --version
@@ -329,7 +331,7 @@ RUN set -eux; \
 RUN set -eux; \
     export RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo; \
     mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"; \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh; \
+    curl --proto '=https' --tlsv1.2 -sSf --retry 3 --retry-delay 2 https://sh.rustup.rs -o /tmp/rustup-init.sh; \
     sh /tmp/rustup-init.sh -y --profile minimal --no-modify-path --default-toolchain "${RUST_TOOLCHAIN}"; \
     # minimal profile 只带 rustc/std/cargo; 编程 agent 高频使用的
     # rustfmt/clippy 在构建期补齐 —— 否则运行期 rustup component add 会写
@@ -362,7 +364,17 @@ RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/ds
 #    同一核心已有稳定版时改选稳定版。
 # ---------------------------------------------------------------------------
 RUN set -eux; \
-    git clone --filter=blob:none --no-checkout https://github.com/deepseek-ai/deepseek-harness.git /opt/deepseek-harness; \
+    # 网络抖动不该让整次 15 分钟构建失败: clone 重试三次。
+    clone_ok=0; \
+    for attempt in 1 2 3; do \
+      if git clone --filter=blob:none --no-checkout https://github.com/deepseek-ai/deepseek-harness.git /opt/deepseek-harness; then \
+        clone_ok=1; break; \
+      fi; \
+      echo "dsh clone failed (attempt $attempt); retrying" >&2; \
+      rm -rf /opt/deepseek-harness; \
+      sleep 5; \
+    done; \
+    [ "$clone_ok" = 1 ]; \
     cd /opt/deepseek-harness; \
     if [ "${DSH_TAG}" = "latest" ]; then \
       DSH_TAG="$(git tag --sort=-v:refname --list 'dsh-v*' | head -n1)"; \
@@ -422,6 +434,9 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     export CI=true; \
     cd /opt/deepseek-harness; \
     pnpm install --frozen-lockfile --store-dir /root/.pnpm-store; \
+    # Node 版本必须满足上游 package.json 的 engines(0.2.2-alpha.2 起是 >=24.9.0);
+    # 不满足时 fail fast, 而不是让 dsh 在不受支持的运行时上带警告跑。
+    node -e 'const semver=require("semver");const e=require("./package.json").engines?.node;if(e&&!semver.satisfies(process.version,e,{includePrerelease:true})){console.error("upstream dsh requires node "+e+", image has "+process.version);process.exit(1)}'; \
     pnpm run build:official; \
     # build:official 里的 native 门只跑 build:native-system --host-addon-only, 只编
     # Node-API 的 flock, **不产出** Landlock 的 static-musl 启动器; 缺它时 dsh 的

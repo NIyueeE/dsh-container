@@ -11,7 +11,8 @@ on:
 # latest; 非 tag 构建仍按 ref 隔离。
 concurrency:
   group: image-${{ startsWith(github.ref, 'refs/tags/dsh-v') && 'release' || github.ref }}
-  cancel-in-progress: false
+  # 发布 tag 串行(latest 竞争); PR/main 的旧构建直接取消, 不排队烧 14 分钟。
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/dsh-v') }}
 
 # 默认只读; 需要写权限的 job 单独声明
 permissions:
@@ -21,20 +22,25 @@ jobs:
   validate:
     name: Validate scripts and examples
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     outputs:
       docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
       # fetch-depth 0: 快车道判定要比较 push 前后的真实 diff(浅克隆没有 base 对象,
       # 判定会退化为"需要构建", 只是慢, 不会误判为纯文档)。
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # 静态门禁的单一来源: tests/validate-static.sh 同时被 image.yml validate、
       # release-prep verify 和本地 `just lint` 使用。verify 在推 tag 前复跑,
       # 避免 tag 推上去之后才发现 image.yml 的静态检查不过。
       - name: Static validation
         run: tests/validate-static.sh
+
+      - name: Lint GitHub Actions workflows
+        run: tests/validate-workflows.sh
 
       # 纯文档提交的安全快车道: 只改 *.md / LICENSE 时跳过镜像构建 + 冒烟
       # (省 ~15 分钟), 其余校验照跑。判定完全基于真实 diff, 并且 fail closed:
@@ -90,6 +96,7 @@ jobs:
   image:
     name: Build, validate and publish image (linux/amd64)
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     needs: validate
     # 纯文档提交(see the classification step)不构建镜像; tag 构建永远构建。
     if: needs.validate.outputs.docs_only != 'true'
@@ -100,14 +107,16 @@ jobs:
       name: ${{ steps.image.outputs.name }}
       digest: ${{ steps.publish.outputs.digest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GitHub Container Registry
         if: startsWith(github.ref, 'refs/tags/dsh-v')
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -116,7 +125,9 @@ jobs:
       # GHCR 要求仓库名全小写, 而 github.repository 可能含大写(如 NIyueeE)。
       - name: Compute lowercase image name
         id: image
-        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "name=ghcr.io/$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       # 本仓库 release tag 与官方仓库 tag 完全一致(如 dsh-v0.2.1-rc.2);
       # DSH_TAG 与 BUILD_VERSION 都直接使用该 tag。非发布构建 label 为 latest。
@@ -124,16 +135,20 @@ jobs:
         id: args
         env:
           DSH_TAG_REPO: ${{ vars.DSH_TAG || 'latest' }}
+          # ref/sha 来自 ref 名(可含 $ / 反引号), 只经 env 进入 shell, 不直接插值。
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
           dsh_tag="$DSH_TAG_REPO"
           label="latest"
-          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == dsh-v* ]]; then
-            dsh_tag="${{ github.ref_name }}"
-            label="${{ github.ref_name }}"
+          if [[ "$REF_TYPE" == "tag" && "$REF_NAME" == dsh-v* ]]; then
+            dsh_tag="$REF_NAME"
+            label="$REF_NAME"
           fi
           {
-            echo "BUILD_GIT_SHA=${{ github.sha }}"
-            echo "BUILD_GIT_REF=${{ github.ref_name }}"
+            echo "BUILD_GIT_SHA=$SHA"
+            echo "BUILD_GIT_REF=$REF_NAME"
             echo "BUILD_VERSION=$label"
             echo "DSH_TAG=$dsh_tag"
           } > /tmp/build-args.txt
@@ -143,9 +158,37 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # 验证构建: 仅 linux/amd64, load 到本地供冒烟测试; 不推送。
-      - name: Build image (validation)
-        uses: docker/build-push-action@v7
+      # 发布构建: 先按 digest 推到 GHCR(不带任何 tag), 再把这份 digest 拉下来
+      # 冒烟 —— 测的就是最终要发布的 manifest, 同时省掉"构建两次"。
+      # 冒烟失败时 merge 不会跑, 这个 digest 永远不会拿到 tag。
+      - name: Build and push linux/amd64 by digest (release only)
+        id: publish
+        if: startsWith(github.ref, 'refs/tags/dsh-v')
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=amd64
+          # PR 构建不写 cache(配额有限); 其余用 min, 只缓存最终层。
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=min,scope=amd64,ignore-error=true' || '' }}
+          build-args: ${{ steps.args.outputs.args }}
+
+      - name: Smoke test the published amd64 digest (release only)
+        if: startsWith(github.ref, 'refs/tags/dsh-v')
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          args=(--expect-dsh-version "${REF_NAME#dsh-v}")
+          tests/smoke.sh "$IMAGE@$DIGEST" ${args+"${args[@]}"}
+
+      # 非发布构建(PR/main): 只 load 到本地冒烟, 不推送。
+      - name: Build image for smoke (non-release)
+        if: ${{ !startsWith(github.ref, 'refs/tags/dsh-v') }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: Containerfile
@@ -154,41 +197,22 @@ jobs:
           load: true
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=amd64
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=min,scope=amd64,ignore-error=true' || '' }}
           build-args: ${{ steps.args.outputs.args }}
 
-      # 冒烟测试已抽到 tests/smoke.sh(image.yml 与 release-prep.yml 共用,
-      # 本地可用 just test 运行); 发布构建额外校验 dsh 版本与 tag 一致。
-      - name: Smoke test
-        run: |
-          args=()
-          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == dsh-v* ]]; then
-            args+=(--expect-dsh-version "${GITHUB_REF_NAME#dsh-v}")
-          fi
-          tests/smoke.sh "${{ steps.image.outputs.name }}:${{ github.sha }}" ${args+"${args[@]}"}
-
-      # 冒烟通过后才把 amd64 镜像按 digest 推到 GHCR(不打版本 tag):
-      # arm64 由原生 runner 并行构建, 最后由 merge job 合并为多架构镜像
-      # 并统一打 dsh-v* + <sha> + latest。坏镜像不会拿到任何 tag。
-      - name: Push linux/amd64 by digest (release only)
-        id: publish
-        if: startsWith(github.ref, 'refs/tags/dsh-v')
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Containerfile
-          platforms: linux/amd64
-          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: ${{ steps.args.outputs.args }}
+      - name: Smoke test (non-release)
+        if: ${{ !startsWith(github.ref, 'refs/tags/dsh-v') }}
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: tests/smoke.sh "$IMAGE:${GITHUB_SHA}"
 
   # arm64 用 GitHub 公开仓库免费提供的原生 Arm runner 构建, 不走 QEMU 模拟
   # (QEMU 下 pnpm 全量构建会慢一个数量级)。与 amd64 并行, 仅发布时构建。
   image-arm64:
     name: Build and publish image (linux/arm64)
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
     needs: validate
     if: startsWith(github.ref, 'refs/tags/dsh-v')
     permissions:
@@ -197,13 +221,15 @@ jobs:
     outputs:
       digest: ${{ steps.publish.outputs.digest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -212,22 +238,28 @@ jobs:
       # 与 amd64 job 相同的镜像名与 build args 计算。
       - name: Compute lowercase image name
         id: image
-        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "name=ghcr.io/$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Compute build args
         id: args
         env:
           DSH_TAG_REPO: ${{ vars.DSH_TAG || 'latest' }}
+          # ref/sha 来自 ref 名(可含 $ / 反引号), 只经 env 进入 shell, 不直接插值。
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
           dsh_tag="$DSH_TAG_REPO"
           label="latest"
-          if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == dsh-v* ]]; then
-            dsh_tag="${{ github.ref_name }}"
-            label="${{ github.ref_name }}"
+          if [[ "$REF_TYPE" == "tag" && "$REF_NAME" == dsh-v* ]]; then
+            dsh_tag="$REF_NAME"
+            label="$REF_NAME"
           fi
           {
-            echo "BUILD_GIT_SHA=${{ github.sha }}"
-            echo "BUILD_GIT_REF=${{ github.ref_name }}"
+            echo "BUILD_GIT_SHA=$SHA"
+            echo "BUILD_GIT_REF=$REF_NAME"
             echo "BUILD_VERSION=$label"
             echo "DSH_TAG=$dsh_tag"
           } > /tmp/build-args.txt
@@ -239,20 +271,32 @@ jobs:
 
       - name: Build and push by digest
         id: publish
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: Containerfile
           platforms: linux/arm64
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=build-arm64
-          cache-to: type=gha,mode=max,scope=build-arm64
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=min,scope=arm64,ignore-error=true
           build-args: ${{ steps.args.outputs.args }}
+
+      # arm64 以前只 build 不跑: 多架构镜像的 arm64 半边从未经过运行时验证
+      # (现在还有 arch-specific 的 landlock-run)。这里直接冒烟刚推的 digest。
+      - name: Smoke test the published arm64 digest
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          args=(--expect-dsh-version "${REF_NAME#dsh-v}")
+          tests/smoke.sh "$IMAGE@$DIGEST" ${args+"${args[@]}"}
 
   # 两个平台的 digest 都就绪后, 合并为一个多架构镜像并统一打版本 tag。
   merge:
     name: Merge multi-arch manifest
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     needs: [image, image-arm64]
     permissions:
       contents: read
@@ -261,7 +305,9 @@ jobs:
       # 旧 tag 被手工重推时仍发布 version+sha, 但不移动 latest / make_latest。
       is_latest: ${{ steps.latest.outputs.is_latest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Determine whether this tag is the newest dsh-v* tag
         id: latest
@@ -276,32 +322,42 @@ jobs:
           echo "newest check: $NEW_TAG is_latest=$is_latest"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and tag multi-arch manifest
+        env:
+          IMAGE: ${{ needs.image.outputs.name }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          DIGEST_AMD64: ${{ needs.image.outputs.digest }}
+          DIGEST_ARM64: ${{ needs.image-arm64.outputs.digest }}
+          IS_LATEST: ${{ steps.latest.outputs.is_latest }}
         run: |
           set -euo pipefail
-          image="${{ needs.image.outputs.name }}"
-          tags=(-t "$image:${{ github.sha }}" -t "$image:${{ github.ref_name }}")
-          if [ "${{ steps.latest.outputs.is_latest }}" = "true" ]; then
-            tags+=(-t "$image:latest")
+          tags=(-t "$IMAGE:$SHA" -t "$IMAGE:$REF_NAME")
+          if [ "$IS_LATEST" = "true" ]; then
+            tags+=(-t "$IMAGE:latest")
           else
-            echo "downgrade guard: ${{ github.ref_name }} is not the newest dsh-v* tag; not moving latest" >&2
+            echo "downgrade guard: $REF_NAME is not the newest dsh-v* tag; not moving latest" >&2
           fi
           docker buildx imagetools create "${tags[@]}" \
-            "$image@${{ needs.image.outputs.digest }}" \
-            "$image@${{ needs.image-arm64.outputs.digest }}"
+            "$IMAGE@$DIGEST_AMD64" \
+            "$IMAGE@$DIGEST_ARM64"
 
       - name: Inspect multi-arch manifest
-        run: docker buildx imagetools inspect "${{ needs.image.outputs.name }}:${{ github.ref_name }}"
+        env:
+          IMAGE: ${{ needs.image.outputs.name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: docker buildx imagetools inspect "$IMAGE:$REF_NAME"
 
   release:
     name: Create GitHub Release
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     needs: merge
     if: startsWith(github.ref, 'refs/tags/dsh-v')
     permissions:
@@ -338,12 +394,22 @@ jobs:
           printf -- '---\n\nUpstream release: https://github.com/%s/releases/tag/%s\n' \
             "$UPSTREAM_REPO" "$GITHUB_REF_NAME" >> "$body"
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body_path: ${{ runner.temp }}/release-body.md
-          generate_release_notes: true
-          # 手工重推旧 tag 时不要把它标成 GitHub 的 Latest Release。
-          make_latest: ${{ needs.merge.outputs.is_latest == 'true' }}
+      # 用 runner 自带的 gh 而不是第三方 release action: 少一个供应链依赖,
+      # 且重跑时可以先 view/edit 而不是 create 失败。
+      - name: Create or update Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          IS_LATEST: ${{ needs.merge.outputs.is_latest }}
+        run: |
+          set -euo pipefail
+          latest="false"
+          [ "$IS_LATEST" = "true" ] && latest="true"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/release-body.md" --latest="$latest"
+          else
+            gh release create "$TAG" --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/release-body.md" --generate-notes \
+              --latest="$latest"
+          fi
