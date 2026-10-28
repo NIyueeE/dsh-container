@@ -2,15 +2,15 @@
 
 The base image is pinned by default, and the dsh source tag / Rust toolchain / uv version can be
 pinned with `--build-arg`. uv is installed by the official standalone installer script (the same
-pattern as rustup; `UV_VERSION` pins it, `latest` resolves the newest release at build time); pnpm
+pattern as rustup; `UV_VERSION` defaults to `latest` and resolves the newest release at build time); pnpm
 is installed at the version required by the checked-out dsh tag (read from its `packageManager`
 field). All three are image-owned real binaries in the system layer (`/usr/local/bin`,
 `/opt/rust`; the one writable exception is rustup's home `/opt/rust/rustup`, which rustup must
 write at runtime — it is built `dsh`-owned and the entrypoint repairs its ownership on every
 start), so tool versions are a property of the image tag, not of the volume. Caddy/podman/gh come
 from apt; dsh is built from the official repository with its `pnpm-lock.yaml`. Default builds
-are therefore reproducible at the level of the upstream lockfile; pin `DSH_TAG` for a fully pinned
-dsh version.
+track the latest base image and toolchain by default (no digest/version pins); pass
+`BASE_IMAGE`/`RUST_TOOLCHAIN`/`UV_VERSION` to pin them if a reproducible build is ever needed.
 
 Alongside the toolchain, the image bakes an agent's high-frequency CLI tools into the system layer
 (`ripgrep`, `fd`, `python3`, `zip`, `openssh-client`, `tmux`, `sqlite3`, `vim.tiny`, `nano`,
@@ -29,11 +29,11 @@ full rationale and the persistence matrix live in
 
 | Build arg | Default | Description |
 |---|---|---|
-| `BASE_IMAGE` | `debian:13-slim@sha256:89c1ea91…` | Base image, pinned by multi-arch digest for reproducible builds; bump the digest deliberately (Dependabot cannot follow an `ARG`). Override only if you also adjust the `/home/dsh` user-layer assumptions |
+| `BASE_IMAGE` | `debian:13-slim` | Base image (moving tag; the build intentionally follows the current `13-slim`). Override only if you also adjust the `/home/dsh` user-layer assumptions |
 | `DSH_TAG` | `latest` | Upstream dsh git tag to build (`latest` resolves the newest upstream `dsh-v*` tag at build time); minimum supported tag is `dsh-v0.2.1-alpha.3` (alpha.1/alpha.2 still gate settings persistence on the page authority), and lower tags fail the build. The image is immutable at runtime — there is no in-container dsh auto-update |
 | `BUILD_VERSION` | `latest` | Written to the OCI label `org.opencontainers.image.version`; CI passes the upstream dsh tag on `dsh-v*` tag builds (see [releasing.md](releasing.md)) |
-| `RUST_TOOLCHAIN` | `1.99.1` | Rust toolchain; pinned so a `stable` bump cannot silently change the image |
-| `UV_VERSION` | `0.13.6` | uv version installed by the official standalone installer script (`latest` still resolves the newest release at build time) |
+| `RUST_TOOLCHAIN` | `stable` | Rust toolchain (latest stable at build time; pass a version to pin) |
+| `UV_VERSION` | `latest` | uv version installed by the official standalone installer script (`latest` resolves the newest release at build time) |
 | `BUILD_GIT_SHA` / `BUILD_GIT_REF` | `unknown` | Written to the OCI labels `org.opencontainers.image.revision` / `org.opencontainers.image.ref.name` |
 
 Toolchain vs. data: the image owns the tools (read-only at runtime — the one exception is rustup's
@@ -94,7 +94,7 @@ drops it):
 ```bash
 podman build --format docker \
              --build-arg DSH_TAG=dsh-v0.2.1-rc.2 \
-             --build-arg RUST_TOOLCHAIN=1.99.1 \
+             --build-arg RUST_TOOLCHAIN=1.88.0 \
              -t dsh-container .
 ```
 

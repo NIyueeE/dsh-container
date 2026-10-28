@@ -23,7 +23,7 @@ container-environment note for that file lives in
 
 | Path | Purpose |
 |---|---|
-| `Containerfile` | Image build: Debian slim base (digest-pinned), Node 24 LTS + pnpm, musl-tools + the static `landlock-run` launcher, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors plus a diagnostics set: dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, just, shellcheck), `uv tool`-installed yq (`/opt/uv-tools`), source-built dsh (`/opt/deepseek-harness`), entrypoint |
+| `Containerfile` | Image build: Debian slim base (moving `13-slim` tag), Node 24 LTS + pnpm, musl-tools + the static `landlock-run` launcher, image-owned rust/uv toolchain (`/opt/rust`, `/usr/local/bin` real binaries), apt podman/crun/Caddy/gh + baked agent CLI tools (ripgrep/fd/python3/ssh/tmux/sqlite3/editors plus a diagnostics set: dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, just, shellcheck), `uv tool`-installed yq (`/opt/uv-tools`), source-built dsh (`/opt/deepseek-harness`), entrypoint |
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint`; also sets `TMPDIR=~/.dsh/tmp` (persistent dsh/agent scratch; `/tmp` itself stays ephemeral) |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + launch-token wait + Caddy reverse proxy with token login redirect (auto-restart, `caddy reload` on token rotation), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |

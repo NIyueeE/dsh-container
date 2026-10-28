@@ -95,16 +95,15 @@
 # ---- 构建参数(全部有默认值) ----------------------------------------------
 # BASE_IMAGE 声明在 FROM 之前(全局作用域), 供 FROM 行使用; 其余 ARG 在 FROM
 # 之后重新声明才对本阶段可见。
-# 基础镜像按多架构 index digest 固定(2026-10-28 的 debian:13-slim), 需要时手动
-# 跟随 Dependabot/安全更新改 digest; 标签本身仍保留在注释里便于识别。
-ARG BASE_IMAGE=debian:13-slim@sha256:89c1ea91e897f0fe0a3731595330bc45b8bdef4047464a07116f891a94054b31
+# 基础镜像跟 latest stable tag(不 pin digest): 构建每次拿当前 debian:13-slim。
+ARG BASE_IMAGE=debian:13-slim
 
 FROM ${BASE_IMAGE}
 
 ARG DSH_TAG=latest
 ARG BUILD_VERSION=latest
-ARG RUST_TOOLCHAIN=1.99.1
-ARG UV_VERSION=0.13.6
+ARG RUST_TOOLCHAIN=stable
+ARG UV_VERSION=latest
 ARG BUILD_GIT_SHA=unknown
 ARG BUILD_GIT_REF=unknown
 ARG USERNAME=dsh
