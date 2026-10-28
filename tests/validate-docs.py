@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """文档静态校验: 相对链接可解析 + README/README.zh 结构对齐。
 
-从 .github/workflows/image.yml 的两个内联步骤抽出, 使同一套判据可以本地运行
+从 CI 的内联步骤抽出, 使同一套判据可以在轻门里本地运行
 (`python3 tests/validate-docs.py`, 或经 `just lint`), 不必推 CI 才知道文档坏了。
 
 用法:

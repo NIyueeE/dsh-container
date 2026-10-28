@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
-# dsh-container 镜像冒烟测试: 对给定镜像做端到端验证, 覆盖 launch token
-# 登录重定向、浏览器会话 cookie、Host/Origin 围栏、前端后处理、遥测默认关闭、
-# 工具链分层布局、内置常用工具与容器内 podman 运行期环境、supervisor 重启与
-# basic auth 全链路。
-# 由 .github/workflows/image.yml 与 release-prep.yml 共同调用; 本地可用
-# `just test` 运行。
+# dsh-container 镜像冒烟测试(唯一的重门): 端到端验证镜像身份与行为 ——
+# launch token 登录重定向、浏览器会话 cookie、Host/Origin/Sec-Fetch-Site 围栏、
+# 前端后处理、遥测默认关闭、工具链分层布局、内置常用工具、容器内 podman 运行期
+# 环境、supervisor 重启、basic auth、以及 provenance/OCI labels/平台的一致性。
+# 由 .github/workflows/smoke.yml 调用(ci 的 main 重门与 publish 发布门共用同一份);
+# 本地 `just test` 走同一脚本。
 #
-# 用法: tests/smoke.sh <image> [--expect-dsh-version X.Y.Z]
-#   <image>                 已构建(load/存在本地)的镜像引用
-#   --expect-dsh-version    发布构建时传入镜像内 dsh 应等于的版本号
-#                           (不含 dsh-v 前缀, 如 0.2.1-rc.2)
+# 用法: tests/smoke.sh <image> --expect-dsh-tag dsh-vX.Y.Z --expect-platform linux/<arch>
+#                          [--expect-dsh-version X.Y.Z] [--diagnostic-dir DIR]
+#   <image>                 本地镜像(load/已构建)或已推送引用(可含 @sha256:)
+#   --expect-dsh-tag        必填: 镜像 provenance 必须记录的构建 tag
+#   --expect-platform       必填: linux/amd64 或 linux/arm64, 必须与镜像平台一致
+#   --expect-dsh-version    可选: 镜像内 dsh --version 必须等于该版本(不含 dsh-v)
+#   --diagnostic-dir        诊断产物目录, 默认 /tmp/smoke-diag
+# 退出码: 0 = 全绿; 1 = 断言失败(诊断见 diagnostic-dir); 64 = 用法错误
+#
+# 诊断产物: smoke-diagnostic.json(逐 check 耗时 / 失败点 / 容器日志尾 / 复现命令),
+#           smoke-diagnostic.md(人读版), 由 workflow 作为 artifact 保留 14 天。
+#
 # 环境变量:
 #   DOCKER    docker 二进制, 默认 docker; podman 用户可 DOCKER=podman
-#   其他依赖: curl, awk, sed; 需要空闲端口 3081、127.0.0.1:3082 与 127.0.0.1:3083
+#   SMOKE_STRICT=1  GitHub Actions 中设置: 诊断写入 $GITHUB_STEP_SUMMARY 并输出注解
+#   依赖: curl, awk, sed, jq(宿主侧诊断), python3(容器侧)
 #
 # SC2016: 本文件大量使用 `"$DOCKER" exec "$cid" sh -c '...'` 形式, 单引号是
 # **故意**的 —— 里面的 $ 必须留给容器内的 sh 展开, 而不是在宿主 shell 展开。
@@ -20,32 +29,35 @@
 set -euo pipefail
 
 DOCKER="${DOCKER:-docker}"
+command -v jq >/dev/null 2>&1 || { echo "error: jq is required on the host" >&2; exit 1; }
 image=""
 expect=""
+expect_tag=""
+expect_platform=""
+DIAG_DIR="${SMOKE_DIAG_DIR:-/tmp/smoke-diag}"
 
 usage() {
-  echo "usage: tests/smoke.sh <image> [--expect-dsh-version X.Y.Z]" >&2
+  cat >&2 <<'EOF'
+usage: tests/smoke.sh <image> --expect-dsh-tag dsh-vX.Y.Z --expect-platform linux/amd64|linux/arm64
+                       [--expect-dsh-version X.Y.Z] [--diagnostic-dir DIR]
+EOF
   exit 64
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --expect-dsh-version)
-      [ $# -ge 2 ] || usage
-      expect="$2"
-      shift 2
-      ;;
-    --expect-dsh-version=*)
-      expect="${1#*=}"
-      shift
-      ;;
-    -h|--help)
-      usage
-      ;;
+    --expect-dsh-version)   [ $# -ge 2 ] || usage; expect="$2"; shift 2 ;;
+    --expect-dsh-version=*) expect="${1#*=}"; shift ;;
+    --expect-dsh-tag)       [ $# -ge 2 ] || usage; expect_tag="$2"; shift 2 ;;
+    --expect-dsh-tag=*)     expect_tag="${1#*=}"; shift ;;
+    --expect-platform)      [ $# -ge 2 ] || usage; expect_platform="$2"; shift 2 ;;
+    --expect-platform=*)    expect_platform="${1#*=}"; shift ;;
+    --diagnostic-dir)       [ $# -ge 2 ] || usage; DIAG_DIR="$2"; shift 2 ;;
+    --diagnostic-dir=*)     DIAG_DIR="${1#*=}"; shift ;;
+    -h|--help) usage ;;
     *)
       if [ -z "$image" ]; then
-        image="$1"
-        shift
+        image="$1"; shift
       else
         echo "unexpected argument: $1" >&2
         usage
@@ -54,6 +66,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$image" ] || usage
+[ -n "$expect_tag" ] || { echo "error: --expect-dsh-tag is required" >&2; usage; }
+case "$expect_platform" in
+  linux/amd64|linux/arm64) ;;
+  *) echo "error: --expect-platform must be linux/amd64 or linux/arm64" >&2; usage ;;
+esac
+mkdir -p "$DIAG_DIR"
 
 cid=""
 auth_cid=""
@@ -62,19 +80,118 @@ cookie_jar="$(mktemp)"
 cookie_relogin="$(mktemp)"
 auth_cookie_jar="$(mktemp)"
 auth_dsh_jar="$(mktemp)"
-trap '"$DOCKER" rm -f "$cid" "$auth_cid" "$proxy_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$cookie_relogin" "$auth_cookie_jar" "$auth_dsh_jar"' EXIT
+trap '"$DOCKER" rm -f "$cid" "$auth_cid" "$proxy_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$cookie_relogin" "$auth_cookie_jar" "$auth_dsh_jar"' EXIT  # ok: cleanup
 
-# 失败辅助: 打印标记与容器日志后退出, 便于定位是哪一环、服务端发生了什么。
+CHECKS_FILE="$DIAG_DIR/checks.jsonl"
+: > "$CHECKS_FILE"
+CURRENT_CHECK="startup"
+CHECK_OPEN=0
+CHECK_START="$(date +%s%3N)"
+dsh_version=""
+image_platform=""
+prov_revision=""
+prov_version=""
+
+# 逐 check 记录耗时(JSON Lines); section 关掉上一个 check 即视为通过。
+record() { # <id> <pass|fail> <ms> <message>
+  jq -cn --arg id "$1" --arg status "$2" --argjson ms "$3" --arg msg "$4" \
+    '{id:$id,status:$status,ms:$ms,message:$msg}' >> "$CHECKS_FILE"
+}
+
+section() { # <id>
+  if [ "$CHECK_OPEN" = 1 ]; then
+    record "$CURRENT_CHECK" pass "$(( $(date +%s%3N) - CHECK_START ))" ""
+  fi
+  CURRENT_CHECK="$1"
+  CHECK_START="$(date +%s%3N)"
+  CHECK_OPEN=1
+  printf '=== [smoke] CHECK %s\n' "$CURRENT_CHECK"
+}
+
+container_logs_json() {
+  local out='{}' pair name id tail
+  for pair in "main:$cid" "auth:$auth_cid" "proxy:$proxy_cid"; do
+    name="${pair%%:*}"; id="${pair#*:}"
+    [ -n "$id" ] || continue
+    tail="$("$DOCKER" logs --tail 60 "$id" 2>&1 || true)"  # ok: log-dump
+    out="$(jq -c --arg n "$name" --arg l "$tail" '. + {($n): $l}' <<<"$out")"
+  done
+  printf '%s' "$out"
+}
+
+write_diagnostics() { # <pass|fail> <message>
+  local status="$1" msg="$2" checks logs repro
+  checks="[$(paste -sd, "$CHECKS_FILE")]"
+  logs="$(container_logs_json)"
+  repro="DOCKER=${DOCKER} tests/smoke.sh ${image} --expect-dsh-tag ${expect_tag} --expect-platform ${expect_platform}"
+  jq -n --arg status "$status" --arg image "$image" \
+        --arg platform "${image_platform:-$expect_platform}" \
+        --arg dsh_tag "$expect_tag" --arg version "$dsh_version" \
+        --arg check "$CURRENT_CHECK" --arg message "$msg" \
+        --argjson checks "$checks" --argjson logs "$logs" --arg repro "$repro" \
+    '{schema:1, ok:($status=="pass"), image:$image, platform:$platform, dsh_tag:$dsh_tag,
+      dsh_version:$version,
+      failed_check:(if $status=="fail" then $check else null end),
+      message:(if $status=="fail" then $message else null end),
+      checks:$checks, container_logs:$logs, repro:$repro}' \
+    > "$DIAG_DIR/smoke-diagnostic.json"
+  {
+    printf '# smoke %s: %s\n\n' "$status" "$image"
+    echo "| field | value |"
+    echo "|---|---|"
+    echo "| image | \`${image}\` |"
+    echo "| platform | \`${image_platform:-$expect_platform}\` |"
+    echo "| expected tag | \`${expect_tag}\` |"
+    echo "| dsh version | \`${dsh_version:-unknown}\` |"
+    if [ "$status" = fail ]; then
+      echo "| failed check | \`${CURRENT_CHECK}\` |"
+      printf '| message | %s |\n' "$msg"
+    fi
+    echo
+    echo "## Checks"
+    echo
+    jq -r '.[] | "- `\(.id)` — \(.status) (\(.ms) ms)\(if .message != "" then ": " + .message else "" end)"' \
+      <<<"$checks"
+    if [ "$status" = fail ]; then
+      echo
+      echo "## Reproduce"
+      echo
+      echo '```sh'
+      echo "$repro"
+      echo '```'
+      echo
+      echo "Container log tails: \`container_logs\` in smoke-diagnostic.json, or smoke.log."
+    fi
+  } > "$DIAG_DIR/smoke-diagnostic.md"
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -w "${GITHUB_STEP_SUMMARY}" ]; then
+      cat "$DIAG_DIR/smoke-diagnostic.md" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    if [ "$status" = fail ]; then
+      echo "::error title=smoke(${image_platform:-$expect_platform})::${CURRENT_CHECK}: ${msg}"
+    fi
+  fi
+}
+
+# 失败辅助: 记录失败点(行号 + 容器日志尾)后退出, 便于一次定位到具体断言。
 die() {
-  echo "=== [smoke] FAIL: $*" >&2
-  "$DOCKER" logs "$cid" >&2 2>&1 || true
+  local msg="$*"
+  record "$CURRENT_CHECK" fail "$(( $(date +%s%3N) - CHECK_START ))" "${msg} (line ${BASH_LINENO[0]})"
+  printf '=== [smoke] FAIL [%s] %s (line %s)\n' "$CURRENT_CHECK" "$msg" "${BASH_LINENO[0]}" >&2
+  write_diagnostics fail "$msg"
   exit 1
 }
 
+
 # 桥接 + 端口映射, 与默认部署方式一致(对外端口 3081)。
-cid="$("$DOCKER" run -d --rm --name dsh-smoke -p 3081:3081 \
-  -e DSH_HOME=/tmp/dsh-smoke-home \
-  "$image")"
+section "startup"
+# 起容器失败(镜像不存在/没有 docker/端口占用)也要走诊断路径, 不被 set -e 静默吞掉。
+if ! cid="$("$DOCKER" run -d --rm --name dsh-smoke -p 3081:3081 \
+      -e DSH_HOME=/tmp/dsh-smoke-home \
+      "$image" 2>/tmp/dsh-smoke-run.err)"; then
+  tail -n 20 /tmp/dsh-smoke-run.err >&2 || true  # ok: log-dump
+  die "failed to start the smoke container: $(tail -n 1 /tmp/dsh-smoke-run.err)"
+fi
 
 # dsh web 启动后会把登录 URL(?token=...)打印到容器日志; 插件把同一个 token
 # 写到 /tmp/dsh-caddy/launch-token, Caddy 用它把浏览器首次访问 302 到
@@ -82,21 +199,24 @@ cid="$("$DOCKER" run -d --rm --name dsh-smoke -p 3081:3081 \
 running() { [ "$("$DOCKER" inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
 token=""
 for _ in $(seq 1 60); do
-  token="$("$DOCKER" logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"
+  token="$("$DOCKER" logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"  # ok: log-dump
   [ -n "$token" ] && break
-  running "$cid" || { "$DOCKER" logs --tail 30 "$cid" >&2 || true; die "container exited before printing a login token"; }
+  running "$cid" || { "$DOCKER" logs --tail 30 "$cid" >&2 || true; die "container exited before printing a login token"; }  # ok: log-dump
   sleep 2
 done
-[ -n "$token" ] || { "$DOCKER" logs --tail 30 "$cid" >&2 || true; die "no login token printed by dsh web"; }
+[ -n "$token" ] || { "$DOCKER" logs --tail 30 "$cid" >&2 || true; die "no login token printed by dsh web"; }  # ok: log-dump
 
 # 栈引导顺序: dsh web 先行, 插件写出 launch token 后 dsh-web 才拉起 Caddy。
 # token 出现后等 3081 可连通再继续, 消除引导竞态。
+proxy_up=0
 for _ in $(seq 1 60); do
-  curl -s -o /dev/null http://127.0.0.1:3081/ 2>/dev/null && break
-  running "$cid" || { "$DOCKER" logs --tail 30 "$cid" >&2 || true; die "container exited before the proxy became ready"; }
+  if curl -s -o /dev/null http://127.0.0.1:3081/ 2>/dev/null; then proxy_up=1; break; fi
+  running "$cid" || { "$DOCKER" logs --tail 30 "$cid" >&2 || true; die "container exited before the proxy became ready"; }  # ok: log-dump
   sleep 1
 done
+[ "$proxy_up" = 1 ] || die "the proxy on 127.0.0.1:3081 did not become reachable within 60s"
 
+section "login.redirect"
 # 1) 无会话 cookie 的 / 必须 302 到 /?token=...; 不能再像旧实现那样直接
 # 返回页面(Caddy 不再注入 cookie)。Location 里的 token 必须与 dsh 日志一致。
 redirect_headers="$(curl -sS -D - -o /dev/null http://127.0.0.1:3081/)"
@@ -108,6 +228,7 @@ redirect_token="$(printf '%s' "$redirect_headers" | sed -n 's/^[Ll]ocation: \/?t
 [ "$redirect_token" = "$token" ] \
   || die "Caddy redirect token does not match the dsh launch token"
 
+section "login.cookie"
 # 2) token 交换由浏览器完成: dsh 303 + Set-Cookie(HttpOnly/SameSite=Strict);
 # 浏览器之后自己携带 cookie, Caddy 不再注入。
 exchange_headers="$(curl -sS -D - -o /dev/null -c "$cookie_jar" \
@@ -129,6 +250,7 @@ proxied_open="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
 direct_unauth="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/)"
 [ "$direct_unauth" = "401" ] || die "direct dsh (3080) without cookie returned $direct_unauth, expected 401"
 
+section "workspace.bootstrap"
 # UI 默认 workspace bootstrap: dsh 通过 xdg-user-dir 解析系统 Documents 目录。
 # 镜像必须带 xdg-user-dirs, entrypoint 必须提供 ~/Documents + user-dirs.dirs;
 # 否则首屏会显示 "Unable to create default workspace"。
@@ -143,6 +265,7 @@ workspace_body="$(curl -sS -b "$cookie_jar" -X POST \
 [[ "$workspace_body" == *'Documents/deepseek-harness/default-workspace'* ]] \
   || die "default workspace is not under Documents: $workspace_body"
 
+section "http.cache"
 # 首页必须 no-store: 防止镜像升级后浏览器沿用旧前端。
 # 上游的索引入口有两个(dist 根 + 配置的 index path, 即 / 与 /index.html),
 # 两个都必须禁缓存 —— 否则从 /index.html 进入的浏览器会缓存旧启动清单。
@@ -151,6 +274,7 @@ curl -sS -o /dev/null -D - -b "$cookie_jar" http://127.0.0.1:3081/ | grep -qi 'c
 curl -sS -o /dev/null -D - -b "$cookie_jar" http://127.0.0.1:3081/index.html | grep -qi 'cache-control: no-store' \
   || die "GET /index.html response lacks Cache-Control: no-store (index entry caching not covered)"
 
+section "client.boot"
 # 会话内页面: 标题与前端补丁。先取回整个 index 再做包含判断,
 # 避免 curl | grep -q 的 SIGPIPE/静默失败。
 index_html="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
@@ -162,6 +286,7 @@ index_html="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
 [[ "$index_html" == *'"@dsh-container/adapt"'* ]] \
   || die "client half @dsh-container/adapt missing from __DSH_BOOT__"
 
+section "static.assets"
 # /assets/* 是 Vite 构建的内容哈希产物, 但 dsh 自己不给这棵树发任何缓存头
 # (实测无 Cache-Control/ETag/Last-Modified) —— 少了 Caddy 补的 immutable, 浏览器
 # 每次导航都要重下约 475 KiB 的 shell 资源。这里用索引里真正引用的第一个 assets
@@ -174,15 +299,17 @@ curl -sS -b "$cookie_jar" -o /dev/null -D - "http://127.0.0.1:3081/$asset_path" 
   | grep -qi 'cache-control: public, max-age=31536000, immutable' \
   || die "GET /$asset_path lacks the immutable Cache-Control header (hashed asset caching not applied)"
 
+section "health"
 # HEALTHCHECK 本身也要能被 Docker 判为 healthy。
 health=""
 for _ in $(seq 1 40); do
-  health="$("$DOCKER" inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)"
+  health="$("$DOCKER" inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)"  # ok: probe-asserted-below
   if [ "$health" = "healthy" ]; then break; fi
   sleep 2
 done
 [ "$health" = "healthy" ] || die "container health status is '$health', expected healthy"
 
+section "toolchain.versions"
 # 工具链与 dsh 版本; 发布构建必须与官方仓库 tag 的版本号一致。
 dsh_version="$("$DOCKER" exec "$cid" dsh --version | head -n1 | tr -d '\r\n' | sed 's/^v//')"
 echo "$dsh_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' \
@@ -249,6 +376,7 @@ fi
   esac
 ' || die "pnpm global install contract check failed"
 
+section "podman.runtime"
 # 容器内 rootless podman 运行期契约(podman 5.4.2 实测):
 # XDG_RUNTIME_DIR 由 entrypoint provision; /etc/subuid、/etc/subgid 各自必须
 # 只有一行 dsh 区间(重复行使 newuidmap 写出重叠映射, 内核 EINVAL, rootless
@@ -266,6 +394,7 @@ fi
 "$DOCKER" exec "$cid" sh -c 'grep -q "^default_rootless_network_cmd = \"slirp4netns\"$" /etc/containers/containers.conf' \
   || die "containers.conf must preset the rootless network command to slirp4netns"
 
+section "layout.three-zone"
 # 分层布局: 工具链是镜像系统层真二进制(/usr/local/bin, /opt/rust),
 # 卷上只有可写缓存与自装区 —— 路径解析与读写边界都必须成立。
 "$DOCKER" exec "$cid" sh -c '
@@ -284,6 +413,7 @@ fi
   mkdir -p "$cargo_home/registry/cache" "$cargo_home/registry/index" "$pnpm_home"
 ' || die "toolchain/user-layer layout check failed"
 
+section "layout.volume-shadowing"
 # 旧卷工具副本不得遮蔽镜像真二进制: 种入旧 uv 后 PATH 镜像优先仍解析到
 # /usr/local/bin/uv(清理不进镜像, 手动步骤见 docs/releasing.md)。
 "$DOCKER" exec "$cid" sh -c 'home="$(getent passwd "$(id -u)" | cut -d: -f6)"; printf "#!/bin/sh\necho \"uv 0.0.1 (fake-old)\"\n" > "$home/.local/bin/uv" && chmod +x "$home/.local/bin/uv"'
@@ -293,11 +423,12 @@ fi
 # Caddy 代理已在容器内运行(保留 Host/Origin + token 登录重定向)
 "$DOCKER" exec "$cid" sh -c 'pgrep -x caddy >/dev/null' \
   || die "caddy process not found inside the container"
+section "telemetry.default-off"
 # 遥测默认关闭: entrypoint 必须把 DSH_TELEMETRY_MODE=DISABLED 传给 dsh web
 # (用户点反馈时不会把完整会话上下文发往 harness-telemetry.deepseeksvc.com)。
 # dsh web 是容器内唯一的常驻 node 进程(启动命令为 --profile web 形式,
 # 不能按 "dsh web" 字样匹配; pgrep -f 会匹配到 exec 的 sh 自身)。
-dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
+dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"  # ok: probe-asserted-below
 [ -n "$dsh_pid" ] || die "dsh web process not found for telemetry env check"
 "$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < "/proc/$1/environ" | grep -Fx "DSH_TELEMETRY_MODE=DISABLED"' _ "$dsh_pid" \
   || die "dsh web is not running with DSH_TELEMETRY_MODE=DISABLED"
@@ -310,6 +441,7 @@ dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
 # dsh 必须解析到镜像内版本 (卷中旧 npm 副本若存在也不得遮蔽)。
 "$DOCKER" exec "$cid" sh -c '[ "$(command -v dsh)" = "/usr/local/bin/dsh" ]' \
   || die "dsh does not resolve to the image-provided /usr/local/bin/dsh"
+section "provenance"
 "$DOCKER" exec "$cid" cat /etc/dsh-container/provenance.json | grep -q '"image":"ghcr.io/niyueee/dsh-container"' \
   || die "image provenance stamp missing or invalid"
 # 镜像拥有全部工具链后, provenance 首次能如实记录实际工具版本
@@ -317,6 +449,58 @@ dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
   /etc/dsh-container/provenance.json >/dev/null \
   || die "provenance tool versions missing"
 
+# 镜像身份: provenance / OCI labels / 平台 / 工具版本必须互相对齐。这取代了旧的
+# 静态契约检查 —— 任何"构建参数丢了"或"架构错了"都会在这里红。
+section "identity"
+prov="$("$DOCKER" exec "$cid" cat /etc/dsh-container/provenance.json)"
+jq -e '.schema == 1' <<<"$prov" >/dev/null || die "provenance schema is not 1"
+[ "$(jq -r '.image' <<<"$prov")" = "ghcr.io/niyueee/dsh-container" ] \
+  || die "provenance image name is wrong"
+[ "$(jq -r '.dsh_tag' <<<"$prov")" = "$expect_tag" ] \
+  || die "provenance dsh_tag '$(jq -r '.dsh_tag' <<<"$prov")' != expected '$expect_tag'"
+prov_version="$(jq -r '.version' <<<"$prov")"
+prov_revision="$(jq -r '.revision' <<<"$prov")"
+[ -n "$prov_version" ] || die "provenance version is empty"
+[ -n "$prov_revision" ] || die "provenance revision is empty"
+
+labels="$("$DOCKER" inspect -f '{{json .Config.Labels}}' "$image")"
+for key in org.opencontainers.image.title org.opencontainers.image.source \
+           org.opencontainers.image.version org.opencontainers.image.revision \
+           org.opencontainers.image.ref.name; do
+  [ "$(jq -r --arg k "$key" '.[$k] // empty' <<<"$labels")" != "" ] \
+    || die "OCI label $key is missing"
+done
+[ "$(jq -r '."org.opencontainers.image.source"' <<<"$labels")" = "https://github.com/niyueee/dsh-container" ] \
+  || die "OCI source label is wrong"
+[ "$(jq -r '."org.opencontainers.image.version"' <<<"$labels")" = "$prov_version" ] \
+  || die "OCI version label != provenance version"
+[ "$(jq -r '."org.opencontainers.image.revision"' <<<"$labels")" = "$prov_revision" ] \
+  || die "OCI revision label != provenance revision"
+
+image_platform="$("$DOCKER" inspect -f '{{.Os}}/{{.Architecture}}' "$image")"
+[ "$image_platform" = "$expect_platform" ] \
+  || die "image platform is '$image_platform', expected '$expect_platform'"
+
+[ "$(jq -r '.tools.node' <<<"$prov")" = "$("$DOCKER" exec "$cid" node --version)" ] \
+  || die "provenance node != node --version"
+[ "$(jq -r '.tools.pnpm' <<<"$prov")" = "$("$DOCKER" exec "$cid" pnpm --version)" ] \
+  || die "provenance pnpm != pnpm --version"
+[ "$(jq -r '.tools.uv' <<<"$prov")" = "$("$DOCKER" exec "$cid" uv --version | awk '{print $2}')" ] \
+  || die "provenance uv != uv --version"
+[ "$(jq -r '.tools.rust' <<<"$prov")" = "$("$DOCKER" exec "$cid" rustc --version | awk '{print $2}')" ] \
+  || die "provenance rust != rustc --version"
+
+# 运行时身份: uid/HOME/cwd/sudo 都是 entrypoint 契约的一部分。
+section "runtime.identity"
+[ "$("$DOCKER" exec "$cid" id -u)" = "1000" ] || die "runtime uid is not 1000"
+[ "$("$DOCKER" exec "$cid" id -un)" = "dsh" ] || die "runtime user is not dsh"
+[ "$("$DOCKER" exec "$cid" sh -c 'printf %s "$HOME"')" = "/home/dsh" ] || die "HOME is not /home/dsh"
+[ "$("$DOCKER" exec "$cid" pwd)" = "/home/dsh" ] || die "process cwd is not \$HOME"
+[ "$("$DOCKER" exec "$cid" stat -c %U /home/dsh)" = "dsh" ] || die "/home/dsh is not owned by dsh"
+"$DOCKER" exec "$cid" sudo -n true || die "passwordless sudo is not available"
+[ "$("$DOCKER" exec "$cid" sudo -n id -u)" = "0" ] || die "sudo -n did not grant uid 0"
+
+section "supervisor.files"
 # supervisor 安全细节: launch token/Caddyfile 仅运行时用户可读;
 # Caddyfile 不再包含 header_up(不注入 cookie, 也不改写 Host/Origin), 但必须有
 # 登录重定向。
@@ -335,6 +519,7 @@ dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"
 "$DOCKER" logs "$cid" 2>&1 | grep -F 'WARNING: the proxy listens on 0.0.0.0:3081 with NO authentication' \
   || die "no-auth proxy did not print the exposure warning"
 
+section "api.fence"
 # 特权 API(/api/settings/describe): 浏览器 cookie 经代理 200; 无 cookie 401;
 # 3080 直连无 cookie 也必须 401 —— 同网段容器无法绕过代理拿特权接口。
 settings_code="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' -X POST \
@@ -350,6 +535,7 @@ direct_api="$("$DOCKER" exec "$cid" curl -s -o /dev/null -w '%{http_code}' -X PO
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [ "$direct_api" = "401" ] || die "direct dsh (3080) /api without cookie returned $direct_api, expected 401"
 
+section "settings.document"
 # 设置 > 打开配置文件按钮隐藏: 容器无桌面, 上游 openSettingsDocument 无
 # headless 兜底 —— 插件包 settingsController 实例的 describe, 上游 describe
 # 即返回 hasDocument:false。
@@ -370,6 +556,7 @@ printf '%s' "$dl_gone" | grep -qi 'content-disposition: attachment' \
 [[ "$index_html" != *"__DSH_TRANSPORT__"* ]] \
   || die "served index unexpectedly carries the retired __DSH_TRANSPORT__ row"
 
+section "host.allowlist"
 # Host 允许列表: 默认只接受 loopback; 未授权的 dsh.test/evil.test 必须 403。
 # 这正是 DNS rebinding 的防线 —— 不能像旧实现那样把任意 Host 改写成 loopback。
 host_evil="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.test' http://127.0.0.1:3081/)"
@@ -382,6 +569,13 @@ origin_evil="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' \
   -H 'content-type: application/json' \
   --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
 [ "$origin_evil" = "403" ] || die "API with evil Origin returned $origin_evil, expected 403"
+# Sec-Fetch-Site 是围栏的第三个判据: 显式 cross-site 标签一律拒绝(与 Origin 无关)。
+origin_cross="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' \
+  -H 'Sec-Fetch-Site: cross-site' -X POST http://127.0.0.1:3081/api/settings/describe \
+  -H 'content-type: application/json' \
+  --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}')"
+[ "$origin_cross" = "403" ] || die "Sec-Fetch-Site: cross-site returned $origin_cross, expected 403"
+section "plugin.install"
 # 容器适配插件(container/plugin/)必须随镜像安装。
 # assets/ 只在 extract-inline-assets.js 真的抽出大图时才会创建; 上游改为 emit
 # 图片或不再内联 >=100 KiB 图片时目录可以不存在。是否验证 /container-assets
@@ -389,17 +583,19 @@ origin_evil="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' \
 "$DOCKER" exec "$cid" sh -c 'test -f /opt/dsh-container-plugin/index.js && test -f /opt/dsh-container-plugin/overlay.yml && test -f /opt/dsh-container-plugin/scripts/extract-inline-assets.js && test -f /opt/dsh-container-plugin/scripts/minify-client.mjs && test -f /opt/dsh-container-plugin/scripts/refresh-build-record.mjs' \
   || die "container-adapt plugin files missing in the image"
 
+section "sandbox.landlock"
 # 沙箱后端: dsh 的 workspace-write 需要 bwrap 或 Landlock, 镜像刻意不装 bwrap
 # (容器内 unprivileged userns 不可靠), 因此必须带上 static-musl 的 landlock-run。
 # --probe 会真的建一个 Landlock ruleset 并验证内核执行了它 —— 只查文件存在不够:
 # 内核无 Landlock 或被 seccomp 拦掉时, agent 的 bash 会 fail-closed(fail 在这里
-# 比在 release-prep 里盲跑好)。glob 兼容 amd64/arm64。
+# 比在发布流水线里盲跑好)。glob 兼容 amd64/arm64。
 "$DOCKER" exec "$cid" sh -c 'for p in /opt/deepseek-harness/native/system/packages/linux-*/bin/landlock-run; do [ -x "$p" ] && exec "$p" --probe; done; exit 1' \
   || die "sandbox backend (landlock-run) missing or not enforced in the image"
 
+section "client.assets"
 # 客户端产物: 内联大图必须已抽成 /container-assets/<内容哈希> 文件, 产物必须已
 # 压缩(minify 后处理)。合并包是 settings-account 所在的那个 57 模块 combo。
-combo_url="$(grep -oE "plugins/\?\?[^\"' ]*" <<<"$index_html" | grep -m1 'dsh-client-ui-settings-account' || true)"
+combo_url="$(grep -oE "plugins/\?\?[^\"' ]*" <<<"$index_html" | grep -m1 'dsh-client-ui-settings-account' || true)"  # ok: probe-asserted-below
 # 服务端渲染的索引把 URL 里的 & 转义成 &amp; —— 直接拿去 curl 会 404(参数名变成
 # "amp;rev")。注意 bash 的 ${var//pat/rep} 里替换串的 & 表示"匹配到的文本", 必须写成
 # \& 才是字面量 &, 否则等于没替换。
@@ -426,7 +622,7 @@ if grep -oE 'base64,[A-Za-z0-9+/=]+' "$combo_body" \
 fi
 # 上游若自己改为 emit 文件, /container-assets 引用会消失 —— 那是正常演进, 只在下游
 # 真有引用时验证路由; 但"大图内联"永远不允许回归(上面的断言)。
-asset_path="$(grep -oE '/container-assets/[0-9a-f]{16,64}\.(png|jpeg|jpg|webp|gif)' "$combo_body" | head -n1 || true)"
+asset_path="$(grep -oE '/container-assets/[0-9a-f]{16,64}\.(png|jpeg|jpg|webp|gif)' "$combo_body" | head -n1 || true)"  # ok: probe-asserted-below
 if [ -n "$asset_path" ]; then
   asset_headers="$(curl -fsS -b "$cookie_jar" -D - -o /dev/null "http://127.0.0.1:3081${asset_path}")" \
     || die "GET ${asset_path} (extracted client image) failed"
@@ -441,12 +637,13 @@ fi
   || die "combined client bundle is ${combo_bytes} bytes gzipped; expected < 3 MiB (re-measure if upstream grew)"
 rm -f "$combo_body"
 
+section "restart.supervisor"
 # dsh web 守护/重启: dsh-restart 后 dsh-web 重新拉起, 新进程的 launch token 变化,
 # Caddy 热更新 Location; 旧浏览器 cookie 仍有效(dsh 签名密钥持久化在卷上)。
 "$DOCKER" exec "$cid" dsh-restart || die "dsh-restart failed"
 token2=""
 for _ in $(seq 1 90); do
-  token2="$("$DOCKER" logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | tail -n1 | cut -d= -f2 || true)"
+  token2="$("$DOCKER" logs "$cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | tail -n1 | cut -d= -f2 || true)"  # ok: log-dump
   if [ -n "$token2" ] && [ "$token2" != "$token" ]; then break; fi
   sleep 1
 done
@@ -466,16 +663,16 @@ done
 [ "$redirect2_ok" = 1 ] || die "Caddy redirect did not converge to the new launch token after dsh-restart"
 
 # 旧 token 必须失效; 新 token 交换 303; 新浏览器会话可用。
-old_token_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3081/?token=$token" || true)"
+old_token_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3081/?token=$token" || true)"  # ok: probe-asserted-below
 [ "$old_token_code" = "401" ] || die "stale launch token returned $old_token_code, expected 401"
 exchange2="$(curl -sS -o /dev/null -w '%{http_code}' -c "$cookie_relogin" \
-  "http://127.0.0.1:3081/?token=$token2" || true)"
+  "http://127.0.0.1:3081/?token=$token2" || true)"  # ok: probe-asserted-below
 [ "$exchange2" = "303" ] || die "re-login after dsh-restart failed (last exchange=${exchange2:-none})"
 
 # 会话跨 dsh web 重启存活: 重启前的浏览器 cookie 必须仍然 200(不依赖重新注入)。
 survive=""
 for _ in $(seq 1 15); do
-  survive="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
+  survive="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"  # ok: probe-asserted-below
   [ "$survive" = "200" ] && break
   sleep 1
 done
@@ -485,7 +682,7 @@ settings_restart=""
 for _ in $(seq 1 15); do
   settings_restart="$(curl -s -b "$cookie_jar" -o /dev/null -w '%{http_code}' -X POST \
     http://127.0.0.1:3081/api/settings/describe -H 'content-type: application/json' \
-    --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}' || true)"
+    --data '{"type":"client-request","rpcId":"1","method":"settings/describe","payload":{"args":{}}}' || true)"  # ok: probe-asserted-below
   [ "$settings_restart" = "200" ] && break
   sleep 1
 done
@@ -498,6 +695,7 @@ index_restart="$(curl -fsS -b "$cookie_jar" http://127.0.0.1:3081/)" \
 [[ "$index_restart" != *"__DSH_TRANSPORT__"* ]] \
   || die "retired __DSH_TRANSPORT__ row reappeared after dsh web restart"
 
+section "auth.basic"
 # basic auth 模式: 未带凭据 401; 带凭据后浏览器完成 token 登录; root/API 200;
 # 受信任的 Host dsh.test 也必须能登录; WebSocket 只靠 dsh cookie(不要求 basic auth)。
 auth_cid="$("$DOCKER" run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
@@ -509,15 +707,15 @@ auth_cid="$("$DOCKER" run -d --rm --name dsh-smoke-auth -p 127.0.0.1:3082:3081 \
   "$image")"
 auth_token=""
 for _ in $(seq 1 60); do
-  auth_token="$("$DOCKER" logs "$auth_cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"
+  auth_token="$("$DOCKER" logs "$auth_cid" 2>&1 | grep -o 'token=[A-Za-z0-9_-]*' | head -n1 | cut -d= -f2 || true)"  # ok: log-dump
   [ -n "$auth_token" ] && break
-  running "$auth_cid" || { "$DOCKER" logs --tail 30 "$auth_cid" >&2 || true; die "basic-auth container exited before printing a login token"; }
+  running "$auth_cid" || { "$DOCKER" logs --tail 30 "$auth_cid" >&2 || true; die "basic-auth container exited before printing a login token"; }  # ok: log-dump
   sleep 2
 done
-[ -n "$auth_token" ] || { "$DOCKER" logs --tail 30 "$auth_cid" >&2 || true; die "no login token printed by the basic-auth container"; }
+[ -n "$auth_token" ] || { "$DOCKER" logs --tail 30 "$auth_cid" >&2 || true; die "no login token printed by the basic-auth container"; }  # ok: log-dump
 for _ in $(seq 1 60); do
   curl -s -o /dev/null http://127.0.0.1:3082/ 2>/dev/null && break
-  running "$auth_cid" || { "$DOCKER" logs --tail 30 "$auth_cid" >&2 || true; die "basic-auth container exited before the proxy became ready"; }
+  running "$auth_cid" || { "$DOCKER" logs --tail 30 "$auth_cid" >&2 || true; die "basic-auth container exited before the proxy became ready"; }  # ok: log-dump
   sleep 1
 done
 unauth="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3082/)"
@@ -557,7 +755,7 @@ auth_evil="$(curl -sS -u smoke:smoke-pass -o /dev/null -w '%{http_code}' -H 'Hos
 ws() { curl -sS --http1.1 -i --max-time 3 -o /tmp/dsh-smoke-ws.out \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
   -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-  "$@" http://127.0.0.1:3082/api/remote.mux >/dev/null 2>&1 || true; head -1 /tmp/dsh-smoke-ws.out; }
+  "$@" http://127.0.0.1:3082/api/remote.mux >/dev/null 2>&1 || true; head -1 /tmp/dsh-smoke-ws.out; }  # ok: probe-asserted-below
 ws_ok="$(ws -H 'Host: dsh.test' -b "$auth_dsh_jar")"
 case "$ws_ok" in *'101 Switching Protocols'*) ;; *) die "cookie-only WebSocket handshake returned: $ws_ok" ;; esac
 ws_denied="$(ws -H 'Host: dsh.test')"
@@ -570,12 +768,13 @@ if timeout 30 "$DOCKER" run --rm --name dsh-smoke-partial-auth \
     -e DSH_PROXY_USER=smoke \
     "$image" >/tmp/dsh-partial-auth.log 2>&1; then
   echo "container with only DSH_PROXY_USER set unexpectedly started" >&2
-  cat /tmp/dsh-partial-auth.log >&2 || true
+  cat /tmp/dsh-partial-auth.log >&2 || true  # ok: probe-asserted-below
   exit 1
 fi
 grep -F 'must be set together' /tmp/dsh-partial-auth.log >/dev/null \
   || die "partial-auth container failed without the expected message"
 
+section "proxy.env"
 # 出站代理环境变量回归: network-proxy 文档会要求 HTTP(S)_PROXY; 容器内部探针
 # 必须 --noproxy 直连回环, 否则 wait_for_dsh_port/健康检查会走代理并失败。
 proxy_cid="$("$DOCKER" run -d --rm --name dsh-smoke-proxy -p 127.0.0.1:3083:3081 \
@@ -587,22 +786,23 @@ proxy_cid="$("$DOCKER" run -d --rm --name dsh-smoke-proxy -p 127.0.0.1:3083:3081
   "$image")"
 proxy_ready=0
 for _ in $(seq 1 60); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3083/ 2>/dev/null || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3083/ 2>/dev/null || true)"  # ok: probe-asserted-below
   if [ "$code" = "302" ] || [ "$code" = "401" ]; then proxy_ready=1; break; fi
-  running "$proxy_cid" || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container exited during startup"; }
+  running "$proxy_cid" || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container exited during startup"; }  # ok: log-dump
   sleep 1
 done
-[ "$proxy_ready" = 1 ] || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container did not become reachable (internal probes went through HTTP_PROXY?)"; }
+[ "$proxy_ready" = 1 ] || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container did not become reachable (internal probes went through HTTP_PROXY?)"; }  # ok: log-dump
 proxy_health=""
 for _ in $(seq 1 40); do
-  proxy_health="$("$DOCKER" inspect -f '{{.State.Health.Status}}' "$proxy_cid" 2>/dev/null || true)"
+  proxy_health="$("$DOCKER" inspect -f '{{.State.Health.Status}}' "$proxy_cid" 2>/dev/null || true)"  # ok: probe-asserted-below
   [ "$proxy_health" = "healthy" ] && break
   sleep 2
 done
-[ "$proxy_health" = "healthy" ] || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container health is '$proxy_health', expected healthy"; }
-"$DOCKER" rm -f "$proxy_cid" >/dev/null 2>&1 || true
+[ "$proxy_health" = "healthy" ] || { "$DOCKER" logs --tail 40 "$proxy_cid" >&2 || true; die "proxy-env container health is '$proxy_health', expected healthy"; }  # ok: log-dump
+"$DOCKER" rm -f "$proxy_cid" >/dev/null 2>&1 || true  # ok: cleanup
 proxy_cid=""
 
+section "restart.container"
 # issue #12 回归(同容器重启路径): 旧实现把"cookie 文件被写了一次"当成就绪
 # 信号, 复用旧 cookie 时插件不写盘, dsh-web 空等 120s 后 exit 1。新实现每次
 # dsh 重启都删掉旧 token 并等新 token; 这里真等过 120s 窗口, 确认容器仍在运行、
@@ -610,18 +810,22 @@ proxy_cid=""
 "$DOCKER" restart "$cid" >/dev/null || die "docker restart failed"
 restart_root=""
 for _ in $(seq 1 60); do
-  restart_root="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
+  restart_root="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"  # ok: probe-asserted-below
   [ "$restart_root" = "200" ] && break
-  running "$cid" || { "$DOCKER" logs --tail 40 "$cid" >&2 || true; die "container exited while coming back from docker restart"; }
+  running "$cid" || { "$DOCKER" logs --tail 40 "$cid" >&2 || true; die "container exited while coming back from docker restart"; }  # ok: log-dump
   sleep 1
 done
 [ "$restart_root" = "200" ] \
   || die "browser session after docker restart returned $restart_root, expected 200"
 sleep 130
 running "$cid" \
-  || { "$DOCKER" logs --tail 40 "$cid" >&2 || true; die "container exited within 130s of docker restart (issue #12 regression)"; }
-restart_root_late="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"
+  || { "$DOCKER" logs --tail 40 "$cid" >&2 || true; die "container exited within 130s of docker restart (issue #12 regression)"; }  # ok: log-dump
+restart_root_late="$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:3081/ || true)"  # ok: probe-asserted-below
 [ "$restart_root_late" = "200" ] \
   || die "browser session 130s after docker restart returned $restart_root_late, expected 200"
 
+record "$CURRENT_CHECK" pass "$(( $(date +%s%3N) - CHECK_START ))" ""
+CHECK_OPEN=0
+write_diagnostics pass ""
+printf 'SMOKE-OK image=%s platform=%s dsh=%s tag=%s\n' "$image" "$image_platform" "$dsh_version" "$expect_tag"
 echo "=== [smoke] PASS: all checks passed for $image"

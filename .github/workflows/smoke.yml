@@ -1,0 +1,206 @@
+name: Smoke
+
+# 唯一的重门(pure gate)。两个架构各自构建/拉取, 跑同源的 tests/smoke.sh;
+# 只产出 ok 信号与诊断产物 —— 不打 tag、不推镜像、不发 issue、不写仓库。
+#
+# 调用方:
+#   ci.yml      —— main push 且改动命中运行时面(严格准入)时调用, dsh_tag 已解析
+#   publish.yml —— 发布时用已推送的两个 digest 调用(pull 模式)
+#
+# 模式由 image_amd64 / image_arm64 决定: 为空=本地构建(load); 非空=拉该 digest。
+# 两个架构永远都跑 —— 没有单架构开关, "重门就是双架构"。
+
+on:
+  workflow_call:
+    inputs:
+      dsh_tag:
+        description: 'Concrete upstream tag baked into the image (dsh-vX.Y.Z)'
+        required: true
+        type: string
+      ref:
+        description: 'Commit to test (defaults to the caller commit)'
+        required: false
+        default: ''
+        type: string
+      image_amd64:
+        description: 'Published amd64 image reference (ghcr.io/...@sha256:...); empty builds locally'
+        required: false
+        default: ''
+        type: string
+      image_arm64:
+        description: 'Published arm64 image reference; empty builds locally'
+        required: false
+        default: ''
+        type: string
+      expect_version:
+        description: 'Expected dsh version without the dsh-v prefix (optional)'
+        required: false
+        default: ''
+        type: string
+    outputs:
+      ok:
+        description: "'true' when every architecture passed"
+        value: ${{ jobs.verdict.outputs.ok }}
+      summary:
+        description: 'One-line verdict for issue comments'
+        value: ${{ jobs.verdict.outputs.summary }}
+  workflow_dispatch:
+    inputs:
+      dsh_tag:
+        description: 'Upstream tag to test (dsh-vX.Y.Z)'
+        required: true
+        type: string
+      image_amd64:
+        description: 'Existing amd64 reference to pull (empty = build locally)'
+        required: false
+        default: ''
+        type: string
+      image_arm64:
+        description: 'Existing arm64 reference to pull (empty = build locally)'
+        required: false
+        default: ''
+        type: string
+      expect_version:
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  image:
+    name: Smoke linux/${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve target image
+        id: target
+        env:
+          REPO: ${{ github.repository }}
+          ARCH: ${{ matrix.arch }}
+          IMAGE_AMD64: ${{ inputs.image_amd64 }}
+          IMAGE_ARM64: ${{ inputs.image_arm64 }}
+        run: |
+          set -euo pipefail
+          image_name="ghcr.io/$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+          if [ "$ARCH" = amd64 ]; then
+            published="$IMAGE_AMD64"
+          else
+            published="$IMAGE_ARM64"
+          fi
+          if [ -n "$published" ]; then
+            mode=pull
+            target="$published"
+          else
+            mode=build
+            target="$image_name:smoke-${GITHUB_RUN_ID}-${ARCH}"
+          fi
+          {
+            echo "name=$image_name"
+            echo "mode=$mode"
+            echo "ref=$target"
+          } >> "$GITHUB_OUTPUT"
+          echo "smoke target: $mode $target"
+
+      - name: Log in to GitHub Container Registry (published digest)
+        if: steps.target.outputs.mode == 'pull'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the published digest
+        if: steps.target.outputs.mode == 'pull'
+        env:
+          TARGET: ${{ steps.target.outputs.ref }}
+        run: docker pull "$TARGET"
+
+      - name: Set up Docker Buildx
+        if: steps.target.outputs.mode == 'build'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build image for smoke
+        if: steps.target.outputs.mode == 'build'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          load: true
+          tags: ${{ steps.target.outputs.ref }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.arch }},ignore-error=true
+          build-args: |
+            BUILD_GIT_SHA=${{ github.sha }}
+            BUILD_GIT_REF=${{ github.ref_name }}
+            BUILD_VERSION=${{ inputs.dsh_tag }}
+            DSH_TAG=${{ inputs.dsh_tag }}
+
+      - name: Run smoke
+        env:
+          TARGET: ${{ steps.target.outputs.ref }}
+          EXPECT_TAG: ${{ inputs.dsh_tag }}
+          EXPECT_VERSION: ${{ inputs.expect_version }}
+          PLATFORM: linux/${{ matrix.arch }}
+        run: |
+          set -o pipefail
+          args=(--expect-dsh-tag "$EXPECT_TAG" --expect-platform "$PLATFORM"
+                --diagnostic-dir "$RUNNER_TEMP/smoke-diag")
+          if [ -n "$EXPECT_VERSION" ]; then
+            args+=(--expect-dsh-version "$EXPECT_VERSION")
+          fi
+          tests/smoke.sh "$TARGET" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: smoke-diagnostic-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/smoke-diag
+            ${{ runner.temp }}/smoke.log
+          retention-days: 14
+          if-no-files-found: warn
+
+  verdict:
+    name: Smoke verdict
+    needs: image
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ok: ${{ steps.verdict.outputs.ok }}
+      summary: ${{ steps.verdict.outputs.summary }}
+    steps:
+      - name: Aggregate
+        id: verdict
+        env:
+          RESULT: ${{ needs.image.result }}
+        run: |
+          set -euo pipefail
+          if [ "$RESULT" = success ]; then
+            ok=true
+          else
+            ok=false
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "summary=smoke $RESULT (amd64+arm64)" >> "$GITHUB_OUTPUT"
+          echo "smoke verdict: $ok ($RESULT)"
+          [ "$ok" = true ] || exit 1

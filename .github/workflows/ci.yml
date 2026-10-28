@@ -1,0 +1,125 @@
+name: CI
+
+# 轻门 = 本文件的 light job: 只有静态检查, 永不构建镜像。
+# 重门 = smoke.yml: 永远双架构, 由本文件的 smoke job 在 main 上按严格准入调用。
+#
+# 准入(严格、fail-closed): 只有改动命中运行时面才进重门 ——
+#   Containerfile / container/** / tests/smoke.sh / .github/workflows/smoke.yml
+# 文档、README、其他测试脚本、其他 workflow 改动都只跑轻门。diff 无法计算
+# (force push、before 缺失、浅克隆)时按"需要重门"处理, 宁可多跑一次也不漏检。
+#
+# PR 只跑轻门(PR 跑双架构重门成本过高, 发布前一定会在 main/发布路径上跑)。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
+
+jobs:
+  changes:
+    name: Classify change (heavy gate admission)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      heavy: ${{ steps.classify.outputs.heavy }}
+      upstream_tag: ${{ steps.upstream.outputs.tag }}
+      files: ${{ steps.classify.outputs.files }}
+    steps:
+      # fetch-depth 0: 要比较 push 前后的真实 diff; 浅克隆会让判定退化为
+      # "需要重门"(fail-closed), 只是慢, 不会漏检。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether the heavy gate runs
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          heavy=true
+          files=""
+          if [ "$EVENT_NAME" = push ] && [ -n "$BEFORE" ] \
+              && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+              && files="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null)"; then
+            heavy=false
+            if grep -qE '^(Containerfile$|container/|tests/smoke\.sh$|\.github/workflows/smoke\.yml$)' <<<"$files"; then
+              heavy=true
+            fi
+          fi
+          {
+            echo "heavy=$heavy"
+            echo "files<<EOF"
+            printf '%s\n' "${files:-<not derivable — heavy gate forced>}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Heavy gate admission"
+            echo
+            echo "- heavy gate: \`$heavy\`"
+            echo "- changed files:"
+            echo '```'
+            printf '%s\n' "${files:-<not derivable — heavy gate forced>}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 重门要一个具体上游 tag(Build args 与 --expect-dsh-tag 都需要), 这里解析一次;
+      # 排序键与 watcher / publish 共用 tests/compare-tags.mjs, 不另写一套。
+      - name: Resolve newest upstream dsh-v* tag
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tags="$(gh api --paginate "repos/$UPSTREAM_REPO/tags?per_page=100" --jq '.[].name' \
+            | grep -E '^dsh-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || true)"
+          comparison="$(UPSTREAM_TAGS="$tags" SELF_TAGS='' node tests/compare-tags.mjs)"
+          tag="$(jq -r '.upstream' <<<"$comparison")"
+          [ -n "$tag" ] || { echo "no upstream dsh-v* tag found" >&2; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "newest upstream tag: $tag"
+
+  light:
+    name: Static gates (light)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # 静态门禁的单一来源: tests/validate-static.sh 同时被 CI、publish 的
+      # light job 与本地 `just lint` 使用。
+      - name: Static validation
+        run: tests/validate-static.sh
+
+      - name: Lint GitHub Actions workflows
+        run: tests/validate-workflows.sh
+
+  smoke:
+    name: Smoke (heavy)
+    needs: [changes, light]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.heavy == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/smoke.yml  # zizmor: ignore[self-repository] -- same-commit local call
+    with:
+      dsh_tag: ${{ needs.changes.outputs.upstream_tag }}

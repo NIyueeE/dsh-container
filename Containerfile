@@ -439,8 +439,8 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     pnpm run build:official; \
     # build:official 里的 native 门只跑 build:native-system --host-addon-only, 只编
     # Node-API 的 flock, **不产出** Landlock 的 static-musl 启动器; 缺它时 dsh 的
-    # workspace-write 沙箱在本镜像里 fail-closed(bwrap 也没装), headless agent 的
-    # bash 全部不可用(2026-10-28 dsh-v0.2.2-alpha.2 的 release-prep 因此盲跑)。
+    # workspace-write 沙箱在本镜像里 fail-closed(bwrap 也没装), 用户会话需要这个
+    # 启动器才能执行命令。
     # musl-gcc 由第 1 步的 musl-tools 提供, 产物落在 native/system/packages/linux-*/bin/。
     pnpm exec tsx native/system/scripts/build.ts; \
     ls native/system/packages/linux-*/bin/landlock-run >/dev/null; \

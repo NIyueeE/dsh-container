@@ -1,6 +1,6 @@
-// Shared semver ordering for `dsh-v*` tags. Three places used to carry their own
-// copy of this logic (newest-tag.mjs, upstream-tag.yml's inline JS, the
-// release-prep downgrade guard); one module keeps them from drifting.
+// Shared semver ordering for `dsh-v*` tags. Several places used to carry their own
+// copy of this logic (newest-tag.mjs, upstream-tag.yml, the publish downgrade
+// guard); one module keeps them from drifting.
 //
 // Key format: core segments padded to 8 digits; prerelease identifiers encoded
 // one by one (numeric -> "0" + 12-digit pad, alphanumeric -> "1" + text), and a

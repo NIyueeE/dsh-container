@@ -3,7 +3,7 @@ name: Maintenance
 # 周期性清理:
 #   - Actions cache: 仓库配额默认 10 GB, 多个 mode=max 构建会把它顶满并互相驱逐;
 #   - GHCR: 每次发布产生 dsh-v* / <sha> 版本, 旧的既不回滚也不该无限增长。
-# 只保留最近 12 个镜像版本(远多于 release-prep 需要的上一个 tag), 并删除所有
+# 只保留最近 12 个镜像版本, 并删除所有
 # untagged 构建残留。手动 dispatch 也可以随时跑。
 on:
   schedule:

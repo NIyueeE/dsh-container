@@ -1,0 +1,415 @@
+name: Publish
+
+# 发布流水线 —— 唯一的触发源是 push 一个 dsh-v* tag:
+#   手动发版 = 自己推 tag; 自动发版 = upstream-tag.yml 用 RELEASE_PAT 推 tag。
+#
+# 门禁顺序: guard(降级/幂等) → light(静态, 复用 ci.yml) → 双架构构建(按 digest 推送)
+#           → smoke(复用 smoke.yml, 双架构, 唯一重门) → 合并 manifest + Release。
+# 失败: 镜像标签尚未产生的, 删除远端 tag(不留孤儿); 已产生的保留 tag 并报告。
+#
+# smoke 测试的就是随后要合并的两个 digest —— 测试物即发布物。
+
+on:
+  push:
+    tags: ['dsh-v*']
+
+# 发布串行: latest 归属与 tag 清理都不能并发判定。
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
+
+jobs:
+  guard:
+    name: Resolve tag, downgrade guard, idempotency
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      version: ${{ steps.resolve.outputs.version }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      refused: ${{ steps.resolve.outputs.refused }}
+      published: ${{ steps.resolve.outputs.published }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and guard
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+          sha="$(git rev-parse HEAD)"
+          version="${NEW_TAG#dsh-v}"
+
+          # 降级守卫: 只拒绝"比现有最新更旧"的 tag; 同名 tag 允许重发(不带 STRICT)。
+          tags="$(git ls-remote --tags origin 'refs/tags/dsh-v*' \
+            | sed -E 's#.*refs/tags/##' | grep -v '\^{}' | sort -u)"
+          newest="$(NEW_TAG="$NEW_TAG" EXISTING="$tags" node tests/newest-tag.mjs)"
+          if [ "$newest" = "true" ]; then refused=false; else refused=true; fi
+
+          # 幂等: 已经发过就什么都不做(重跑同一 tag 不应重新构建/覆盖)。
+          published=false
+          if gh release view "$NEW_TAG" >/dev/null 2>&1; then published=true; fi
+
+          {
+            echo "image=$image"
+            echo "version=$version"
+            echo "sha=$sha"
+            echo "refused=$refused"
+            echo "published=$published"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Publish guard"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| tag | \`$NEW_TAG\` |"
+            echo "| commit | \`$sha\` |"
+            echo "| refused (older than newest) | \`$refused\` |"
+            echo "| already published | \`$published\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$refused" = true ]; then
+            echo "refusing to publish $NEW_TAG: not newer than the newest dsh-v* tag" >&2
+            exit 1
+          fi
+
+  light:
+    name: Static gates (light)
+    needs: guard
+    if: needs.guard.outputs.refused != 'true' && needs.guard.outputs.published != 'true'
+    permissions:
+      contents: read
+      packages: read # the called workflow's smoke job asks for it (it is skipped here)
+    uses: ./.github/workflows/ci.yml  # zizmor: ignore[self-repository] -- same-commit local call
+
+  build-amd64:
+    name: Build linux/amd64 by digest
+    needs: [guard, light]
+    if: needs.light.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 只按 digest 推送, 不带任何 tag: smoke 失败时这份 digest 永远不会被合并,
+      # 由 maintenance 清理 untagged 版本。
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64
+          outputs: type=image,name=${{ needs.guard.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=min,scope=amd64,ignore-error=true
+          build-args: |
+            BUILD_GIT_SHA=${{ github.sha }}
+            BUILD_GIT_REF=${{ github.ref_name }}
+            BUILD_VERSION=${{ github.ref_name }}
+            DSH_TAG=${{ github.ref_name }}
+
+  build-arm64:
+    name: Build linux/arm64 by digest
+    needs: [guard, light]
+    if: needs.light.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/arm64
+          outputs: type=image,name=${{ needs.guard.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=min,scope=arm64,ignore-error=true
+          build-args: |
+            BUILD_GIT_SHA=${{ github.sha }}
+            BUILD_GIT_REF=${{ github.ref_name }}
+            BUILD_VERSION=${{ github.ref_name }}
+            DSH_TAG=${{ github.ref_name }}
+
+  smoke:
+    name: Smoke (heavy, both architectures)
+    needs: [guard, build-amd64, build-arm64]
+    # 已经发布过(published=true) 或构建被跳过时不要重建: 只有两个 digest 都在才冒烟。
+    if: >-
+      needs.guard.outputs.published != 'true' &&
+      needs.build-amd64.result == 'success' &&
+      needs.build-arm64.result == 'success'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/smoke.yml  # zizmor: ignore[self-repository] -- same-commit local call
+    with:
+      dsh_tag: ${{ github.ref_name }}
+      image_amd64: ${{ needs.guard.outputs.image }}@${{ needs.build-amd64.outputs.digest }}
+      image_arm64: ${{ needs.guard.outputs.image }}@${{ needs.build-arm64.outputs.digest }}
+      expect_version: ${{ needs.guard.outputs.version }}
+
+  publish:
+    name: Merge manifest and create the Release
+    needs: [guard, build-amd64, build-arm64, smoke]
+    if: needs.smoke.outputs.ok == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # 创建 Release、关闭 tracker issue
+      packages: write # 写入多架构 manifest
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # latest 的归属必须在发布这一刻判定(构建期间可能有别的发布跑完)。
+      - name: Merge the multi-arch manifest
+        env:
+          IMAGE: ${{ needs.guard.outputs.image }}
+          NEW_TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          DIGEST_AMD64: ${{ needs.build-amd64.outputs.digest }}
+          DIGEST_ARM64: ${{ needs.build-arm64.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tags="$(git ls-remote --tags origin 'refs/tags/dsh-v*' \
+            | sed -E 's#.*refs/tags/##' | grep -v '\^{}' | sort -u)"
+          is_latest="$(NEW_TAG="$NEW_TAG" EXISTING="$tags" node tests/newest-tag.mjs)"
+          refs=(-t "$IMAGE:$NEW_TAG" -t "$IMAGE:$SHA")
+          if [ "$is_latest" = "true" ]; then
+            refs+=(-t "$IMAGE:latest")
+          else
+            echo "not the newest tag; leaving :latest untouched" >&2
+          fi
+          docker buildx imagetools create "${refs[@]}" \
+            "$IMAGE@$DIGEST_AMD64" "$IMAGE@$DIGEST_ARM64"
+
+      # 结构断言: 合并后的 manifest 必须同时包含两个平台, 否则不建 Release。
+      - name: Assert the merged manifest has both platforms
+        env:
+          IMAGE: ${{ needs.guard.outputs.image }}
+          NEW_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          raw="$(docker buildx imagetools inspect --raw "$IMAGE:$NEW_TAG")"
+          platforms="$(jq -r '[.manifests[]?.platform | "\(.os)/\(.architecture)"] | sort | join(",")' <<<"$raw")"
+          echo "platforms: $platforms"
+          [ "$platforms" = "linux/amd64,linux/arm64" ] \
+            || { echo "merged manifest platforms are '$platforms'" >&2; exit 1; }
+
+      - name: Compose release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/release-body.md"
+          : > "$body"
+          if upstream="$(gh api "repos/${UPSTREAM_REPO}/releases/tags/${GITHUB_REF_NAME}" --jq .body 2>/dev/null)" \
+              && [ -n "$upstream" ]; then
+            {
+              printf '<details>\n<summary>Upstream <code>%s</code> release notes (quoted)</summary>\n\n' "$GITHUB_REF_NAME"
+              printf '%s\n' "$upstream"
+              printf '\n</details>\n\n'
+            } >> "$body"
+          else
+            echo "note: no upstream release notes found for ${GITHUB_REF_NAME}; linking only" >&2
+          fi
+          printf -- '---\n\nUpstream release: https://github.com/%s/releases/tag/%s\n' \
+            "$UPSTREAM_REPO" "$GITHUB_REF_NAME" >> "$body"
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes-file "$RUNNER_TEMP/release-body.md"
+          else
+            gh release create "$TAG" --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/release-body.md" --generate-notes
+          fi
+
+      - name: Close the tracker issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="New upstream dsh release available: $TAG"
+          num="$(gh issue list --state open --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -n1 || true)"
+          [ -n "$num" ] || exit 0
+          gh issue close "$num" --comment \
+            "Published: \`$TAG\` is built for amd64 + arm64, smoke-tested on both, and the GitHub Release exists." \
+            || true
+
+  finalize:
+    name: Report failure and clean up the orphan tag
+    needs: [guard, light, build-amd64, build-arm64, smoke, publish]
+    if: failure() || cancelled()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # 删除孤儿 tag
+      packages: read  # 判断镜像标签是否已存在
+      issues: write   # 在 tracker issue 上评论
+      actions: read   # 下载 smoke 诊断 artifact
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      NEW_TAG: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+      IMAGE: ${{ needs.guard.outputs.image }}
+      REFUSED: ${{ needs.guard.outputs.refused }}
+    steps:
+      - name: Fetch smoke diagnostics
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: smoke-diagnostic-*
+          path: ${{ runner.temp }}/smoke-diag
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Decide whether the tag is an orphan
+        id: decide
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          delete=false
+          reason=""
+          if [ "$REFUSED" = "true" ]; then
+            reason="tag was refused by the downgrade guard; keeping it for inspection"
+          else
+            docker login ghcr.io -u "$ACTOR" --password-stdin <<<"$GH_TOKEN" >/dev/null 2>&1 || true
+            if docker buildx imagetools inspect "$IMAGE:$NEW_TAG" >/dev/null 2>&1; then
+              reason="image tag :$NEW_TAG already exists; keeping the tag"
+            else
+              remote="$(git ls-remote --tags "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+                "refs/tags/$NEW_TAG" | awk '{print $1}' | head -n1 || true)"
+              if [ "$remote" = "$SHA" ]; then
+                delete=true
+                reason="no image tag was published; deleting the tag"
+              else
+                reason="the remote tag no longer points at this commit; leaving it alone"
+              fi
+            fi
+          fi
+          echo "delete=$delete" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "$reason"
+
+      - name: Delete the orphan tag
+        if: steps.decide.outputs.delete == 'true'
+        run: |
+          set -euo pipefail
+          git push --delete "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "refs/tags/$NEW_TAG"
+
+      - name: Comment on the tracker issue
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          set -euo pipefail
+          title="New upstream dsh release available: $NEW_TAG"
+          num="$(gh issue list --state open --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -n1 || true)"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo "<!-- publish-status -->"
+            echo "## Publish failed for \`$NEW_TAG\`"
+            echo
+            echo "| job | result |"
+            echo "|---|---|"
+            echo "| guard | ${{ needs.guard.result }} |"
+            echo "| light | ${{ needs.light.result }} |"
+            echo "| build-amd64 | ${{ needs.build-amd64.result }} |"
+            echo "| build-arm64 | ${{ needs.build-arm64.result }} |"
+            echo "| smoke | ${{ needs.smoke.result }} |"
+            echo "| publish | ${{ needs.publish.result }} |"
+            echo
+            if [ -f "$RUNNER_TEMP/smoke-diag/smoke-diagnostic.json" ]; then
+              echo "### Smoke diagnostic"
+              echo
+              jq -r '"| field | value |\n|---|---|\n| platform | `\(.platform)` |\n| failed check | `\(.failed_check // "none")` |\n| message | \(.message // "none") |"' \
+                "$RUNNER_TEMP/smoke-diag/smoke-diagnostic.json" 2>/dev/null || true
+              echo
+            fi
+            echo "Diagnostics: \`gh run view $RUN_ID --log-failed\`, or"
+            echo "\`gh run download $RUN_ID -n smoke-diagnostic-amd64 -D ./diag\`"
+            echo "(also \`smoke-diagnostic-arm64\` and \`smoke.log\` are uploaded)."
+            echo
+            echo "$REASON"
+            echo
+            echo "See the [workflow run]($run_url)."
+          } > "$RUNNER_TEMP/comment.md"
+          if [ -z "$num" ]; then
+            cat "$RUNNER_TEMP/comment.md"
+            exit 0
+          fi
+          existing="$(gh api --paginate "repos/$REPO/issues/$num/comments?per_page=100" \
+            --jq '.[] | select(.body | contains("<!-- publish-status -->")) | .id' | tail -n1 || true)"
+          if [ -n "$existing" ]; then
+            jq -Rs '{body: .}' "$RUNNER_TEMP/comment.md" \
+              | gh api -X PATCH "repos/$REPO/issues/comments/$existing" --input - >/dev/null
+          else
+            gh issue comment "$num" --body-file "$RUNNER_TEMP/comment.md"
+          fi

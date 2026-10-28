@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # GitHub Actions workflow 静态检查: actionlint(schema、表达式、run 脚本的 shellcheck)
 # + zizmor(权限/模板注入/未 pin 的 action/危险 trigger 等安全审计)。
-# 两个工具都用固定 digest 的容器, 宿主只要 docker/podman 就能跑, 与 image.yml
-# 的 validate job / release-prep 的 verify job / 本地 `just lint-workflows` 共用
-# 同一份判据(版本也不会随 runner 漂移)。
+# 两个工具都用固定 digest 的容器, 宿主只要 docker/podman 就能跑, 与 ci.yml 的
+# light job / publish.yml 复用的同一条轻门 / 本地 `just lint-workflows` 共用同一份
+# 判据(版本也不会随 runner 漂移)。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

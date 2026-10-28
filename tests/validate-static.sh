@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# 静态门禁(单一来源): image.yml 的 validate job、release-prep 的 verify job
-# 和本地 `just lint` 都跑这一套。verify 在推 tag 之前跑它, 保证 tag 不会在
-# image.yml 的 validate 阶段才失败。
+# 静态门禁(单一来源): ci.yml 的 light job(以及 publish.yml 复用的同一条)、
+# 本地 `just lint` 都跑这一套。轻门只做静态检查, 永不构建镜像。
 #
 # 用法:
 #   tests/validate-static.sh                 # 完整(CI; 需要 docker + sudo/systemd)
 #   tests/validate-static.sh --no-runtime    # 跳过 compose/quadlet(本地 just lint)
 #
-# 不在这里跑 tests/contract.sh: 它需要上游 tag, 由 image.yml(tag build)和
-# release-prep verify 单独调用。
+# 重门(构建 + smoke)不在本脚本里: 它是 smoke.yml 调用的 tests/smoke.sh,
+# 因为静态检查不能代替行为验证。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,14 +60,22 @@ python3 tests/validate-docs.py links
 python3 tests/validate-docs.py parity
 
 echo "== removed auto-update remnants"
-# 排除本脚本和 image.yml 自身: 它们包含下面这些模式字符串。
-if grep -RIn --exclude-dir=.git --exclude='image.yml' --exclude='validate-static.sh' \
+# 排除本脚本和 workflow 自身: 它们包含下面这些模式字符串。
+if grep -RIn --exclude-dir=.git --exclude='validate-static.sh' --exclude='*.yml' \
      -E 'DSH_AUTO_UPDATE|dsh-update|update-dsh|DSH_VERSION|@deepseek-ai/dsh@' .; then
   echo "found references to removed dsh auto-update / npm install" >&2
   exit 1
 fi
-if grep -nE 'DSH_AUTO_UPDATE[ =:]|dsh-update\.sh|update-dsh[ :]|DSH_VERSION[ =:]' .github/workflows/image.yml; then
+if grep -rnE 'DSH_AUTO_UPDATE[ =:]|dsh-update\.sh|update-dsh[ :]|DSH_VERSION[ =:]' .github/workflows/; then
   echo "workflow still references removed dsh auto-update / npm install" >&2
+  exit 1
+fi
+
+echo "== smoke.sh fail-closed audit"
+# smoke 里允许 `|| true` 只用于 trap/日志/探针, 且必须标注原因(见文件头的约定);
+# 未标注的宽容写法会让"失败被吞掉"悄悄回归。
+if grep -nE '\|\| true' tests/smoke.sh | grep -v '# ok:'; then
+  echo "tests/smoke.sh: every '|| true' needs a '# ok: <reason>' annotation" >&2
   exit 1
 fi
 

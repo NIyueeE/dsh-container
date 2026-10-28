@@ -1,339 +1,205 @@
 name: Upstream dsh tag watch
 
-# Dependabot 没有"监视另一个仓库 git tag"的 ecosystem(它只认
-# package-ecosystem: github-actions / docker / npm 等), 因此上游 dsh 的
-# dsh-v* tag 由这个定时任务监视: 每天对照 GitHub API, 上游
-# deepseek-ai/deepseek-harness 出现本仓库尚未镜像的新 dsh-v* tag 时, 开一个
-# 提醒 issue(含发布命令)并 repository_dispatch 触发 release-prep.yml 的
-# 自动发版准备流水线(契约检查 → agent 修复 → 构建冒烟 → 推 tag); 本仓库推上
-# 同名 tag 且该 push 确实触发了 image.yml 后(tag push 事件存在), 下次运行
-# 自动关闭该 issue。
-# 另外做一次发布健康检查: 本仓库最新 dsh-v* tag 的 image.yml 最近一次运行
-# 若不是 completed/success(从未运行 / 失败 / 被取消), 开一个
-# "Release pipeline not published: <tag>" issue, 成功后自动关闭 —— 手工推 tag
-# 后构建失败时不会再无声无息(2026-09-22 dsh-v0.1.7-alpha.1 的两次失败与一次
-# 取消当时就没有任何提醒)。
-# 推送 dsh-v* tag 或手动 dispatch 时也会立即检查。
+# 上游 dsh 的 dsh-v* tag 监视(Dependabot 没有"监视另一个仓库 git tag"的生态)。
+# 每 6 小时对照 GitHub API:
 #
-# 上游仓库可用仓库变量 DSH_UPSTREAM_REPO 覆盖(与 image.yml 的 vars.DSH_TAG
-# 模式一致), 默认 deepseek-ai/deepseek-harness。
+#   - 上游出现本仓库尚未镜像的新 tag → 开 tracker issue, 并(配置了 RELEASE_PAT 时)
+#     在 main 的 HEAD 上创建同名 tag 推上去 —— 这个 push 就是发布触发源, 发布
+#     流水线 publish.yml 会跑 light → 双架构构建 → smoke → Release。
+#   - 没有 PAT 时只留言手动命令(`git tag ... && git push ...`), 不自动发。
+#   - 24 小时内该 tag 已经失败过一次发布 → 不重复建 tag, 只留言(避免每 6 小时
+#     重跑一次双架构构建)。
+#   - 已跟上上游 → 关闭 tracker issue(以 GitHub Release 是否存在为准);
+#     并对最新 tag 做发布健康检查: 没有 Release 就开/留
+#     "Release pipeline not published: <tag>" issue, 成功后自动关闭。
+#
+# 本文件只做"发现 + 建 tag + 报状态", 不构建、不发布。
 
 on:
   schedule:
-    # 每 6 小时一次。Actions 的 schedule 是"尽力而为"的排队, 实测落点比名义
-    # 时间晚 4-9 小时; 单次/天时最坏要 ~30h 才发现上游新 tag, 4 次/天可把最坏
-    # 延迟压到 ~10-15h。Image 完成时另有 workflow_run 立即做健康检查。
+    # Actions 的 schedule 是尽力而为, 实测比名义时间晚 4-9 小时; 4 次/天把
+    # 发现延迟压到 ~10-15 小时。
     - cron: "0 */6 * * *"
   workflow_dispatch:
   push:
     tags: ['dsh-v*']
 
-# issue/label 管理与 repository_dispatch 需要写权限(创建 dispatch 事件需要
-# contents:write; 该事件是 GITHUB_TOKEN 反递归限制的豁免项, 可直接触发下游);
-# actions:read 用于关闭 issue 前确认该 tag 确实触发过 image.yml(push 事件存在)
 permissions:
-  contents: write
+  contents: write # 创建/推送 tag(PAT 缺失时不会用到)
   issues: write
-  actions: read
+  actions: read # 查询 publish.yml 的运行结果
 
 concurrency:
   group: upstream-tag-watch
   cancel-in-progress: false
 
+env:
+  UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
+
 jobs:
   watch:
     name: Compare newest dsh-v* tags
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
-      # 本 workflow 不 checkout, gh 的 issue/label 命令需要显式指定仓库
       GH_REPO: ${{ github.repository }}
       SELF_REPO: ${{ github.repository }}
-      UPSTREAM_REPO: ${{ vars.DSH_UPSTREAM_REPO || 'deepseek-ai/deepseek-harness' }}
-      ISSUE_TITLE_PREFIX: 'New upstream dsh release available:'
-      RELEASE_ISSUE_PREFIX: 'Release pipeline not published:'
-      EVENT_NAME: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Compare newest dsh-v* tags and open/close a tracker issue
+      - name: Compare tags, tag the new release, report status
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-
-          # 列出仓库全部 tag 名(分页拉全量; API 失败直接让 job 失败)
-          list_tags() {
-            gh api --paginate "repos/$1/tags?per_page=100" --jq '.[].name'
-          }
+          list_tags() { gh api --paginate "repos/$1/tags?per_page=100" --jq '.[].name'; }
 
           upstream_tags="$(list_tags "$UPSTREAM_REPO")"
           self_tags="$(list_tags "$SELF_REPO")"
-
           comparison="$(UPSTREAM_TAGS="$upstream_tags" SELF_TAGS="$self_tags" node tests/compare-tags.mjs)"
-
           upstream_tag="$(jq -r '.upstream' <<<"$comparison")"
           self_tag="$(jq -r '.self' <<<"$comparison")"
-          upstream_newer="$(jq -r '.upNewer' <<<"$comparison")"
+          up_newer="$(jq -r '.upNewer' <<<"$comparison")"
 
-          echo "upstream newest dsh-v* tag: ${upstream_tag:-<none>}"
-          echo "this repo  newest dsh-v* tag: ${self_tag:-<none>}"
+          echo "upstream newest: ${upstream_tag:-<none>} / this repo: ${self_tag:-<none>}"
 
-          {
-            echo "### Upstream dsh tag watch"
-            echo
-            echo "| repo | newest \`dsh-v*\` tag |"
-            echo "|---|---|"
-            echo "| [$UPSTREAM_REPO](https://github.com/$UPSTREAM_REPO) | \`${upstream_tag:-none}\` |"
-            echo "| this repo | \`${self_tag:-none}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          issues="$(gh issue list --state open --limit 100 --json number,title --jq '.[] | "\(.number)\t\(.title)"')"
+          find_issue() { # <title> -> number
+            local want="$1" line
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              if [ "${line#*$'\t'}" = "$want" ]; then printf '%s' "${line%%$'\t'*}"; return 0; fi
+            done <<<"$issues"
+            return 0
+          }
 
-          if [ -z "$upstream_tag" ]; then
-            echo "no dsh-v* tag found upstream; nothing to do"
-            exit 0
-          fi
+          tracker_title="New upstream dsh release available: $upstream_tag"
+          health_title="Release pipeline not published: $self_tag"
 
-          # 收集本仓库未关闭 issue(编号<TAB>标题); gh 失败则整体失败,
-          # 避免因误判"提醒不存在"而重复开 issue
-          issue_list="$(gh issue list --state open --limit 100 --json number,title --jq '.[] | "\(.number)\t\(.title)"')"
-          mapfile -t issues <<<"$issue_list"
-
-          title="$ISSUE_TITLE_PREFIX $upstream_tag"
-
-          if [ "$upstream_newer" != "true" ]; then
-            # 已跟上上游: 关闭遗留的提醒 issue。但关闭前必须确认该 tag 真的触发过
-            # image.yml(tag push 事件存在)。若 tag 在、run 却一个都没有, 说明推送
-            # 凭证有问题(RELEASE_PAT 缺 "Workflows: read and write" 权限等), 此时
-            # 关 issue 会把"发布流水线从未启动"的信号静默抹掉 —— 保留 issue 并提示,
-            # 等补跑后(下次运行看到 run)再自动关。
+          if [ "$up_newer" != "true" ]; then
+            # 已跟上上游: 该 tag 有 Release 就关 tracker issue。
             closed=0
-            kept=0
-            for line in "${issues[@]}"; do
-              num="${line%%$'\t'*}"
-              ititle="${line#*$'\t'}"
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              num="${line%%$'\t'*}"; ititle="${line#*$'\t'}"
               case "$ititle" in
-                "$ISSUE_TITLE_PREFIX"*)
-                  tag="${ititle#"$ISSUE_TITLE_PREFIX "}"
-                  [ -n "$tag" ] || continue
-                  # tag push 触发本 workflow 时, image.yml 的 run 可能还没
-                  # 被 Actions 创建(实测延迟 2-6 分钟): 立即查询会误报
-                  # "RELEASE_PAT 缺权限" 的假诊断到公开 issue。push 事件
-                  # 触发的运行跳过验证, 交给每日 cron(那时 run 必已存在)。
-                  if [ "$EVENT_NAME" = "push" ]; then
-                    echo "push-triggered run: deferring image.yml run verification to the daily schedule"
-                    kept=$((kept + 1))
-                    continue
-                  fi
-                  # 不限定 event=push: 文档的恢复路径包括在 tag ref 上手工
-                  # dispatch image.yml, 那类 run 的 event 是 workflow_dispatch。
-                  # 只按 workflow 路径 + head_branch 匹配, 才认得出恢复结果。
-                  run_id="$(gh api "repos/$SELF_REPO/actions/runs?per_page=100" 2>/dev/null \
-                    | jq -r --arg tag "$tag" \
-                        '.workflow_runs[] | select(.path == ".github/workflows/image.yml" and .head_branch == $tag) | .id' \
-                    | head -n1 || true)"
-                  if [ -n "$run_id" ]; then
+                "New upstream dsh release available: "*)
+                  tag="${ititle#New upstream dsh release available: }"
+                  if gh release view "$tag" >/dev/null 2>&1; then
                     gh issue close "$num" --comment \
-                      "Caught up: \`$tag\` has an image.yml run ($run_id); no upstream release is pending." \
+                      "Published: \`$tag\` has a GitHub Release (image tags were merged by publish.yml)." \
                       >/dev/null || true
                     closed=$((closed + 1))
-                  else
-                    # 不关闭; 只在还没有"push-trigger check"提示时补一条, 避免每日刷屏
-                    kept=$((kept + 1))
-                    hinted="$(gh api "repos/$SELF_REPO/issues/$num/comments?per_page=100" \
-                      --jq '[.[] | select(.body | contains("push-trigger check"))] | length' \
-                      2>/dev/null || echo 0)"
-                    if [ "$hinted" = "0" ]; then
-                      gh issue comment "$num" --body \
-                        "The tag \`$tag\` exists here but image.yml has never run on it (push-trigger check). The push credential (RELEASE_PAT) likely lacks the \`Workflows: read and write\` repository permission — fix it, then delete and re-push the tag, or run image.yml manually on \`refs/tags/$tag\`. This issue stays open as a reminder." \
-                        >/dev/null 2>&1 || true
-                    fi
                   fi
                   ;;
               esac
-            done
+            done <<<"$issues"
 
-            # 发布健康检查: "本仓库已有该 tag" 不等于"发布成功"。手工推 tag 后
-            # 构建失败/被取消时不会有人提醒(2026-09-22 dsh-v0.1.7-alpha.1 两次
-            # 失败 + 一次取消就是这样漏掉的, 当时也没有 tracker issue 可挂靠)。
-            # 这里对**最新** dsh-v* tag 检查 image.yml 最近一次运行的结论:
-            # completed/success 才关 issue; queued/in_progress 视为 pending 不动;
-            # 其余 completed 结论(失败/取消/跳过)才开提醒。手工补跑的
-            # workflow_dispatch run 同样计入(不再限定 event=push)。
-            # tag push 触发的运行有 2-6 分钟创建延迟, 因此只由定时/手动运行判定。
+            # 健康检查: 最新 tag 没有 Release ⇒ 发布没完成。push 触发时跳过(发布
+            # 要跑 ~25 分钟, 立即判定会误报), 交给下一次 cron。
             if [ "$EVENT_NAME" != "push" ] && [ -n "$self_tag" ]; then
-              # 注意不能用 `|| echo '{}'` 兜底: API 抖动会被读成"从未跑过"并开出
-              # 一个公开 issue。查询失败就让 job 失败(list_tags 同款策略)。
-              runs="$(gh api "repos/$SELF_REPO/actions/runs?per_page=100" 2>/dev/null)"
-              latest="$(jq -r --arg tag "$self_tag" '
-                [.workflow_runs[]?
-                 | select(.path == ".github/workflows/image.yml" and .head_branch == $tag)]
-                | sort_by(.created_at) | last
-                | if . == null then "none (no image.yml run ever started)"
-                  else (.status + "/" + (.conclusion // "pending")) + " " + .html_url end' <<<"$runs")"
-              health_title="$RELEASE_ISSUE_PREFIX $self_tag"
-              health_issue=""
-              for line in "${issues[@]}"; do
-                if [ "${line#*$'\t'}" = "$health_title" ]; then
-                  health_issue="${line%%$'\t'*}"
-                  break
+              health_num="$(find_issue "$health_title")"
+              if gh release view "$self_tag" >/dev/null 2>&1; then
+                if [ -n "$health_num" ]; then
+                  gh issue close "$health_num" --comment \
+                    "\`$self_tag\` now has a GitHub Release; the publish pipeline completed." >/dev/null || true
                 fi
-              done
-              # 排队/运行中的 run 不是失败: 保持现有 health issue 状态不变,
-              # 等下一次 cron 看到 completed 结论再决定。否则每轮定时检查只要
-              # 撞上一次正在构建的 tag run, 就会误开 "not published"。
-              latest_pending=0
-              case "${latest%% *}" in
-                queued/*|in_progress/*|waiting/*|requested/*|pending/*)
-                  echo "image.yml run for $self_tag is still pending; leaving health state unchanged" >&2
-                  latest_pending=1
-                  ;;
-                *) latest_pending=0 ;;
-              esac
-              if [ "$latest_pending" = 0 ] && [ "${latest%% *}" = "completed/success" ]; then
-                if [ -n "$health_issue" ]; then
-                  gh issue close "$health_issue" --comment \
-                    "image.yml completed successfully for \`$self_tag\`; the image and Release are published." \
-                    >/dev/null || true
-                  echo "closed release-health issue #$health_issue (pipeline succeeded)"
+              else
+                run_url="$(gh api "repos/$SELF_REPO/actions/runs?per_page=50" 2>/dev/null \
+                  | jq -r --arg tag "$self_tag" \
+                      '[.workflow_runs[]? | select(.path == ".github/workflows/publish.yml" and .head_branch == $tag)]
+                       | sort_by(.created_at) | last | .html_url // "none"' 2>/dev/null || echo none)"
+                if [ -z "$health_num" ]; then
+                  gh issue create --title "$health_title" --body "$(printf '%s\n' \
+                    "The newest tag is \`$self_tag\`, but it has **no GitHub Release** — the publish pipeline did not finish." \
+                    "" \
+                    "Latest \`publish.yml\` run: $run_url" \
+                    "" \
+                    "Diagnose with:" \
+                    "" \
+                    '    gh run view <run-id> --log-failed' \
+                    '    gh run download <run-id> -n smoke-diagnostic-amd64 -D ./diag' \
+                    "" \
+                    "If the tag was removed by the failure cleanup, re-push it after fixing the cause:" \
+                    "" \
+                    "    git tag -f $self_tag <fixed-commit> && git push -f origin $self_tag" \
+                    "" \
+                    "This issue closes automatically once the tag has a Release.")" >/dev/null
                 fi
-              elif [ "$latest_pending" = 0 ] && [ -z "$health_issue" ]; then
-                gh issue create \
-                  --title "$health_title" \
-                  --body "$(printf '%s\n' \
-                    "The newest tag in this repository is \`$self_tag\`, but its \`image.yml\` run has not completed successfully — latest: \`$latest\`." \
-                    "" \
-                    "The tag exists, so \`latest\`/\`dsh-v*\` may be missing, stale, or only partially published. Fix the cause, then re-run:" \
-                    "" \
-                    "- re-run the workflow: Actions → **Image** → the run for \`$self_tag\` → *Re-run failed jobs*" \
-                    "- if upstream drift was the cause, run the **Release prep** workflow so the agent repairs the adaptation, then re-push the tag" \
-                    "- if the tag itself points at a broken commit, delete and re-push it after fixing \`main\`" \
-                    "" \
-                    "This issue closes automatically once that tag's latest \`image.yml\` run succeeds.")" \
-                  >/dev/null
-                echo "opened release-health issue for $self_tag (latest run: $latest)"
               fi
             fi
-
-            if [ "$closed" -gt 0 ] || [ "$kept" -gt 0 ]; then
-              echo "closed $closed tracker issue(s), kept $kept open (tag never triggered image.yml)"
-            else
-              echo "this repository is up to date with upstream; nothing to do"
-            fi
+            echo "up to date (closed $closed tracker issue(s))"
             exit 0
           fi
 
-          # 上游有新 tag: 同标题的提醒已存在则不重复开
-          existing=""
-          for line in "${issues[@]}"; do
-            num="${line%%$'\t'*}"
-            ititle="${line#*$'\t'}"
-            if [ "$ititle" = "$title" ]; then
-              existing="$num"
-              break
+          # ---- 上游有新 tag ----
+          issue_num="$(find_issue "$tracker_title")"
+          if [ -z "$issue_num" ]; then
+            body="$(printf '%s\n' \
+              "Upstream published [\`$upstream_tag\`](https://github.com/$UPSTREAM_REPO/releases/tag/$upstream_tag), which this repository has not mirrored yet." \
+              "" \
+              "| | tag |" \
+              "|---|---|" \
+              "| upstream | \`$upstream_tag\` |" \
+              "| this repo | \`${self_tag:-none}\` |" \
+              "" \
+              "Compare: https://github.com/$UPSTREAM_REPO/compare/${self_tag:-$upstream_tag}...$upstream_tag" \
+              "" \
+              "Publishing is driven by the tag itself:" \
+              "" \
+              "    git tag $upstream_tag <commit>" \
+              "    git push origin $upstream_tag" \
+              "" \
+              "The publish workflow then runs the static gates, builds both architectures by digest, smoke-tests them, and merges the multi-arch image + GitHub Release.")"
+            if ! created="$(gh issue create --title "$tracker_title" --body "$body" --label upstream-dsh 2>/dev/null)"; then
+              created="$(gh issue create --title "$tracker_title" --body "$body")"
             fi
-          done
-          if [ -n "$existing" ]; then
-            echo "issue #$existing already tracks $upstream_tag"
-            # 已有提醒时仍要触发 release-prep: 上次运行可能失败, 每日重试,
-            # release-prep 内部幂等(已有同名 tag 即跳过)
-            dispatch_issue="$existing"
+            issue_num="$(printf '%s' "$created" | grep -oE '[0-9]+$' || true)"
+            echo "opened tracker issue #$issue_num for $upstream_tag"
           else
-            dispatch_issue=""
+            echo "tracker issue #$issue_num already tracks $upstream_tag"
           fi
 
-          if [ -n "$dispatch_issue" ]; then
-            # 同一 tag 已有 release-prep 在跑(或排队)时不再 dispatch: release-prep 的
-            # concurrency 只是排队(cancel-in-progress: false), 重复 dispatch 会白跑一次
-            # 完整构建+冒烟, 而且 agent 也会被再拉起来一遍 —— 正是"agent 尽量后入场"
-            # 要避免的。只有上一次已经结束(成功或失败)才重试, 幂等性与失败重试都保留。
-            # 只在确实要重试时才花这一次 API 调用。查询失败按"没有在跑"处理(宁可重复
-            # dispatch 也不能漏发: release-prep 内部幂等, 人工漏发才是真损失)。
-            in_flight="$(gh api "repos/$SELF_REPO/actions/workflows/release-prep.yml/runs?per_page=10" \
-              --jq '[.workflow_runs[] | select(.status == "in_progress" or .status == "queued")] | length' 2>/dev/null || echo 0)"
-            if [ "$in_flight" != "0" ]; then
-              echo "release-prep already running for a pending tag ($in_flight in flight); not dispatching again"
-              exit 0
-            fi
-            if gh api "repos/$SELF_REPO/dispatches" \
-                -f event_type=upstream-dsh-tag \
-                -f "client_payload[new_tag]=$upstream_tag" \
-                -f "client_payload[old_tag]=$self_tag" \
-                -f "client_payload[issue]=$dispatch_issue"; then
-              echo "dispatched release-prep for $upstream_tag (issue: $dispatch_issue)"
-            else
-              echo "warning: dispatch to release-prep failed; tracker issue remains open for manual follow-up" >&2
-            fi
+          if [ -z "${RELEASE_PAT:-}" ]; then
+            echo "RELEASE_PAT is not configured; leaving the manual command on issue #$issue_num"
             exit 0
           fi
 
-          # 关闭旧版本的提醒, 避免堆积
-          for line in "${issues[@]}"; do
-            num="${line%%$'\t'*}"
-            ititle="${line#*$'\t'}"
-            case "$ititle" in
-              "$ISSUE_TITLE_PREFIX"*)
-                gh issue close "$num" --comment "Superseded by $upstream_tag." >/dev/null || true
-                ;;
-            esac
-          done
-
-          # label 缺失时补建(失败不致命: issue 创建会走无 label 的兜底分支)
-          gh label create upstream-dsh --color 1D76DB \
-            --description "New upstream dsh tag pending release" --force >/dev/null 2>&1 || true
-
-          release_url="https://github.com/$UPSTREAM_REPO/releases/tag/$upstream_tag"
-          image_name="ghcr.io/$(echo "$SELF_REPO" | tr '[:upper:]' '[:lower:]')"
-          docs_url="https://github.com/$SELF_REPO/blob/main/docs/releasing.md"
-          if [ -n "$self_tag" ]; then
-            self_cell="\`$self_tag\`"
-            compare_line="Upstream diff: https://github.com/$UPSTREAM_REPO/compare/$self_tag...$upstream_tag"
-          else
-            self_cell="none"
-            compare_line="This repository has no \`dsh-v*\` tags yet."
+          # 退避: 24 小时内该 tag 已失败过一次发布 ⇒ 不再自动重推(否则每 6 小时
+          # 重跑一次双架构构建)。人工重推不受影响。
+          since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          recent_failures="$(gh api "repos/$SELF_REPO/actions/runs?per_page=100" 2>/dev/null \
+            | jq -r --arg tag "$upstream_tag" --arg since "$since" \
+                '[.workflow_runs[]?
+                  | select(.path == ".github/workflows/publish.yml" and .head_branch == $tag
+                           and .conclusion == "failure" and .created_at > $since)] | length' 2>/dev/null || echo 0)"
+          if [ "$recent_failures" != "0" ]; then
+            echo "publish failed for $upstream_tag within 24h; not re-tagging (backoff)"
+            exit 0
           fi
 
-          body_file="$(mktemp)"
-          trap 'rm -f "$body_file"' EXIT
-          cat > "$body_file" <<EOF
-          Upstream [$UPSTREAM_REPO](https://github.com/$UPSTREAM_REPO) published a new \`dsh-v*\` tag that this repository has not mirrored yet.
-
-          | | tag |
-          |---|---|
-          | upstream | \`$upstream_tag\` ([release notes]($release_url)) |
-          | this repo | $self_cell |
-
-          $compare_line
-
-          **How to release the matching image**
-
-          CI builds the image from that exact upstream tag once the same tag exists here
-          (see the [release guide]($docs_url)):
-
-              git tag $upstream_tag
-              git push origin $upstream_tag
-
-          The workflow then builds and smoke-tests both architectures and publishes
-          \`$image_name:$upstream_tag\` together with the \`latest\` tag. This issue closes
-          automatically once the tag exists in this repository.
-          EOF
-
-          if ! created="$(gh issue create --title "$title" --body-file "$body_file" --label upstream-dsh)"; then
-            created="$(gh issue create --title "$title" --body-file "$body_file")"
+          if git ls-remote --exit-code --tags origin "refs/tags/$upstream_tag" >/dev/null 2>&1; then
+            echo "tag $upstream_tag already exists here; nothing to do"
+            exit 0
           fi
-          issue_num="$(printf '%s' "$created" | grep -oE '[0-9]+$' || true)"
-          echo "opened tracker issue for $upstream_tag (issue: ${issue_num:-unknown})"
 
-          # 触发 release-prep.yml 自动发版准备(契约 → agent 修复 → 冒烟 → 推 tag)。
-          # repository_dispatch 是 GITHUB_TOKEN 反递归限制的豁免事件, 可直接触发;
-          # release-prep 内部幂等(已有同名 tag 即跳过), 重复 dispatch 无副作用。
-          dispatch_issue="$issue_num"
-          if gh api "repos/$SELF_REPO/dispatches" \
-              -f event_type=upstream-dsh-tag \
-              -f "client_payload[new_tag]=$upstream_tag" \
-              -f "client_payload[old_tag]=$self_tag" \
-              -f "client_payload[issue]=$dispatch_issue"; then
-            echo "dispatched release-prep for $upstream_tag (issue: ${dispatch_issue:-none})"
+          git fetch --quiet origin main
+          main_sha="$(git rev-parse origin/main)"
+          git tag "$upstream_tag" "$main_sha"
+          # 必须用 PAT 推: GITHUB_TOKEN / App token 的 push 不会触发 workflow。
+          # actions/checkout 不会留下 extraheader(persist-credentials: false), 这里
+          # 仍显式清空一次, 防止未来默认值变化让"PAT 推送"实际变成 GITHUB_TOKEN。
+          if git -c "http.https://github.com/.extraheader=" push \
+              "https://x-access-token:${RELEASE_PAT}@github.com/${SELF_REPO}.git" \
+              "refs/tags/$upstream_tag"; then
+            echo "pushed tag $upstream_tag at $main_sha; publish.yml should start"
           else
-            echo "warning: dispatch to release-prep failed; tracker issue remains open for manual follow-up" >&2
+            gh issue comment "$issue_num" --body \
+              "Failed to push \`$upstream_tag\` with \`RELEASE_PAT\`. Check that the PAT has Contents: read/write and **Workflows: read/write** for this repository." \
+              >/dev/null 2>&1 || true
+            exit 1
           fi
