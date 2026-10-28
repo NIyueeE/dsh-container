@@ -428,8 +428,14 @@ section "telemetry.default-off"
 # (用户点反馈时不会把完整会话上下文发往 harness-telemetry.deepseeksvc.com)。
 # dsh web 是容器内唯一的常驻 node 进程(启动命令为 --profile web 形式,
 # 不能按 "dsh web" 字样匹配; pgrep -f 会匹配到 exec 的 sh 自身)。
-dsh_pid="$("$DOCKER" exec "$cid" sh -c 'pgrep -x node | head -n1' || true)"  # ok: probe-asserted-below
-[ -n "$dsh_pid" ] || die "dsh web process not found for telemetry env check"
+# dsh-web 在每次拉起子进程后把 PID 写进 /tmp/dsh-web.pid —— 直接读它, 不靠
+# 进程名匹配(comm 会随 Node/上游改动而变, 曾经因此误报 "process not found")。
+dsh_pid="$("$DOCKER" exec "$cid" cat /tmp/dsh-web.pid 2>/dev/null || true)"  # ok: probe-asserted-below
+if [ -z "$dsh_pid" ] || ! "$DOCKER" exec "$cid" sh -c 'kill -0 "$1" 2>/dev/null' _ "$dsh_pid"; then
+  # 失败时把容器内进程表打进日志/诊断: 下次同类失败不用再猜进程名或命名空间。
+  "$DOCKER" exec "$cid" ps -ef >&2 2>&1 || true  # ok: log-dump
+  die "dsh web pid is missing or not running (pid '${dsh_pid:-<unset>}' from /tmp/dsh-web.pid)"
+fi
 "$DOCKER" exec "$cid" sh -c 'tr "\0" "\n" < "/proc/$1/environ" | grep -Fx "DSH_TELEMETRY_MODE=DISABLED"' _ "$dsh_pid" \
   || die "dsh web is not running with DSH_TELEMETRY_MODE=DISABLED"
 # 持久临时目录: dsh/agent 的 os.tmpdir() 落在卷上, /tmp 保持临时语义
