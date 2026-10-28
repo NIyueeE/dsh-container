@@ -79,6 +79,13 @@ every build. Large inline images are extracted to files served by the container-
 `.dsh-build` client build record is refreshed afterwards so it keeps matching the delivered
 artifacts. All three steps are fail-fast; see `container/plugin/scripts/`.
 
+The upstream `build:official` native gate compiles only the Node-API addon
+(`build:native-system --host-addon-only`). The image also runs the full `native/system` build with
+the `musl-tools` toolchain so the static-musl `landlock-run` launcher ships in the image: `dsh`'s
+`workspace-write` sandbox needs `bwrap` or that launcher, and the image deliberately does not
+install `bwrap` (unprivileged user namespaces are unreliable inside containers). `tests/smoke.sh`
+probes the launcher (`landlock-run --probe`) rather than only checking that the file exists.
+
 ## Example
 
 With podman, keep `--format docker` so the `HEALTHCHECK` survives (podman's default OCI format

@@ -389,6 +389,14 @@ origin_evil="$(curl -sS -b "$cookie_jar" -o /dev/null -w '%{http_code}' \
 "$DOCKER" exec "$cid" sh -c 'test -f /opt/dsh-container-plugin/index.js && test -f /opt/dsh-container-plugin/overlay.yml && test -f /opt/dsh-container-plugin/scripts/extract-inline-assets.js && test -f /opt/dsh-container-plugin/scripts/minify-client.mjs && test -f /opt/dsh-container-plugin/scripts/refresh-build-record.mjs' \
   || die "container-adapt plugin files missing in the image"
 
+# 沙箱后端: dsh 的 workspace-write 需要 bwrap 或 Landlock, 镜像刻意不装 bwrap
+# (容器内 unprivileged userns 不可靠), 因此必须带上 static-musl 的 landlock-run。
+# --probe 会真的建一个 Landlock ruleset 并验证内核执行了它 —— 只查文件存在不够:
+# 内核无 Landlock 或被 seccomp 拦掉时, agent 的 bash 会 fail-closed(fail 在这里
+# 比在 release-prep 里盲跑好)。glob 兼容 amd64/arm64。
+"$DOCKER" exec "$cid" sh -c 'for p in /opt/deepseek-harness/native/system/packages/linux-*/bin/landlock-run; do [ -x "$p" ] && exec "$p" --probe; done; exit 1' \
+  || die "sandbox backend (landlock-run) missing or not enforced in the image"
+
 # 客户端产物: 内联大图必须已抽成 /container-assets/<内容哈希> 文件, 产物必须已
 # 压缩(minify 后处理)。合并包是 settings-account 所在的那个 57 模块 combo。
 combo_url="$(grep -oE "plugins/\?\?[^\"' ]*" <<<"$index_html" | grep -m1 'dsh-client-ui-settings-account' || true)"

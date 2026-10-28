@@ -158,6 +158,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     git \
     build-essential \
+    musl-tools \
     pkg-config \
     libssl-dev \
     sudo \
@@ -422,6 +423,13 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     cd /opt/deepseek-harness; \
     pnpm install --frozen-lockfile --store-dir /root/.pnpm-store; \
     pnpm run build:official; \
+    # build:official 里的 native 门只跑 build:native-system --host-addon-only, 只编
+    # Node-API 的 flock, **不产出** Landlock 的 static-musl 启动器; 缺它时 dsh 的
+    # workspace-write 沙箱在本镜像里 fail-closed(bwrap 也没装), headless agent 的
+    # bash 全部不可用(2026-10-28 dsh-v0.2.2-alpha.2 的 release-prep 因此盲跑)。
+    # musl-gcc 由第 1 步的 musl-tools 提供, 产物落在 native/system/packages/linux-*/bin/。
+    pnpm exec tsx native/system/scripts/build.ts; \
+    ls native/system/packages/linux-*/bin/landlock-run >/dev/null; \
     npm install --global --prefix /tmp/dsh-build-tools --no-fund --no-audit esbuild@0.25.12; \
     node /opt/dsh-container-plugin/scripts/extract-inline-assets.js --root /opt/deepseek-harness; \
     node /opt/dsh-container-plugin/scripts/minify-client.mjs --root /opt/deepseek-harness --esbuild /tmp/dsh-build-tools/bin/esbuild; \

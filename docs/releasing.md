@@ -166,7 +166,11 @@ upstream tag ─▶ watcher ─▶ contract + diff triage ─┬─ clean, no su
    record for the tag, and the changes themselves appear in the release's auto-generated commit
    list. The agent's inputs are pre-fetched and
    it is expected to work fully offline (no network is needed); the sandbox is file-effect
-   containment, not an egress boundary.
+   containment, not an egress boundary. The prep job runs in the image of the **previous** release
+   tag, so that image must ship a usable sandbox backend for the agent's shell to work at all:
+   `workspace-write` needs `landlock-run` (or `bwrap`), and `tests/smoke.sh` asserts the launcher
+   is present and enforced. An older image without it makes the agent fail closed on every command
+   — its report then says so instead of silently guessing.
 3. **verify** — checks out the repair branch (if any), records the exact commit, re-runs the
    **same static gates as `image.yml`** (`tests/validate-static.sh`), re-runs `tests/contract.sh`
    against the repaired tree, builds the image from the new upstream tag (`DSH_TAG=<tag>`, same
