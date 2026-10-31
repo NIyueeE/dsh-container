@@ -79,8 +79,11 @@ jobs:
 
       # 重门要一个具体上游 tag(Build args 与 --expect-dsh-tag 都需要), 这里解析一次;
       # 排序键与 watcher / publish 共用 tests/compare-tags.mjs, 不另写一套。
+      # 只有重门真正会跑时才访问上游 API: 文档/README/非 smoke 的 workflow
+      # 变更不应因为外部 Tags API 抖动而把 CI 判红。
       - name: Resolve newest upstream dsh-v* tag
         id: upstream
+        if: steps.classify.outputs.heavy == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

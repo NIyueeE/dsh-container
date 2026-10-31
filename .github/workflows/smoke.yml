@@ -64,14 +64,47 @@ on:
         required: false
         default: ''
         type: string
+      ref:
+        description: 'Commit to test (empty = the dispatched workflow ref)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
   packages: read
 
 jobs:
+  # 调用契约在花任何构建成本之前失败关闭: 两个架构要么都构建、要么都拉取;
+  # 拉取模式只接受不可变 digest, 避免测试一个随后可能被移动的 tag。
+  validate:
+    name: Validate smoke input contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate the architecture pair
+        env:
+          IMAGE_AMD64: ${{ inputs.image_amd64 }}
+          IMAGE_ARM64: ${{ inputs.image_arm64 }}
+        run: |
+          set -euo pipefail
+          if { [ -n "$IMAGE_AMD64" ] && [ -z "$IMAGE_ARM64" ]; } \
+              || { [ -z "$IMAGE_AMD64" ] && [ -n "$IMAGE_ARM64" ]; }; then
+            echo "image_amd64 and image_arm64 must be provided together (single-arch smoke is not supported)" >&2
+            exit 1
+          fi
+          for image in "$IMAGE_AMD64" "$IMAGE_ARM64"; do
+            [ -n "$image" ] || continue
+            if ! [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
+              echo "published smoke target must be an immutable @sha256 digest: '$image'" >&2
+              exit 1
+            fi
+          done
+          echo "smoke input contract: $([ -n "$IMAGE_AMD64" ] && echo "pull both digests" || echo "build both architectures locally")"
+
   image:
     name: Smoke linux/${{ matrix.arch }}
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -87,6 +120,22 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+
+      # provenance 必须记录实际被 checkout 的 commit/ref, 而不是调用方的
+      # github.sha: 手动 dispatch 可以用 ref 测试另一个提交。
+      - name: Record checked-out source
+        id: source
+        env:
+          SOURCE_REF: ${{ inputs.ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected checkout sha: '$sha'" >&2; exit 1; }
+          {
+            echo "sha=$sha"
+            echo "ref=$SOURCE_REF"
+          } >> "$GITHUB_OUTPUT"
+          echo "smoke source: $sha ($SOURCE_REF)"
 
       - name: Resolve target image
         id: target
@@ -148,8 +197,8 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=min,scope=${{ matrix.arch }},ignore-error=true
           build-args: |
-            BUILD_GIT_SHA=${{ github.sha }}
-            BUILD_GIT_REF=${{ github.ref_name }}
+            BUILD_GIT_SHA=${{ steps.source.outputs.sha }}
+            BUILD_GIT_REF=${{ steps.source.outputs.ref }}
             BUILD_VERSION=${{ inputs.dsh_tag }}
             DSH_TAG=${{ inputs.dsh_tag }}
 

@@ -100,17 +100,23 @@ jobs:
       packages: read # the called workflow's smoke job asks for it (it is skipped here)
     uses: ./.github/workflows/ci.yml  # zizmor: ignore[self-repository] -- same-commit local call
 
-  build-amd64:
-    name: Build linux/amd64 by digest
+  build:
+    name: Build linux/${{ matrix.arch }} by digest
     needs: [guard, light]
     if: needs.light.result == 'success'
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
       contents: read
       packages: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -131,75 +137,83 @@ jobs:
         with:
           context: .
           file: Containerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           outputs: type=image,name=${{ needs.guard.outputs.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=amd64
-          cache-to: type=gha,mode=min,scope=amd64,ignore-error=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.arch }},ignore-error=true
           build-args: |
             BUILD_GIT_SHA=${{ github.sha }}
             BUILD_GIT_REF=${{ github.ref_name }}
             BUILD_VERSION=${{ github.ref_name }}
             DSH_TAG=${{ github.ref_name }}
 
-  build-arm64:
-    name: Build linux/arm64 by digest
-    needs: [guard, light]
-    if: needs.light.result == 'success'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+      # matrix 的每个分支不能各自成为 needs.<job>.outputs.digest(同名输出会互相
+      # 覆盖), 因此把 digest 落成短生命周期 artifact, 由下面的汇总 job 读回。
+      - name: Stage the pushed digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "build-push-action returned an invalid digest: '$DIGEST'" >&2; exit 1; }
+          printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/digest-${{ matrix.arch }}"
+
+      - name: Upload the pushed digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: build-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digest-${{ matrix.arch }}
+          retention-days: 1
+          if-no-files-found: error
+
+  build-refs:
+    name: Resolve the two published digests
+    needs: [guard, build]
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
-      packages: write
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      amd64: ${{ steps.resolve.outputs.amd64 }}
+      arm64: ${{ steps.resolve.outputs.arm64 }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          persist-credentials: false
+          pattern: build-digest-*
+          path: ${{ runner.temp }}/build-digests
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
-        with:
-          context: .
-          file: Containerfile
-          platforms: linux/arm64
-          outputs: type=image,name=${{ needs.guard.outputs.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=arm64
-          cache-to: type=gha,mode=min,scope=arm64,ignore-error=true
-          build-args: |
-            BUILD_GIT_SHA=${{ github.sha }}
-            BUILD_GIT_REF=${{ github.ref_name }}
-            BUILD_VERSION=${{ github.ref_name }}
-            DSH_TAG=${{ github.ref_name }}
+      - name: Resolve both digest references
+        id: resolve
+        env:
+          IMAGE: ${{ needs.guard.outputs.image }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            file="$RUNNER_TEMP/build-digests/build-digest-$arch/digest-$arch"
+            [ -s "$file" ] || { echo "missing build digest artifact for $arch" >&2; exit 1; }
+            digest="$(tr -d '\r\n' < "$file")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+              || { echo "invalid $arch digest: '$digest'" >&2; exit 1; }
+            echo "$arch=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+          done
 
   smoke:
     name: Smoke (heavy, both architectures)
-    needs: [guard, build-amd64, build-arm64]
-    # 两个 digest 都在才冒烟(build 被跳过时不要空跑)。
-    if: >-
-      needs.build-amd64.result == 'success' &&
-      needs.build-arm64.result == 'success'
+    needs: [guard, build-refs]
     permissions:
       contents: read
       packages: read
     uses: ./.github/workflows/smoke.yml  # zizmor: ignore[self-repository] -- same-commit local call
     with:
       dsh_tag: ${{ github.ref_name }}
-      image_amd64: ${{ needs.guard.outputs.image }}@${{ needs.build-amd64.outputs.digest }}
-      image_arm64: ${{ needs.guard.outputs.image }}@${{ needs.build-arm64.outputs.digest }}
+      image_amd64: ${{ needs.build-refs.outputs.amd64 }}
+      image_arm64: ${{ needs.build-refs.outputs.arm64 }}
       expect_version: ${{ needs.guard.outputs.version }}
 
   publish:
     name: Merge manifest and create the Release
-    needs: [guard, build-amd64, build-arm64, smoke]
+    needs: [guard, build-refs, smoke]
     if: needs.smoke.outputs.ok == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -226,8 +240,8 @@ jobs:
           IMAGE: ${{ needs.guard.outputs.image }}
           NEW_TAG: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
-          DIGEST_AMD64: ${{ needs.build-amd64.outputs.digest }}
-          DIGEST_ARM64: ${{ needs.build-arm64.outputs.digest }}
+          REF_AMD64: ${{ needs.build-refs.outputs.amd64 }}
+          REF_ARM64: ${{ needs.build-refs.outputs.arm64 }}
         run: |
           set -euo pipefail
           tags="$(git ls-remote --tags origin 'refs/tags/dsh-v*' \
@@ -239,8 +253,7 @@ jobs:
           else
             echo "not the newest tag; leaving :latest untouched" >&2
           fi
-          docker buildx imagetools create "${refs[@]}" \
-            "$IMAGE@$DIGEST_AMD64" "$IMAGE@$DIGEST_ARM64"
+          docker buildx imagetools create "${refs[@]}" "$REF_AMD64" "$REF_ARM64"
 
       # 结构断言: 合并后的 manifest 必须同时包含两个平台, 否则不建 Release。
       - name: Assert the merged manifest has both platforms
@@ -310,7 +323,7 @@ jobs:
 
   finalize:
     name: Report failure and clean up the orphan tag
-    needs: [guard, light, build-amd64, build-arm64, smoke, publish]
+    needs: [guard, light, build, build-refs, smoke, publish]
     if: failure() || cancelled()
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -332,8 +345,9 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: smoke-diagnostic-*
-          path: ${{ runner.temp }}/smoke-diag
-          merge-multiple: true
+          path: ${{ runner.temp }}/smoke-artifacts
+          # 不合并: 两个 artifact 内都叫 smoke-diagnostic.json, 合并会互相覆盖。
+          merge-multiple: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -391,21 +405,31 @@ jobs:
             echo "|---|---|"
             echo "| guard | ${{ needs.guard.result }} |"
             echo "| light | ${{ needs.light.result }} |"
-            echo "| build-amd64 | ${{ needs.build-amd64.result }} |"
-            echo "| build-arm64 | ${{ needs.build-arm64.result }} |"
+            echo "| build (amd64 + arm64) | ${{ needs.build.result }} |"
+            echo "| build-refs | ${{ needs.build-refs.result }} |"
             echo "| smoke | ${{ needs.smoke.result }} |"
             echo "| publish | ${{ needs.publish.result }} |"
             echo
-            if [ -f "$RUNNER_TEMP/smoke-diag/smoke-diagnostic.json" ]; then
-              echo "### Smoke diagnostic"
+            diag_found=0
+            while IFS= read -r diag; do
+              [ -n "$diag" ] || continue
+              diag_found=1
+              diag_arch="${diag#*smoke-diagnostic-}"
+              diag_arch="${diag_arch%%/*}"
+              echo "### Smoke diagnostic ($diag_arch)"
               echo
               jq -r '"| field | value |\n|---|---|\n| platform | `\(.platform)` |\n| failed check | `\(.failed_check // "none")` |\n| message | \(.message // "none") |"' \
-                "$RUNNER_TEMP/smoke-diag/smoke-diagnostic.json" 2>/dev/null || true
+                "$diag" 2>/dev/null || true
+              echo
+            done < <(find "$RUNNER_TEMP/smoke-artifacts" -name smoke-diagnostic.json -print 2>/dev/null | sort)
+            if [ "$diag_found" = 0 ]; then
+              echo "No smoke diagnostic artifact was uploaded (the failure may have happened before smoke)."
               echo
             fi
             echo "Diagnostics: \`gh run view $RUN_ID --log-failed\`, or"
-            echo "\`gh run download $RUN_ID -n smoke-diagnostic-amd64 -D ./diag\`"
-            echo "(also \`smoke-diagnostic-arm64\` and \`smoke.log\` are uploaded)."
+            echo "\`gh run download $RUN_ID -n smoke-diagnostic-amd64 -D ./diag-amd64\`"
+            echo "and \`gh run download $RUN_ID -n smoke-diagnostic-arm64 -D ./diag-arm64\`."
+            echo "Each artifact carries its JSON/Markdown report and \`smoke.log\`."
             echo
             echo "$REASON"
             echo
