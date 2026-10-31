@@ -491,9 +491,9 @@ EXPOSE 3081
 # "In-container podman"。
 
 # Caddy 在 0.0.0.0:3081 保留 Host/Origin 原样转发到 dsh 的 127.0.0.1:$DSH_WEB_PORT;
-# healthcheck 同时要求 dsh 和代理可响应。dsh web 对无会话的根请求返回 401,
-# 因此存活判据是 curl 退出码(连接成功)而不是 HTTP 200。内部端口由脚本从
-# pid1 环境的 DSH_WEB_PORT 读取(entrypoint 解析 --port 后写入), 兜底 3080。
+# healthcheck 同时要求 dsh 和代理返回预期的未登录状态(dsh 401; Caddy 302,
+# 配置 basic auth 时 401), 而不是只看 TCP 可连接。内部端口由脚本从 pid1
+# 环境的 DSH_WEB_PORT 读取(entrypoint 解析 --port 后写入), 兜底 3080。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD /usr/local/bin/healthcheck
 

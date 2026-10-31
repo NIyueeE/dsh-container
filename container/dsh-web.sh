@@ -75,10 +75,30 @@ for a in "$@"; do
     --port=*) args_port="${a#--port=}" ;;
   esac
 done
+if [ "$expect_port" = 1 ]; then
+  echo "[dsh-web] --port requires a value" >&2
+  exit 1
+fi
 WEB_PORT="${DSH_WEB_PORT:-${args_port:-3080}}"
 case "$WEB_PORT" in
-  ''|*[!0-9]*) echo "[dsh-web] invalid DSH_WEB_PORT: '$WEB_PORT' (must be a number)" >&2; exit 1 ;;
+  ''|*[!0-9]*) echo "[dsh-web] invalid DSH_WEB_PORT/--port: '$WEB_PORT' (must be a number)" >&2; exit 1 ;;
 esac
+# 与 entrypoint 同一范围; 独立执行 dsh-web 也必须拒绝 0/3081/越界端口,
+# 不能绕过 entrypoint 的启动前校验。
+if [ "${#WEB_PORT}" -gt 5 ]; then
+  echo "[dsh-web] invalid DSH_WEB_PORT/--port: '$WEB_PORT' (must be between 1 and 65535)" >&2
+  exit 1
+fi
+web_port_num=$((10#$WEB_PORT))
+if [ "$web_port_num" -lt 1 ] || [ "$web_port_num" -gt 65535 ]; then
+  echo "[dsh-web] invalid DSH_WEB_PORT/--port: '$WEB_PORT' (must be between 1 and 65535)" >&2
+  exit 1
+fi
+if [ "$web_port_num" -eq 3081 ]; then
+  echo "[dsh-web] DSH_WEB_PORT/--port 3081 conflicts with the exposed Caddy proxy port" >&2
+  exit 1
+fi
+WEB_PORT="$web_port_num"
 
 # 容器/调用方的附加参数(透传给 dsh web)。注意: 函数内的 "$@" 是函数自己的
 # 参数而非脚本的, 必须先捕获到数组, 否则 --port 等透传参数会静默丢失。

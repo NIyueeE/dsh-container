@@ -11,7 +11,7 @@
 // 端到端效果(真实 dsh / 真实浏览器)由 tests/smoke.sh 在镜像里断言。
 // 用法: node tests/plugin-unit.mjs
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
@@ -184,6 +184,28 @@ for (let attempt = 0; attempt < 50; attempt += 1) {
   }
 }
 assert.equal(tokenText, 'stub', 'plugin must write the launch token from connection.authenticatedUrl()')
+
+// 并发/重复 apply 时每个写者必须使用自己的临时文件: 固定 `.tmp` 会互相
+// rename 对方的半成品。最终内容必须是某个完整 token, 且不留临时文件。
+const race = createStubContext()
+let issued = 0
+race.ctx.connection.authenticatedUrl = () => `http://127.0.0.1:3080/?token=race-${String(++issued)}`
+const raceDir = join(scratch, 'race')
+plugin.apply(race.ctx, { runtimeDir: raceDir })
+plugin.apply(race.ctx, { runtimeDir: raceDir })
+let raceFiles = []
+for (let attempt = 0; attempt < 100; attempt += 1) {
+  await new Promise(resolve => setTimeout(resolve, 10))
+  try {
+    raceFiles = await readdir(raceDir)
+  } catch {
+    continue
+  }
+  if (raceFiles.includes('launch-token') && !raceFiles.some(name => name.endsWith('.tmp'))) break
+}
+assert.equal(issued, 2, 'both concurrent applies must write a token')
+assert.match(await readFile(join(raceDir, 'launch-token'), 'utf8'), /^race-[12]$/)
+assert.deepEqual(raceFiles.filter(name => name.endsWith('.tmp')), [], 'atomic token writes must not leave temporary files')
 
 assert.equal(registrations.length, 1, 'plugin must register exactly one web route')
 assert.deepEqual(

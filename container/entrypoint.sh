@@ -10,8 +10,8 @@
 #      TMPDIR=~/.dsh/tmp(卷上), /tmp 仍是临时的。PATH 镜像优先(/usr/local/bin
 #      最前), 卷上遗留的旧副本遮蔽不了镜像内版本(手动清理见
 #      docs/releasing.md § Upgrading data volumes to the image-owned toolchain)。
-#   3. 解析 --port <N> / --port=<N>(默认 3080; 拒绝 0 与 3081), 经
-#      DSH_WEB_PORT 传给 dsh-web(内部管道变量, 非用户配置面)。
+#   3. 解析 --port <N> / --port=<N>(默认 3080; 要求 1-65535 且拒绝 3081),
+#      经 DSH_WEB_PORT 传给 dsh-web(内部管道变量, 非用户配置面)。
 #   4. 容器内 podman 运行期环境: provision XDG_RUNTIME_DIR(rootless podman
 #      必须能写它; 容器无 login session, /run/user/$UID 默认不存在且 /run 属
 #      root, 用免密 sudo 建好; 镜像刻意不导出 _CONTAINERS_USERNS_CONFIGURED
@@ -131,28 +131,47 @@ cd "$HOME"
 # 从附加参数中提取 --port <N> / --port=<N>, 作为 dsh web 的内部监听端口
 # (对外端口固定 3081, 由 Caddy 反代, 不受影响)。
 PORT=3080
-prev=
+port_needs_value=0
 for a in "$@"; do
+  if [ "$port_needs_value" = 1 ]; then
+    PORT="$a"
+    port_needs_value=0
+    continue
+  fi
   case "$a" in
+    --port) port_needs_value=1 ;;
     --port=*) PORT="${a#--port=}" ;;
   esac
-  if [ "$prev" = "--port" ]; then PORT="$a"; fi
-  prev="$a"
 done
+if [ "$port_needs_value" = 1 ]; then
+  echo "[entrypoint] --port requires a value" >&2
+  exit 1
+fi
 case "$PORT" in
   ''|*[!0-9]*)
     echo "[entrypoint] invalid --port value: '$PORT' (must be a number)" >&2
     exit 1
     ;;
 esac
-if [ "$PORT" = "0" ]; then
+# 先限长再转十进制, 避免超长数字在算术展开里溢出。
+if [ "${#PORT}" -gt 5 ]; then
+  echo "[entrypoint] invalid --port value: '$PORT' (must be between 1 and 65535)" >&2
+  exit 1
+fi
+port_num=$((10#$PORT))
+if [ "$port_num" -lt 1 ]; then
   echo "[entrypoint] --port 0 is not supported: the Caddy proxy needs a fixed internal port" >&2
   exit 1
 fi
-if [ "$PORT" = "3081" ]; then
+if [ "$port_num" -gt 65535 ]; then
+  echo "[entrypoint] invalid --port value: '$PORT' (must be between 1 and 65535)" >&2
+  exit 1
+fi
+if [ "$port_num" -eq 3081 ]; then
   echo "[entrypoint] --port 3081 conflicts with the exposed Caddy proxy port; choose a different internal port" >&2
   exit 1
 fi
+PORT="$port_num"
 
 # 内部端口经环境传给 dsh-web(它挂载容器适配插件启动 dsh web —— 插件完成
 # 会话 cookie 自举 —— 并托管 Caddy 反代与整个服务栈)。

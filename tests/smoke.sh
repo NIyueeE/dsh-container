@@ -76,17 +76,19 @@ mkdir -p "$DIAG_DIR"
 cid=""
 auth_cid=""
 proxy_cid=""
+custom_cid=""
 cookie_jar="$(mktemp)"
 cookie_relogin="$(mktemp)"
 auth_cookie_jar="$(mktemp)"
 auth_dsh_jar="$(mktemp)"
-trap '"$DOCKER" rm -f "$cid" "$auth_cid" "$proxy_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$cookie_relogin" "$auth_cookie_jar" "$auth_dsh_jar"' EXIT  # ok: cleanup
+trap '"$DOCKER" rm -f "$cid" "$auth_cid" "$proxy_cid" "$custom_cid" >/dev/null 2>&1 || true; rm -f "$cookie_jar" "$cookie_relogin" "$auth_cookie_jar" "$auth_dsh_jar"' EXIT  # ok: cleanup
 
 CHECKS_FILE="$DIAG_DIR/checks.jsonl"
 : > "$CHECKS_FILE"
 CURRENT_CHECK="startup"
 CHECK_OPEN=0
 CHECK_START="$(date +%s%3N)"
+FAILURE_REPORTED=0
 dsh_version=""
 image_platform=""
 prov_revision=""
@@ -176,11 +178,33 @@ write_diagnostics() { # <pass|fail> <message>
 # 失败辅助: 记录失败点(行号 + 容器日志尾)后退出, 便于一次定位到具体断言。
 die() {
   local msg="$*"
+  FAILURE_REPORTED=1
+  # 诊断写入自身的非零不应再触发 ERR trap(否则会重复/递归报告)。
+  trap - ERR
   record "$CURRENT_CHECK" fail "$(( $(date +%s%3N) - CHECK_START ))" "${msg} (line ${BASH_LINENO[0]})"
   printf '=== [smoke] FAIL [%s] %s (line %s)\n' "$CURRENT_CHECK" "$msg" "${BASH_LINENO[0]}" >&2
   write_diagnostics fail "$msg"
   exit 1
 }
+
+# 非显式断言的命令失败也走同一份诊断: 否则 `set -e` 会在 docker inspect、
+# 管道或临时文件操作失败时直接退出, artifact 里只剩一份没有 check 的日志。
+on_unexpected_error() {
+  local status="$1" line="$2" msg
+  trap - ERR
+  set +e
+  if [ "$FAILURE_REPORTED" = 1 ]; then
+    exit "$status"
+  fi
+  FAILURE_REPORTED=1
+  msg="unexpected command failure (exit $status, line $line)"
+  printf '=== [smoke] FAIL [%s] %s\n' "$CURRENT_CHECK" "$msg" >&2
+  record "$CURRENT_CHECK" fail "$(( $(date +%s%3N) - CHECK_START ))" "$msg" || true  # ok: best-effort failure reporting
+  write_diagnostics fail "$msg" || true  # ok: best-effort failure reporting
+  exit "$status"
+}
+
+trap 'on_unexpected_error "$?" "$LINENO"' ERR
 
 
 # 桥接 + 端口映射, 与默认部署方式一致(对外端口 3081)。
@@ -215,6 +239,60 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 [ "$proxy_up" = 1 ] || die "the proxy on 127.0.0.1:3081 did not become reachable within 60s"
+
+section "runtime.args"
+# entrypoint / dsh-web 的端口契约必须在启动 dsh 前失败关闭 —— 缺值、0、3081、
+# 越界都不能进入服务栈。每个用例有界执行, 即使回归成阻塞启动也不会挂住重门。
+expect_bad_port() { # <case> <expected message> <args...>
+  local case_id="$1" expected="$2"
+  shift 2
+  local log
+  log="$(mktemp)"
+  local status=0
+  set +e
+  timeout 20 "$DOCKER" run --rm --name "dsh-smoke-port-$case_id" "$image" "$@" >"$log" 2>&1
+  status=$?
+  set -e
+  "$DOCKER" rm -f "dsh-smoke-port-$case_id" >/dev/null 2>&1 || true  # ok: cleanup
+  if [ "$status" = 0 ] || [ "$status" = 124 ]; then
+    tail -n 20 "$log" >&2 || true  # ok: log-dump
+    rm -f "$log"
+    die "invalid port case '$case_id' did not fail fast (status $status)"
+  fi
+  grep -F -- "$expected" "$log" >/dev/null \
+    || { tail -n 20 "$log" >&2 || true; rm -f "$log"; die "invalid port case '$case_id' lacked the expected message"; }  # ok: log-dump
+  rm -f "$log"
+}
+expect_bad_port missing "--port requires a value" --port
+expect_bad_port zero "--port 0 is not supported" --port 0
+expect_bad_port proxy-port "conflicts with the exposed Caddy proxy port" --port 3081
+expect_bad_port too-large "must be between 1 and 65535" --port 65536
+expect_bad_port nonnumeric "must be a number" --port nope
+# 独立执行 dsh-web 也不能绕过 entrypoint 的校验。
+if "$DOCKER" exec "$cid" dsh-web --port 0 >/tmp/dsh-smoke-direct-port.log 2>&1; then
+  die "dsh-web --port 0 unexpectedly started"
+fi
+grep -F "must be between 1 and 65535" /tmp/dsh-smoke-direct-port.log >/dev/null \
+  || die "dsh-web --port 0 failed without the expected range error"
+
+# 有效自定义内部端口: 外部仍固定 3081, Caddy 必须转发到 --port。
+custom_cid="$("$DOCKER" run -d --rm --name dsh-smoke-custom-port \
+  -p 127.0.0.1:3084:3081 -e DSH_HOME=/tmp/dsh-smoke-custom-home \
+  "$image" --port 8080)"
+custom_ready=0
+for _ in $(seq 1 60); do
+  custom_code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3084/ 2>/dev/null || true)"  # ok: probe-asserted-below
+  if [ "$custom_code" = "302" ]; then custom_ready=1; break; fi
+  running "$custom_cid" || { "$DOCKER" logs --tail 30 "$custom_cid" >&2 || true; die "custom-port container exited during startup"; }  # ok: log-dump
+  sleep 1
+done
+[ "$custom_ready" = 1 ] || die "custom --port 8080 never served the login redirect through Caddy"
+# exec 不会继承 pid1 运行期 export 的变量; 读 pid1 的 environ 才是 entrypoint
+# 实际传给 dsh-web 的值(healthcheck 也用同一路径)。
+"$DOCKER" exec "$custom_cid" sh -c 'tr "\0" "\n" < /proc/1/environ | grep -Fx "DSH_WEB_PORT=8080"' \
+  || die "entrypoint did not forward the normalized custom port"
+"$DOCKER" rm -f "$custom_cid" >/dev/null 2>&1 || true  # ok: cleanup
+custom_cid=""
 
 section "login.redirect"
 # 1) 无会话 cookie 的 / 必须 302 到 /?token=...; 不能再像旧实现那样直接

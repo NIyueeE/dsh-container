@@ -39,8 +39,9 @@
 //   等待后 fail-fast; 文件已存在时监督器继续用现有内容服务(不因一次写失败
 //   杀掉容器, 避免重启策略下的崩溃循环)。浏览器仍可直接打开 dsh 打印的
 //   token URL 登录, 不依赖这个重定向。
+import { randomUUID } from 'node:crypto'
 import { createReadStream, existsSync } from 'node:fs'
-import { mkdir, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
@@ -108,12 +109,20 @@ const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable'
 const WRITE_RETRIES = 5
 const WRITE_RETRY_DELAY_MS = 500
 
-/** 原子写入: 先写 .tmp 再 rename, 读方永远拿到完整内容或旧内容。 */
+/**
+ * 原子写入: 先写同目录唯一临时文件再 rename, 读方永远拿到完整内容或旧内容。
+ * 临时名必须唯一: 同一进程内重复 apply/并发写同一个 token 文件时, 固定
+ * `.tmp` 会让两个写者互相 rename 对方的半成品。无论成功失败都清理临时文件。
+ */
 async function writeFileAtomically(file, content) {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 })
-  const tmpFile = `${file}.tmp`
-  await writeFile(tmpFile, content, { mode: 0o600 })
-  await rename(tmpFile, file)
+  const tmpFile = `${file}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    await writeFile(tmpFile, content, { mode: 0o600, flag: 'wx' })
+    await rename(tmpFile, file)
+  } finally {
+    await rm(tmpFile, { force: true })
+  }
 }
 
 /**
