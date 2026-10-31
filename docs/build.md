@@ -1,8 +1,10 @@
 # Build Configuration & Version Pinning
 
-The base image is pinned by default, and the dsh source tag / Rust toolchain / uv version can be
-pinned with `--build-arg`. uv is installed by the official standalone installer script (the same
-pattern as rustup; `UV_VERSION` defaults to `latest` and resolves the newest release at build time); pnpm
+The base image defaults to the moving `debian:13-slim` tag (each build resolves the current image;
+pass `BASE_IMAGE` explicitly to pin a digest), and the dsh source tag / Rust toolchain / uv version
+can be pinned with `--build-arg`. uv is installed by the official standalone installer script (the
+same pattern as rustup; `UV_VERSION` defaults to `latest` and resolves the newest release at build
+time); pnpm
 is installed at the version required by the checked-out dsh tag (read from its `packageManager`
 field). All three are image-owned real binaries in the system layer (`/usr/local/bin`,
 `/opt/rust`; the one writable exception is rustup's home `/opt/rust/rustup`, which rustup must

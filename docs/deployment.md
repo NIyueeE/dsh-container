@@ -602,8 +602,9 @@ volume handles ownership automatically.
 The exposed port is `3081` (Caddy proxy → dsh's `127.0.0.1:3080` inside the container). Change
 the host-side mapping instead: compose `ports: ["4081:3081"]`, quadlet `PublishPort=4081:3081`,
 then use the new port. To move dsh's internal port, pass `command: ["--port", "8080"]` /
-`Exec=--port 8080` — the proxy follows automatically. The entrypoint rejects `--port 3081`
-(proxy conflict) and `--port 0` (the proxy needs a fixed internal port).
+`Exec=--port 8080` — the proxy follows automatically. The entrypoint accepts an internal port in
+`1–65535` and rejects `--port 3081` (proxy conflict), `--port 0` (the proxy needs a fixed internal
+port), a missing value, and non-numeric or out-of-range values.
 
 **Container exits with "DSH_PROXY_USER and DSH_PROXY_PASSWORD must be set together"**
 Basic auth is enabled only when both variables are set. The supervisor (`dsh-web`) refuses to start

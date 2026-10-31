@@ -10,7 +10,7 @@ container/
   dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the launch token, runs the Caddy proxy with login redirect, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
   dsh-version-floor.sh   # shared minimum-version check used by the Containerfile build
-  healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy reachability, installed as /usr/local/bin/healthcheck
+  healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy expected unauthenticated statuses, installed as /usr/local/bin/healthcheck
   plugin/                # container-adapt plugin at /opt/dsh-container-plugin: host half (launch-token writer, settings-document button hide, /container-assets route), client half (built-in Plugins page card), and scripts/ (three build-time post-processing steps)
 examples/
   compose.yaml           # Docker Compose example (pulls the image)
@@ -33,11 +33,11 @@ docs/
   development.md         # this file
 justfile                 # build / debug / restart / test / lint recipes
 .github/
-  dependabot.yml         # Dependabot: weekly github-actions + docker (base image) updates
+  dependabot.yml         # Dependabot: weekly github-actions updates only (moving base image is intentional)
 .github/workflows/
   ci.yml                 # light gate (static) on push/PR; heavy gate on main when the diff hits the runtime surface
   smoke.yml              # the only heavy gate: builds/pulls both architectures and runs tests/smoke.sh
-  publish.yml            # tag-triggered publish: guard -> light -> both arches by digest -> smoke -> Release
+  publish.yml            # tag-triggered publish: guard -> light -> build matrix (both arches by digest) -> digest refs -> smoke -> Release
   upstream-tag.yml       # 6-hourly watcher: opens the tracker issue and pushes the tag (RELEASE_PAT)
   maintenance.yml        # weekly cache + old image version cleanup
   pat-trigger-probe.yml  # on-demand verification that RELEASE_PAT's push triggers workflows
@@ -97,7 +97,9 @@ Two gates, defined once each and reused everywhere:
 - **heavy** (`smoke.yml`) — builds or pulls both architectures and runs `tests/smoke.sh` on each.
   Runs on `main` pushes only when the diff touches the runtime surface (`Containerfile`,
   `container/**`, `tests/smoke.sh`, `.github/workflows/smoke.yml`), and on every publish. A diff
-  that cannot be computed forces the heavy gate; PRs never run it.
+  that cannot be computed forces the heavy gate; PRs never run it. The workflow validates that the
+  two image inputs are both empty (build) or both immutable `@sha256:` references (pull) before any
+  runner starts building; there is no single-architecture mode.
 
 All workflows pin `ubuntu-24.04` (arm64: `ubuntu-24.04-arm`) instead of `ubuntu-latest`, so a
 release gate cannot change operating system under an in-flight release while GitHub migrates the

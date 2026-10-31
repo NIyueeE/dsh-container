@@ -30,7 +30,8 @@ guard    refuse tags older than the newest dsh-v* ; a rerun always rebuilds
   │
 light    tests/validate-static.sh + tests/validate-workflows.sh   (reuses ci.yml)
   │
-build    amd64 + arm64 in parallel, each pushed BY DIGEST (no tag yet)
+build    matrix: amd64 + arm64 on native runners, each pushed BY DIGEST (no tag yet)
+  │      build-refs collects both digest artifacts into exact image references
   │
 smoke    smoke.yml: both architectures, tests/smoke.sh, pure gate → ok
   │
@@ -102,8 +103,8 @@ For local/manual builds, pin directly with `--build-arg DSH_TAG=dsh-v0.2.1-rc.2`
 ## Tracking upstream releases
 
 There is no version pin in this repository to bump: pushing the matching upstream tag here **is**
-the release. One scheduled watcher keeps the tags in sync (plus Dependabot for action and base
-image pins):
+the release. One scheduled watcher keeps the tags in sync (plus Dependabot for action pins; the
+moving base-image tag is intentional):
 
 ### Upstream tag watcher (`.github/workflows/upstream-tag.yml`)
 
@@ -146,6 +147,9 @@ on demand.
 Every smoke run uploads `smoke-diagnostic-amd64` / `smoke-diagnostic-arm64` (JSON + Markdown + the
 full log, 14 days) and appends the Markdown to the job summary. The JSON carries the failing check
 id, its message, per-check timings, the last 60 log lines of each container, and a reproduce command.
+Unexpected command failures (not only explicit assertions) go through the same diagnostic path.
+A failed publish downloads the two artifacts into separate directories (never merged), so both
+architectures' failed checks appear in the one tracker-issue status comment.
 
 ```bash
 gh run view <run-id> --log-failed
@@ -174,9 +178,13 @@ The watcher's 24-hour backoff only affects its own automatic re-tagging; a manua
 Weekly version updates for the dependencies that are pinned in this repository:
 
 - `github-actions` — the action pins in every workflow (`actions/checkout`, `docker/*`,
-  `actions/upload-artifact`, `actions/download-artifact`);
-- `docker` — the `debian:13-slim` base image in the `Containerfile` (uv switched to the official
-  installer script, so it is no longer a Dependabot-managed pin).
+  `actions/upload-artifact`, `actions/download-artifact`).
+
+The base image deliberately follows the moving `debian:13-slim` tag and lives behind an `ARG`, which
+Dependabot's `docker` ecosystem cannot update; there is intentionally no `docker` update entry.
+Pass `BASE_IMAGE` as an explicit digest when a reproducible build is needed (see
+[build.md](build.md)). uv switched to the official installer script, so it is likewise not managed
+by Dependabot.
 
 Upstream dsh tags are intentionally *not* covered by Dependabot — it has no ecosystem for watching
 another repository's git tags; that is the watcher workflow's job.

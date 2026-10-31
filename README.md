@@ -43,7 +43,7 @@ cookie; there is no separate login form.
 
 | Component | Description |
 |---|---|
-| Base image | `debian:13-slim` (pinned; overridable via the `BASE_IMAGE` build arg) |
+| Base image | `debian:13-slim` (moving tag; pass `BASE_IMAGE` to pin a digest) |
 | Toolchain | Node.js 24 LTS, pnpm, uv, Rust/cargo (+ rustfmt/clippy), git + git-lfs, build-essential + musl-tools, Caddy, podman + crun, gh, yq — image-owned real binaries, upgraded with the image |
 | Agent CLI tools | ripgrep, fd, python3, zip, openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch, plus a diagnostics set (dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, bc, moreutils, pv, uuid-runtime), xdg-user-dirs (UI default workspace) and dev tooling (just, shellcheck) — baked into the system layer, so a fresh container never re-downloads them (runtime `apt install` would be lost on recreation) |
 | Nested containers | podman in-container (rootless) with `XDG_RUNTIME_DIR`, subuid/subgid and the network/sysctl defaults preconfigured; the host runtime must allow unprivileged user namespaces + `/dev/fuse` + `/dev/net/tun` and must not mask the container's `/proc` (`--security-opt unmask=ALL`, Quadlet `Unmask=ALL`, Docker `systempaths=unconfined`); resource limits (`--memory`/`--cpus`) inside nested containers are not enforced (cgroup v2 constraint) — see [docs/deployment.md](docs/deployment.md) § In-container podman |
@@ -51,7 +51,7 @@ cookie; there is no separate login form.
 | Exposure | Caddy reverse proxy (`0.0.0.0:3081` → dsh's `127.0.0.1:3080`); preserves the browser `Host`/`Origin`, redirects the first visit to dsh's login token, and keeps optional basic auth |
 | Supervisor | `dsh web` auto-restarts on exit; `docker exec dsh dsh-restart` restarts it manually |
 | Remote compatibility | One container-adapt plugin (`container/plugin/`, mounted via `dsh --patch`): writes dsh's launch token for the proxy login redirect (the browser holds the session cookie), hides the headless-hostile "Open config file" button (`describe` reports no local document), serves the build-time-extracted images from `/container-assets/*`, and registers a built-in card on the Plugins page |
-| Observability | OCI labels, `HEALTHCHECK` (curl 3080 + 3081) |
+| Observability | OCI labels, `HEALTHCHECK` (validates expected unauthenticated statuses on 3080 + 3081) |
 | Runtime user | uid 1000 (`dsh`), passwordless sudo; `/home/dsh` is the persisted user layer |
 
 ## Container-adapt plugin
