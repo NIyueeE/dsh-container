@@ -8,10 +8,15 @@ Each release pushes one multi-platform image (Linux `amd64` + `arm64`) with thre
 |---|---|---|
 | `dsh-v*` (e.g. `dsh-v0.2.1-rc.2`) | upstream dsh tags | the release artifact; image tag, release page tag, and built dsh source tag are all the same upstream tag |
 | `latest` | newest `dsh-v*` release | points to the most recent release; what the examples pull |
-| `<commit-sha>` | release builds | exactly reproducible |
+| `<commit-sha>` | release builds | pins the exact published image (an immutable reference, not a reproducible recipe) |
 
 The version tag keeps the full `dsh-` prefix and is not published as a bare `v*` tag, so it never
 collides with older container-image tags such as `v0.2.2`.
+
+A `<commit-sha>` tag points at one digest; it does not make a rebuild bit-identical. The in-image
+toolchain floats by design (see [build.md](build.md#toolchain-versions-float-by-design)), so
+re-running a publish rebuilds with whatever upstream ships at that moment and produces a new digest.
+Pull by digest when you need the exact bytes that passed the smoke gate.
 
 Re-pushing an **older** `dsh-v*` tag is refused: the publish workflow's guard compares the tag with
 the newest existing `dsh-v*` tag and stops before building anything, leaving the tag in place for
@@ -182,9 +187,10 @@ Weekly version updates for the dependencies that are pinned in this repository:
 
 The base image deliberately follows the moving `debian:13-slim` tag and lives behind an `ARG`, which
 Dependabot's `docker` ecosystem cannot update; there is intentionally no `docker` update entry.
-Pass `BASE_IMAGE` as an explicit digest when a reproducible build is needed (see
-[build.md](build.md)). uv switched to the official installer script, so it is likewise not managed
-by Dependabot.
+Pass `BASE_IMAGE` as an explicit digest when you need a one-off forensic rebuild; reproducible
+builds are not a goal of this repository (see
+[build.md](build.md#toolchain-versions-float-by-design)). uv switched to the official installer
+script, so it is likewise not managed by Dependabot.
 
 Upstream dsh tags are intentionally *not* covered by Dependabot — it has no ecosystem for watching
 another repository's git tags; that is the watcher workflow's job.

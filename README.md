@@ -139,7 +139,7 @@ toolchain, never the data. Details in [docs/build.md](docs/build.md) and
 |---|---|
 | [docs/deployment.md](docs/deployment.md) | Deployment & maintenance: Compose, Quadlet, remote access, offline use, FAQ |
 | [docs/security.md](docs/security.md) | Security notes: network exposure tradeoff, credentials, trusted workloads |
-| [docs/build.md](docs/build.md) | Build configuration: build args, source tag pinning, reproducible builds |
+| [docs/build.md](docs/build.md) | Build configuration: build args, source tag pinning, and why the toolchain floats |
 | [docs/releasing.md](docs/releasing.md) | Releasing: tag-triggered publish, light/heavy gates, upstream tag watcher, failure diagnostics |
 | [docs/upstream-contract.md](docs/upstream-contract.md) | The upstream behaviors this image depends on, and how each one is enforced |
 | [docs/development.md](docs/development.md) | Directory structure and local development |

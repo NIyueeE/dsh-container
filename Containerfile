@@ -10,11 +10,16 @@
 # 在此之上按官方仓库 https://github.com/deepseek-ai/deepseek-harness 的源码
 # 方式构建 dsh: git clone 后切换到指定 tag, 再用 pnpm install/build:official。
 #
-# 可复现性: 基础镜像 tag、rust 工具链、uv 版本、dsh 源码 tag 均可通过构建参数固定;
-# pnpm 版本从所构建 tag 的 packageManager 读取并安装到系统层。Caddy/podman 来自
-# apt 仓库, dsh 依赖树由官方 pnpm-lock.yaml 锁定, 默认构建安装官方最新 tag。
-# 最低支持上游 dsh 0.2.1-alpha.3; 更早的 tag 不再兼容, 构建时直接失败。
-# 生产发布建议固定 DSH_TAG:
+# 版本策略: 工具链**故意**不钉版本 —— 基础镜像跟 debian:13-slim 移动 tag, Node 24.x、
+# rust stable、uv latest、apt 包(含 Caddy/podman)都随构建时的上游走; uv 与 yq 的安装
+# 脚本也不做 checksum。理由: 用户消费的是不可变 manifest digest, 重门禁针对即将合并的
+# 那个 digest 冒烟测试, provenance.json 记录实际版本, 所以浮动只影响"下一次构建"。
+# 不要把这些当成漏钉去"修"(详见 docs/build.md "Toolchain versions float by design")。
+# 刻意的固定项只有: DSH_TAG(发布身份)、构建期 esbuild 版本、GitHub Actions 的 commit
+# SHA, 以及 actionlint/zizmor 的容器 digest。
+# pnpm 版本从所构建 tag 的 packageManager 读取并安装到系统层; dsh 依赖树由官方
+# pnpm-lock.yaml 锁定。最低支持上游 dsh 0.2.1-alpha.3; 更早的 tag 构建时直接失败。
+# 本地构建可用 --build-arg 固定 DSH_TAG/RUST_TOOLCHAIN/UV_VERSION(一次性取证重建):
 #   podman build --format docker \
 #                --build-arg DSH_TAG=dsh-v0.2.1-rc.2 \
 #                --build-arg RUST_TOOLCHAIN=1.88.0 \
@@ -95,7 +100,8 @@
 # ---- 构建参数(全部有默认值) ----------------------------------------------
 # BASE_IMAGE 声明在 FROM 之前(全局作用域), 供 FROM 行使用; 其余 ARG 在 FROM
 # 之后重新声明才对本阶段可见。
-# 基础镜像跟 latest stable tag(不 pin digest): 构建每次拿当前 debian:13-slim。
+# 基础镜像跟 latest stable tag(不 pin digest): 构建每次拿当前 debian:13-slim,
+# 与其余工具链一样有意浮动, 见上文"版本策略"。
 ARG BASE_IMAGE=debian:13-slim
 
 FROM ${BASE_IMAGE}

@@ -90,7 +90,7 @@ sudo systemctl enable --now dsh.service
 |---|---|
 | [docs/deployment.md](docs/deployment.md) | 部署与维护:Compose、Quadlet、远程访问、离线使用、FAQ |
 | [docs/security.md](docs/security.md) | 安全说明:网络暴露取舍、凭据、可信工作负载 |
-| [docs/build.md](docs/build.md) | 构建配置:构建参数、源码版本钉定、可复现构建 |
+| [docs/build.md](docs/build.md) | 构建配置:构建参数、源码版本钉定,以及工具链为何浮动 |
 | [docs/releasing.md](docs/releasing.md) | 发布:tag 触发的发布流水线、轻/重门、上游 tag 监视、失败诊断 |
 | [docs/upstream-contract.md](docs/upstream-contract.md) | 本镜像依赖的上游行为,以及每条行为的强制方式 |
 | [docs/development.md](docs/development.md) | 目录结构与本地开发 |

@@ -27,7 +27,7 @@ tests/
 docs/
   deployment.md          # deployment & maintenance guide
   security.md            # security notes
-  build.md               # build configuration & version pinning
+  build.md               # build configuration & version policy
   releasing.md           # image tags, publishing & release automation
   upstream-contract.md   # the upstream contract and its behavioral enforcement points
   development.md         # this file

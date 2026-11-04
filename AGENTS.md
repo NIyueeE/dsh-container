@@ -201,6 +201,19 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   but holds only data — the image owns the entire toolchain (uv/pnpm/cargo real binaries in
   `/usr/local/bin`, Rust toolchain tree in `/opt/rust`, dsh source/build artifacts in
   `/opt/deepseek-harness`), so tools are upgraded by image upgrade, never by mutating the volume.
+- **In-image toolchain versions float on purpose — do not pin them.** The moving `debian:13-slim`
+  tag, Node.js 24.x, the Rust `stable` channel, uv `latest`, an unversioned `uv tool install yq`,
+  and apt packages without `=version` are a decision, not an oversight. Users consume one immutable
+  manifest digest; the heavy gate smoke-tests exactly the digests that get merged, and
+  `/etc/dsh-container/provenance.json` records the versions the image actually contains. A
+  toolchain bump can therefore only change the *next* build, and a bump that breaks behaviour is
+  stopped by the gate. Do not add `pkg=version` pins, a Node patch pin, a `yq==` constraint,
+  installer checksums, or a Dependabot `docker` entry as "hardening", and do not describe builds as
+  bit-reproducible (rebuilds are not). Keep the four deliberate pins — `DSH_TAG` (release
+  identity), `esbuild` (the client artifacts are post-processed, so a minifier change alters a
+  tested product), action commit SHAs, and the actionlint/zizmor image digests — and leave
+  `BASE_IMAGE`/`RUST_TOOLCHAIN`/`UV_VERSION` as optional one-off build args, not CI surface. Full
+  rationale: `docs/build.md` § Toolchain versions float by design.
 - **`dsh` has passwordless sudo** via the `sudo` group (`%sudo ALL=(ALL) NOPASSWD:ALL`). This is
   intentional for a development container, but it means uid 1000 can reach root; treat the
   container root as reachable by the agent.
