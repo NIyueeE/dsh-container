@@ -1,4 +1,4 @@
-# AGENTS.md — dsh Container Image
+# AGENTS.md: dsh Container Image
 
 Guidelines for AI agents (and humans) working on this repository. Read this before editing; it
 explains the runtime architecture, the upstream constraints that shape it, and the conventions
@@ -14,7 +14,7 @@ image and run it with Docker/Podman; this repo is not an application you run dir
 older tags; `Containerfile` rejects a `DSH_TAG` below 0.2.1-alpha.3.
 
 **Global agent instructions** live at `~/.dsh/AGENTS.md` (`$DSH_HOME`, first) and
-`~/.agents/AGENTS.md` (`$DSH_AGENTS_HOME`, second) — dsh loads both as a user-global baseline
+`~/.agents/AGENTS.md` (`$DSH_AGENTS_HOME`, second). dsh loads both as a user-global baseline
 before any project file. The image deliberately ships **no** default there; a copy-pasteable
 container-environment note for that file lives in
 [docs/deployment.md](docs/deployment.md#global-agent-instructions).
@@ -33,9 +33,9 @@ container-environment note for that file lives in
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
 | `README.md` / `README.zh.md` | Project README + Chinese translation. `README.md` is the single source of truth |
 | `.github/workflows/ci.yml` | Light gate (always) and heavy-gate admission: `light` runs `tests/validate-static.sh` + `tests/validate-workflows.sh` on every `main` push, every PR, and as part of every publish; `smoke` calls `smoke.yml` on `main` pushes **only when the diff touches the runtime surface** (`Containerfile`, `container/`, `tests/smoke.sh`, `.github/workflows/smoke.yml`); a diff that cannot be computed forces the heavy gate (fail-closed). PRs run the light gate only. Resolves the newest upstream `dsh-v*` for the heavy build args only when the heavy gate is admitted (docs-only pushes make no upstream API call) |
-| `.github/workflows/smoke.yml` | **The only heavy gate**, `workflow_call` only (plus a debug `workflow_dispatch`): a contract job first requires both image inputs to be empty or both immutable `@sha256:` digests, then a matrix over `linux/amd64` (`ubuntu-24.04`) and `linux/arm64` (`ubuntu-24.04-arm`) either builds the image locally (`--load`) or pulls the published digest, then runs `tests/smoke.sh --expect-dsh-tag … --expect-platform …`; uploads `smoke-diagnostic-<arch>` (JSON + Markdown + log, 14 days) and appends the Markdown to the job summary; the `verdict` job emits `ok` and nothing else — it never tags, pushes, comments, or writes the repository |
-| `.github/workflows/publish.yml` | Tag-triggered publish (`push: tags: ['dsh-v*']`, the **only** release trigger): `guard` (downgrade refusal; a rerun always rebuilds — a Release is attached to the tag name, so it cannot tell a rerun apart from a tag moved to a new commit) → `light` (reuses `ci.yml`) → `build` matrix (amd64 on `ubuntu-24.04`, arm64 on `ubuntu-24.04-arm`) pushed **by digest, untagged** → `build-refs` restores both digest artifacts into exact image references → `smoke` (reuses `smoke.yml`, so the tested digests are exactly the ones that get merged) → `publish` (`imagetools create` for `:<tag>` + `:<sha>` + `:latest` when newest, manifest assertion that exactly linux/amd64 + linux/arm64 are present (buildx attestations are ignored), Release create/edit, tracker-issue close) → `finalize` on failure (`failure() || cancelled()`), which deletes the git tag **only** when no image tag was created and the remote tag still points at the same commit, then PATCHes one status comment on the tracker issue with the failing check and the `gh run download` commands |
-| `.github/workflows/upstream-tag.yml` | 6-hourly watcher (`0 */6 * * *`; Actions' `schedule` lands 4–9 h late, so 4 runs/day cap detection latency at ~10–15 h) plus `dsh-v*` tag pushes and manual dispatch: compares the newest upstream `dsh-v*` with this repo's (semver-aware), opens one tracker issue per new tag, and — when `RELEASE_PAT` is configured — creates that tag at the tip of `main` and pushes it, which is what starts `publish.yml` (GITHUB_TOKEN and App-token pushes do not trigger workflows). Backs off for 24 h after a failed publish of the same tag; without the PAT it only comments the manual `git tag` / `git push` commands. Closes tracker issues once the tag has a GitHub Release, and runs a release health check on the newest tag (no Release ⇒ "Release pipeline not published" issue with the latest run link) |
+| `.github/workflows/smoke.yml` | **The only heavy gate**, `workflow_call` only (plus a debug `workflow_dispatch`): a contract job first requires both image inputs to be empty or both immutable `@sha256:` digests, then a matrix over `linux/amd64` (`ubuntu-24.04`) and `linux/arm64` (`ubuntu-24.04-arm`) either builds the image locally (`--load`) or pulls the published digest, then runs `tests/smoke.sh --expect-dsh-tag … --expect-platform …`; uploads `smoke-diagnostic-<arch>` (JSON + Markdown + log, 14 days) and appends the Markdown to the job summary; the `verdict` job emits `ok` and nothing else. It never tags, pushes, comments, or writes the repository |
+| `.github/workflows/publish.yml` | Tag-triggered publish (`push: tags: ['dsh-v*']`, the **only** release trigger): `guard` (downgrade refusal; a rerun always rebuilds, because a Release is attached to the tag name, so it cannot tell a rerun apart from a tag moved to a new commit) → `light` (reuses `ci.yml`) → `build` matrix (amd64 on `ubuntu-24.04`, arm64 on `ubuntu-24.04-arm`) pushed **by digest, untagged** → `build-refs` restores both digest artifacts into exact image references → `smoke` (reuses `smoke.yml`, so the tested digests are exactly the ones that get merged) → `publish` (`imagetools create` for `:<tag>` + `:<sha>` + `:latest` when newest, manifest assertion that exactly linux/amd64 + linux/arm64 are present (buildx attestations are ignored), Release create/edit, tracker-issue close) → `finalize` on failure (`failure() || cancelled()`), which deletes the git tag **only** when no image tag was created and the remote tag still points at the same commit, then PATCHes one status comment on the tracker issue with the failing check and the `gh run download` commands |
+| `.github/workflows/upstream-tag.yml` | 6-hourly watcher (`0 */6 * * *`; Actions' `schedule` lands 4-9 h late, so 4 runs/day cap detection latency at ~10-15 h) plus `dsh-v*` tag pushes and manual dispatch: compares the newest upstream `dsh-v*` with this repo's (semver-aware), opens one tracker issue per new tag, and, when `RELEASE_PAT` is configured, creates that tag at the tip of `main` and pushes it, which is what starts `publish.yml` (GITHUB_TOKEN and App-token pushes do not trigger workflows). Backs off for 24 h after a failed publish of the same tag; without the PAT it only comments the manual `git tag` / `git push` commands. Closes tracker issues once the tag has a GitHub Release, and runs a release health check on the newest tag (no Release ⇒ "Release pipeline not published" issue with the latest run link) |
 | `tests/smoke.sh` | The heavy gate's test suite: launch-token login redirect, session cookie, `Host`/`Origin`/`Sec-Fetch-Site` fence, workspace bootstrap, cache headers, plugin boot row and `/container-assets` post-processing, telemetry default, three-zone toolchain layout and volume shadowing, in-container rootless podman contract, sandbox launcher probe, supervisor restart/rotation, basic auth, trusted host, outbound-proxy regression, and image identity (provenance ↔ OCI labels ↔ platform ↔ tool versions). Fails closed: `--expect-dsh-tag` / `--expect-platform` are required, every wait has a timeout, `|| true` needs an `# ok:` reason (enforced by `validate-static.sh`), and every failure (explicit assertion or unexpected command exit) writes `smoke-diagnostic.{json,md}` with the check id, timings, container log tails and a reproduce command; the workflow validates the port contract and a custom internal port as part of the service-stack checks |
 | `tests/validate-docs.py` | Stdlib-only doc gate: `links` (every relative doc link resolves) and `parity` (README/README.zh heading, link and code-fence counts); run by the light gate and `just lint` |
 | `tests/validate-static.sh` | Single-source light gate: shell syntax/shellcheck, plugin contract + JS syntax, docs links/parity, removed auto-update remnants, the `smoke.sh` `\|\| true` audit, and (unless `--no-runtime`) compose/quadlet; used by `ci.yml`, the `publish.yml` light call, and `just lint` (which passes `--no-runtime`) |
@@ -49,12 +49,12 @@ container-environment note for that file lives in
 
 The entrypoint (`container/entrypoint.sh`) does, in order:
 
-1. Restores `HOME` from passwd — containers run with a numeric `USER 1000`, so Docker does not set
+1. Restores `HOME` from passwd. Containers run with a numeric `USER 1000`, so Docker does not set
    `HOME` (npm/uv/cargo need it).
 2. Three-zone layout (the hermes-agent pattern): the image owns the whole toolchain as a system
-   layer — dsh at `/opt/deepseek-harness`, uv/pnpm and the rustup proxies as real binaries
-   in `/usr/local/bin`, the Rust toolchain tree in `/opt/rust`. One deliberate exception to
-   read-only: rustup must write its home (`RUSTUP_HOME=/opt/rust/rustup` — settings, tmp,
+   layer, with dsh at `/opt/deepseek-harness`, uv/pnpm and the rustup proxies as real binaries
+   in `/usr/local/bin`, and the Rust toolchain tree in `/opt/rust`. One deliberate exception to
+   read-only: rustup must write its home (`RUSTUP_HOME=/opt/rust/rustup`: settings, tmp,
    downloads, toolchains), so the build bakes `dsh` ownership into it and the entrypoint
    self-heals that ownership at every start (a recreated container would otherwise revert to
    root-owned files and the first rustup write fails). The `/home/dsh` volume holds only
@@ -63,56 +63,55 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    Caddyfile and PID file), the process cwd is `$HOME`
    itself (dsh creates directories under it as needed), and writable caches/user-installed tools
    live under `$HOME` (`CARGO_HOME=~/.cargo`, uv data in `~/.local/share/uv`,
-   `PNPM_HOME=~/.local/share/pnpm` — its executable bin is `$PNPM_HOME/bin`, and all three of
-   `Containerfile`'s `ENV PATH`, `entrypoint.sh` and `dsh-web.sh` must spell that PATH identically:
-   omitting `/bin` makes `pnpm add -g` refuse to install). Tool upgrades happen by image upgrade;
-   a volume can never
-   shadow image-provided tools. PATH is image-first (`/usr/local/bin` before `$HOME/.local/bin`)
-   with user directories last. Agent high-frequency CLI tools (ripgrep, fd, python3, zip,
-    openssh-client, tmux, sqlite3, vim.tiny/nano, less, rsync, wget, tree, htop, tzdata, patch,
-    git-lfs, crun, plus the network/process diagnostics dig/nc/socat/traceroute/iperf3/nft, file,
-    ncdu, strace, zstd/lz4, xdg-user-dirs and the dev tooling just/shellcheck) are baked into the system layer too:
-    runtime `apt install` writes the
-    container's writable layer and is lost on recreation, so persistent tools belong in the image,
-    not in a runtime install. (deliberately absent: `tcpdump`/`iftop`/`mtr` — the container has no
-    `CAP_NET_RAW`.) Toolchain copies and the npm-installed dsh that pre-source-build
-    images (v0.2.x) seeded into volumes are inert (shadowed by PATH); manual cleanup
-    commands live in `docs/releasing.md` § Upgrading data volumes to the image-owned
-    toolchain. The entrypoint also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's
-    OTel feedback uploader (upstream default `FEEDBACK_ONLY` — exports the session prefix on
-    explicit feedback) never uploads unless the user opts in. That switch covers the **OTel path
-    only**: upstream mounts `session-log-deepseek` with `enabled: true`, so session-log suffixes
-    are attached to DeepSeek API requests by default — the image leaves that upstream behavior
-    alone and documents it in `docs/security.md`; do not describe the image as "no data leaves the
-    container".
-3. Parses `--port <N>` / `--port=<N>` (default 3080), requires an integer in 1–65535, and rejects
+   `PNPM_HOME=~/.local/share/pnpm`, whose executable bin is `$PNPM_HOME/bin`; all three of
+   `Containerfile`'s `ENV PATH`, `entrypoint.sh` and `dsh-web.sh` must spell that PATH identically,
+   because omitting `/bin` makes `pnpm add -g` refuse to install). Tool upgrades happen by image
+   upgrade, and a volume can never shadow image-provided tools. PATH is image-first
+   (`/usr/local/bin` before `$HOME/.local/bin`) with user directories last. Agent high-frequency
+   CLI tools (ripgrep, fd, python3, zip, openssh-client, tmux, sqlite3, vim.tiny/nano, less,
+   rsync, wget, tree, htop, tzdata, patch, git-lfs, crun, plus the network/process diagnostics
+   dig/nc/socat/traceroute/iperf3/nft, file, ncdu, strace, zstd/lz4, xdg-user-dirs and the dev
+   tooling just/shellcheck) are baked into the system layer too: a runtime `apt install` writes
+   the container's writable layer and is lost on recreation, so persistent tools belong in the
+   image, not in a runtime install. (Deliberately absent: `tcpdump`/`iftop`/`mtr`, because the
+   container has no `CAP_NET_RAW`.) Toolchain copies and the npm-installed dsh that pre-source-build
+   images (v0.2.x) seeded into volumes are inert (shadowed by PATH); manual cleanup
+   commands live in `docs/releasing.md` § Upgrading data volumes to the image-owned
+   toolchain. The entrypoint also defaults `DSH_TELEMETRY_MODE=DISABLED` (user-overridable): dsh's
+   OTel feedback uploader (upstream default `FEEDBACK_ONLY`, which exports the session prefix on
+   explicit feedback) never uploads unless the user opts in. That switch covers the **OTel path
+   only**: upstream mounts `session-log-deepseek` with `enabled: true`, so session-log suffixes
+   are attached to DeepSeek API requests by default. The image leaves that upstream behavior
+   alone and documents it in `docs/security.md`; do not describe the image as "no data leaves the
+   container".
+3. Parses `--port <N>` / `--port=<N>` (default 3080), requires an integer in 1-65535, and rejects
    `0` and `3081`; `dsh-web` enforces the same range when invoked directly.
 4. Prepares the in-container podman runtime environment: provisions `XDG_RUNTIME_DIR`
-   (`/run/user/<uid>` via passwordless sudo, `/tmp` fallback) — rootless podman cannot start
+   (`/run/user/<uid>` via passwordless sudo, `/tmp` fallback). Rootless podman cannot start
    without a writable runtime dir. The image deliberately does **not** set
    `_CONTAINERS_USERNS_CONFIGURED`: on podman 5.x that variable makes the inner podman skip
    user-namespace creation while its runtime still requires it (`euid != 0` → `needsUserns`), so
    the image store and network backend are never initialized and every store-touching command
    panics on a nil pointer (verified on 5.4.2). The inner podman therefore runs the standard
-   rootless flow (`unshare` + setuid `newuidmap` over the subuid range — which requires
+   rootless flow (`unshare` + setuid `newuidmap` over the subuid range, which requires
    `/etc/subuid`/`/etc/subgid` to carry the `dsh` range exactly **once**; duplicate lines make
    the kernel reject the overlapping mapping with `Invalid argument`, which was the original
    reason the variable was introduced). `/etc/bash.bashrc` re-exports
    `XDG_RUNTIME_DIR` for **interactive** `docker exec` shells. The host must still allow
    unprivileged (nested) user namespaces + `/dev/fuse` (+`/dev/net/tun` for rootless networking)
-   and — the podman 5.x requirement — must not mask or read-only the container's `/proc`
-   submounts (`--security-opt unmask=ALL` / `systempaths=unconfined`), otherwise crun cannot
-   mount `/proc` inside the nested container (`mount proc: Operation not permitted`); see
+   and must not mask or read-only the container's `/proc` submounts (the podman 5.x requirement;
+   `--security-opt unmask=ALL` / `systempaths=unconfined`), otherwise crun cannot mount `/proc`
+   inside the nested container (`mount proc: Operation not permitted`); see
    `docs/deployment.md` § In-container podman.
-5. `dsh-web` then brings up the whole service stack (it is the container's supervisor — see
+5. `dsh-web` then brings up the whole service stack (it is the container's supervisor; see
    `container/dsh-web.sh`): it starts `dsh web` on `127.0.0.1:$DSH_WEB_PORT` (output mirrored into
    the container log) mounted with the container-adapt plugin overlay
-   (`dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web ...` — the `web` alias
+   (`dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web ...`; the `web` alias
    rejects parent flags upstream, so the root `--profile web` form is required). The plugin
    writes the process launch token to `/tmp/dsh-caddy/launch-token` as a **state** file;
    `dsh-web` waits only for that file (bounded), generates the Caddyfile, and afterwards
-   reconciles on **content change** — regenerating the Caddyfile and running `caddy reload` only
-   when the token rotated — so a same-container restart never depends on a write happening (the
+   reconciles on **content change**: it regenerates the Caddyfile and runs `caddy reload` only
+   when the token rotated, so a same-container restart never depends on a write happening (the
    old mtime handshake is what made the container wait 120 s and exit 1, i.e. a crash loop under a
    restart policy; issue #12). It starts **Caddy** on `0.0.0.0:3081`, which **preserves the browser
    `Host`/`Origin`** and forwards to dsh: no header rewrite and no cookie injection. Caddy's route
@@ -120,7 +119,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    with `403` (the index token exchange itself does not apply dsh's API fence, so this is the
    proxy's job), applies optional basic auth (except `/api/remote.mux`, whose WebSocket is
    authenticated by the browser's `SameSite=Strict` session cookie), marks **both** index entries
-   (`/` and `/index.html` — upstream's two supported entry paths) `Cache-Control: no-store`, marks
+   (`/` and `/index.html`, upstream's two supported entry paths) `Cache-Control: no-store`, marks
    the Vite-hashed `/assets/*` tree `Cache-Control: public, max-age=31536000, immutable`, and
    302s a request without a `dsh-auth-*` cookie to `/?token=...`. dsh then sets the session cookie
    and the browser holds it; the first visit is the only visible login step. The Caddyfile is
@@ -133,7 +132,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
    `http://127.0.0.1:3081/`) and `DSH_TRUSTED_HOST` (comma-separated extra authorities; derived
    from `DSH_PUBLIC_URL` when unset). `--public-url` is always passed (0.2.1-alpha.3 is the
    minimum supported tag). Basic auth remains `DSH_PROXY_USER` +
-   `DSH_PROXY_PASSWORD` (Caddyfile `basicauth` on distro caddy 2.6 — renamed `basic_auth` upstream
+   `DSH_PROXY_PASSWORD` (Caddyfile `basicauth` on distro caddy 2.6, renamed `basic_auth` upstream
    in 2.7; password bcrypt-hashed via `caddy hash-password`, fed over stdin). Setting only one auth
    variable is a startup error, not a silent no-auth fallback.
 6. `dsh-web` supervises `dsh web`: if it exits or crashes it is restarted automatically. The
@@ -157,7 +156,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   reaches dsh; this is necessary because the index token exchange itself does not apply the API
   fence. Upstream also requires a browser session (one-time `?token=...` login URL → signed cookie
   backed by a signing secret persisted in the volume). The plugin writes the launch token, Caddy
-  redirects the first visit, and the browser holds the cookie — the **proxy is still the network
+  redirects the first visit, and the browser holds the cookie. The **proxy is still the network
   access boundary**, but it no longer forges the session. Never present this as "secure by
   default"; `DSH_PROXY_USER`/`DSH_PROXY_PASSWORD` basic auth is the recommended control. dsh binds
   `127.0.0.1:3080` (not published), so direct access is a container-internal path, not a
@@ -169,13 +168,13 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   `index.html`. No upstream build artifact is modified for this; upstream ships its own
   insecure-context `randomUuid()` in `@deepseek-ai/dsh-util-crypto`.
 - **`settings/openSettingsDocument` has no headless fallback upstream** (unlike preset/workspace
-  opens, which check `canOpenPath`): the plugin keeps the button out of the UI entirely — it wraps
+  opens, which check `canOpenPath`): the plugin keeps the button out of the UI entirely. It wraps
   the `settingsController` instance's `describe` so `settings/describe` reports
   `hasDocument: false` (upstream hardcodes `hasDocument: true` and has no provider-side
   `documentPath`), and upstream's `SettingsDocumentAction` renders nothing
   (`status !== 'ready'`). No client code, no download
-  endpoint, no `settings-controller` row override — the overlay is a single plugin include.
-- dsh's agent workspace is the process cwd — the entrypoint must `cd "$HOME"` (or, for tests,
+  endpoint, no `settings-controller` row override. The overlay is a single plugin include.
+- dsh's agent workspace is the process cwd, so the entrypoint must `cd "$HOME"` (or, for tests,
   whichever directory it is configured to use).
 
 ## Push & release discipline
@@ -186,7 +185,7 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   pipeline runs (publish builds, GitHub Releases) are user-only actions. A finished
   change is reported as local commit(s); the user decides when and how to push and release.
 - Before implementing a user-facing change, **present the approach first** (what will change,
-  why, and its cost) and wait for approval — do not research-and-build-and-ship in one pass.
+  why, and its cost) and wait for approval. Do not research-and-build-and-ship in one pass.
 
 ## Conventions
 
@@ -198,10 +197,10 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   (cargo registry/cache + `cargo install` binaries),
   `~/.local/bin`, `~/.local/share/pnpm` (pnpm store + user globals). Do not turn these paths into
   entrypoint configuration variables. The whole `/home/dsh` directory is the persistence boundary
-  but holds only data — the image owns the entire toolchain (uv/pnpm/cargo real binaries in
+  but holds only data. The image owns the entire toolchain (uv/pnpm/cargo real binaries in
   `/usr/local/bin`, Rust toolchain tree in `/opt/rust`, dsh source/build artifacts in
   `/opt/deepseek-harness`), so tools are upgraded by image upgrade, never by mutating the volume.
-- **In-image toolchain versions float on purpose — do not pin them.** The moving `debian:13-slim`
+- **In-image toolchain versions float on purpose. Do not pin them.** The moving `debian:13-slim`
   tag, Node.js 24.x, the Rust `stable` channel, uv `latest`, an unversioned `uv tool install yq`,
   and apt packages without `=version` are a decision, not an oversight. Users consume one immutable
   manifest digest; the heavy gate smoke-tests exactly the digests that get merged, and
@@ -209,9 +208,9 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   toolchain bump can therefore only change the *next* build, and a bump that breaks behaviour is
   stopped by the gate. Do not add `pkg=version` pins, a Node patch pin, a `yq==` constraint,
   installer checksums, or a Dependabot `docker` entry as "hardening", and do not describe builds as
-  bit-reproducible (rebuilds are not). Keep the four deliberate pins — `DSH_TAG` (release
+  bit-reproducible (rebuilds are not). Keep the four deliberate pins: `DSH_TAG` (release
   identity), `esbuild` (the client artifacts are post-processed, so a minifier change alters a
-  tested product), action commit SHAs, and the actionlint/zizmor image digests — and leave
+  tested product), action commit SHAs, and the actionlint/zizmor image digests. Leave
   `BASE_IMAGE`/`RUST_TOOLCHAIN`/`UV_VERSION` as optional one-off build args, not CI surface. Full
   rationale: `docs/build.md` § Toolchain versions float by design.
 - **`dsh` has passwordless sudo** via the `sudo` group (`%sudo ALL=(ALL) NOPASSWD:ALL`). This is
@@ -220,22 +219,22 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 - **podman is installed for in-container rootless work, with subuid/subgid configured (the `dsh`
   range exactly once per file), plus the runtime-side preparation: `crun`, an entrypoint-provisioned
   `XDG_RUNTIME_DIR`, a `containers.conf` preset (`slirp4netns` as the rootless network command,
-  `default_sysctls` emptied — Debian's `ping_group_range` default fatally fails inside nested
-  rootless containers), and a `storage.conf` that spells out all four keys — `driver`,
+  `default_sysctls` emptied, because Debian's `ping_group_range` default fatally fails inside
+  nested rootless containers), and a `storage.conf` that spells out all four keys: `driver`,
   `graphroot`, `runroot` and `mount_program`.** Write all of them: podman applies its compiled-in
-  defaults only while the file is *absent*, so once it exists a missing key becomes a failure —
-  no `driver` means a warning on every single invocation, no `graphroot`/`runroot` means rootful
-  podman cannot load its configuration at all (`runroot must be set`, 5.4.2). Neither is caused by
-  pinning the driver; the older claim that pinning `driver` was what broke rootful was wrong
-  (measured: it fails unpinned too). Rootless keeps its XDG paths regardless. Rootful *running*
-  containers is still impossible here — crun needs `CAP_MKNOD`, absent from the container's
-  `CapBnd`, plus cgroup-namespace handling — so that is a host-deployment decision
+  defaults only while the file is *absent*, so once it exists a missing key becomes a failure.
+  No `driver` means a warning on every single invocation, and no `graphroot`/`runroot` means
+  rootful podman cannot load its configuration at all (`runroot must be set`, 5.4.2). Neither is
+  caused by pinning the driver; the older claim that pinning `driver` was what broke rootful was
+  wrong (measured: it fails unpinned too). Rootless keeps its XDG paths regardless. Rootful
+  *running* containers is still impossible here: crun needs `CAP_MKNOD`, absent from the
+  container's `CapBnd`, plus cgroup-namespace handling. That is a host-deployment decision
   (`--cap-add=MKNOD`), documented in `docs/deployment.md` but not verified end to end.
   Do **not** set `_CONTAINERS_USERNS_CONFIGURED` anywhere: on podman 5.x it makes the inner
   podman skip user-namespace creation while its runtime still needs it, and every store-touching
   command then panics on a nil pointer (item 4 above). Nested containers still depend on the host
   Docker/Podman seccomp and user-namespace settings, `/dev/fuse`, `/dev/net/tun`, and an unmasked
-  `/proc` (podman 5.x: crun cannot mount proc inside the nested container otherwise) — docs must
+  `/proc` (podman 5.x: crun cannot mount proc inside the nested container otherwise). Docs must
   not promise that `podman run` always works inside this image. **Nested containers never enforce
   cgroup resource limits** (`--memory`/`--cpus` are silently ignored): cgroup v2's
   no-internal-process rule plus the container's own cgroup-namespace root (where every
@@ -243,27 +242,27 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   topology (empty the ns root, move the stack into a child cgroup, enable controllers at the root,
   point podman at the relay via a `/usr/local/bin/podman` wrapper) was implemented and measured:
   limits did apply (OOM kill + `cpu.max` verified), but the kernel then rejects every process
-  placement into the ns root with `EBUSY`, which breaks `docker exec` and the healthcheck — the
+  placement into the ns root with `EBUSY`, which breaks `docker exec` and the healthcheck. The
   change was reverted. Do not re-attempt that design; the honest limitation is documented in
   `docs/deployment.md` § In-container podman.
 - **Ports**: exposed/external port is `3081`; `127.0.0.1:3080` is dsh's internal port only. Keep
-  them distinct everywhere. The proxy binds `0.0.0.0:3081` because it differs from dsh's port —
-  do not reintroduce container-IP binding tricks. The examples publish it on host loopback
-  (`127.0.0.1:3081:3081`) — LAN/public exposure is an explicit step (the plain-LAN variant is
+  them distinct everywhere. The proxy binds `0.0.0.0:3081` because it differs from dsh's port.
+  Do not reintroduce container-IP binding tricks. The examples publish it on host loopback
+  (`127.0.0.1:3081:3081`). LAN/public exposure is an explicit step (the plain-LAN variant is
   documented next to the publish line).
 - **Remote access is proxy-only**: Caddy is the only exposure path. Do not add host-trust
   bypasses or reintroduce Host/Origin rewriting; basic auth
   (`DSH_PROXY_USER`/`DSH_PROXY_PASSWORD`) is the access control. External authorities are named by
   `DSH_TRUSTED_HOST` or derived from `DSH_PUBLIC_URL`; Caddy's Host allowlist rejects everything
   else. DeepSeek account sign-in still requires a loopback browser origin (SSH tunnel), not a
-  public hostname — do not promise otherwise.
+  public hostname. Do not promise otherwise.
 - **Keep examples and docs in sync with code.** Changing ports, env vars, defaults, or entrypoint
   behavior requires updating all of: `container/entrypoint.sh` header, `Containerfile` comments,
   `examples/compose.yaml`, `examples/dsh.container`, `README.md` + `README.zh.md`,
   `docs/deployment.md`, `docs/security.md`, and the smoke test in `tests/smoke.sh` (run by `smoke.yml`)
   (it publishes `3081:3081` and curls `127.0.0.1:3081`).
 - **README.md is the single source of truth**; `README.zh.md` must mirror its structure exactly
-  (same headings, links, and code fences; translate prose only — never code, commands, URLs,
+  (same headings, links, and code fences; translate prose only, never code, commands, URLs,
   env vars, or file paths).
 - Code comments are Chinese; user-facing docs are English.
 - Commit messages follow the repo style: `feat:`, `fix:`, `docs:`, `ci:`.
@@ -290,13 +289,13 @@ just lint-workflows  # actionlint + zizmor on .github/workflows (pinned containe
 - Releasing is tag-driven: pushing a `dsh-v*` tag (matching the upstream dsh repository tag) is the
   only release trigger. `.github/workflows/publish.yml` then runs the light gate, builds both
   platforms by digest (amd64 on `ubuntu-24.04`, arm64 on GitHub's free native `ubuntu-24.04-arm`
-  runner — no QEMU), smoke-tests **those exact digests** via `smoke.yml`, merges them into one
+  runner, no QEMU), smoke-tests **those exact digests** via `smoke.yml`, merges them into one
   multi-arch image tagged `dsh-v*` + `<sha>` + `latest`, and creates the GitHub Release. A failing
   smoke run means no image tag, no Release, and (when nothing was merged) the git tag is deleted
   again, so the repository never carries a tag for a failed publish.
 - Upstream tags are watched automatically: `.github/workflows/upstream-tag.yml` runs every 6 hours,
-  opens a tracker issue when upstream publishes a new `dsh-v*` tag, and — when `RELEASE_PAT` is
-  configured — creates the tag here and pushes it, which starts the publish pipeline. Without the
+  opens a tracker issue when upstream publishes a new `dsh-v*` tag, and, when `RELEASE_PAT` is
+  configured, creates the tag here and pushes it, which starts the publish pipeline. Without the
   secret it comments the manual `git tag` / `git push` commands instead. Failures are reported on
   that tracker issue with a link to the run and the `gh run download` command for the smoke
   diagnostics; `.github/workflows/pat-trigger-probe.yml` can pre-verify the PAT's push-trigger
@@ -305,11 +304,11 @@ just lint-workflows  # actionlint + zizmor on .github/workflows (pinned containe
 
 ## Validation checklist before committing
 
-1. `just lint` — runs `tests/validate-static.sh --no-runtime` (shell syntax, `shellcheck`,
+1. `just lint` runs `tests/validate-static.sh --no-runtime` (shell syntax, `shellcheck`,
    plugin contract + JS syntax, docs links/parity, removed auto-update remnants). CI runs the same
    script without `--no-runtime` (adds compose/quadlet); `shellcheck --severity=warning` must
    be zero output; annotate genuine false positives with a targeted `# shellcheck disable=`.
-2. `just lint-workflows` — actionlint and zizmor must both be zero output. Do not silence workflow
+2. `just lint-workflows`: actionlint and zizmor must both be zero output. Do not silence workflow
    errors; `run:` scripts get shellcheck from actionlint, so use env indirection for untrusted
    `${{ ... }}` values instead of inline interpolation. Zizmor also flags unpinned actions,
    excessive permissions, dangerous triggers and unsound expressions.

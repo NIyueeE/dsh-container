@@ -56,7 +56,7 @@ just --list                    # justfile parses
 ## Verifying a processed payload in a headless browser
 
 The three post-processing steps rewrite upstream client artifacts, and dsh serves several of them
-concatenated into one response, so static checks are not enough — the payload has to boot in a real
+concatenated into one response, so static checks are not enough. The payload has to boot in a real
 browser. The upstream workspace already ships Playwright; run the processed tree as an **isolated
 second instance** so the live one keeps serving the image's artifacts:
 
@@ -85,16 +85,16 @@ opening (the plugin hides the document button; no `__DSH_TRANSPORT__` row is inj
 extracted `/container-assets/*.png` files fetching and decoding. A payload can pass `node --check` and the
 loader-registration self-check and still fail here: identifier-renaming minification did exactly
 that (58 of 65 entries failed, because concatenated artifacts share one script scope and renamed
-helpers collide across files — see `container/plugin/scripts/minify-client.mjs`).
+helpers collide across files; see `container/plugin/scripts/minify-client.mjs`).
 
 ## CI lanes
 
 Two gates, defined once each and reused everywhere:
 
-- **light** (`ci.yml` / `light`) — `tests/validate-static.sh` + `tests/validate-workflows.sh`.
+- **light** (`ci.yml` / `light`): `tests/validate-static.sh` + `tests/validate-workflows.sh`.
   Runs on every push to `main`, every pull request, and as part of every publish. It never builds
   an image.
-- **heavy** (`smoke.yml`) — builds or pulls both architectures and runs `tests/smoke.sh` on each.
+- **heavy** (`smoke.yml`): builds or pulls both architectures and runs `tests/smoke.sh` on each.
   Runs on `main` pushes only when the diff touches the runtime surface (`Containerfile`,
   `container/**`, `tests/smoke.sh`, `.github/workflows/smoke.yml`), and on every publish. A diff
   that cannot be computed forces the heavy gate; PRs never run it. The workflow validates that the

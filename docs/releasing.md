@@ -46,24 +46,24 @@ publish  imagetools create → :<tag> + :<sha> (+ :latest when newest)
 ```
 
 The smoke run pulls **the exact digests that are about to be merged**, so the tested artifact is the
-published one. `smoke.yml` never pushes, tags, or comments — it only reports `ok`.
+published one. `smoke.yml` never pushes, tags, or comments; it only reports `ok`.
 
 Failures do not leave a half-published tag behind: when no image tag was created, the `finalize` job
 deletes the git tag (after confirming it still points at the same commit and that `:<tag>` does not
 exist in GHCR). Once the image tag exists, the tag is kept and only the missing Release is reported.
 
-The workflow is idempotent — re-running it for the same tag re-merges the same digests and edits the
-existing Release — and refuses tags older than the newest `dsh-v*` tag, leaving them in place.
+The workflow is idempotent: re-running it for the same tag re-merges the same digests and edits the
+existing Release. It refuses tags older than the newest `dsh-v*` tag, leaving them in place.
 
 ### Gates
 
 | Gate | Defined in | What it proves | Cost |
 |---|---|---|---|
-| light | `ci.yml` / `light` | shellcheck, plugin contract, docs links/parity, actionlint + zizmor, compose/quadlet — no image is built | ~1.5 min |
+| light | `ci.yml` / `light` | shellcheck, plugin contract, docs links/parity, actionlint + zizmor, compose/quadlet, and no image is built | ~1.5 min |
 | heavy | `smoke.yml` | the image actually runs: login redirect, session cookie, `/api` fence, plugin assets and build record, telemetry default, provenance/OCI labels/platform, both architectures | ~20 min, 2 builds |
 
 `main` pushes always run the light gate and run the heavy gate only when the diff touches the
-runtime surface — `Containerfile`, `container/**`, `tests/smoke.sh`,
+runtime surface: `Containerfile`, `container/**`, `tests/smoke.sh`,
 `.github/workflows/smoke.yml`. A diff that cannot be computed (force push, missing base) forces the
 heavy gate. Pull requests run the light gate only; every publish runs both.
 
@@ -77,7 +77,7 @@ The Release page body is composed at publish time by the `release` job and conta
 2. GitHub's auto-generated commit list for this repository (`generate_release_notes`).
 
 The upstream notes are the authority on per-version migrations (session-log format, settings/preset
-storage, provider configuration) — this repository deliberately does not restate them per release,
+storage, provider configuration). This repository deliberately does not restate them per release,
 and does not repeat this image's own upgrade guidance on every Release page. That guidance is
 durable documentation instead: [deployment.md](deployment.md) § 4 (the one-way volume rule) and
 [§ Upgrading data volumes to the image-owned toolchain](#upgrading-data-volumes-to-the-image-owned-toolchain)
@@ -114,18 +114,17 @@ moving base-image tag is intentional):
 ### Upstream tag watcher (`.github/workflows/upstream-tag.yml`)
 
 Dependabot cannot watch another repository's git tags, so a small scheduled workflow does it.
-Running every 6 hours (plus on every `dsh-v*` tag push and on manual dispatch), it compares the newest
-`dsh-v*` tag of `deepseek-ai/deepseek-harness` with the newest `dsh-v*` tag of this repository
-(semver-aware, so a stable tag outranks its pre-releases: `dsh-v0.2.1-alpha.5` < `dsh-v0.2.1`).
-The schedule is `0 */6 * * *` (every 6 hours), plus the usual `dsh-v*` tag push / manual
-dispatch. Actions' `schedule` is best-effort queueing: measured runs landed 4–9 h late, so a
-single daily run could take ~30 h to notice a new upstream tag; four runs a day cap the worst case
-at ~10–15 h.
+Running every 6 hours (`0 */6 * * *`, plus on every `dsh-v*` tag push and on manual dispatch), it
+compares the newest `dsh-v*` tag of `deepseek-ai/deepseek-harness` with the newest `dsh-v*` tag of
+this repository (semver-aware, so a stable tag outranks its pre-releases:
+`dsh-v0.2.1-alpha.5` < `dsh-v0.2.1`). Actions' `schedule` is best-effort queueing: measured runs
+landed 4-9 h late, so a single daily run could take ~30 h to notice a new upstream tag; four runs a
+day cap the worst case at ~10-15 h.
 
 - **upstream ahead** → opens one tracker issue ("New upstream dsh release available: …") with the
   release-notes link, the upstream diff, and the manual `git tag` / `git push` commands. When
   `RELEASE_PAT` is configured it also creates that tag at the tip of `main` and pushes it, which is
-  what starts the publish pipeline — unless the tag already failed a publish within the last 24
+  what starts the publish pipeline, unless the tag already failed a publish within the last 24
   hours, in which case the watcher stays quiet (that backoff stops a broken tag from rebuilding
   every 6 hours);
 - **tags equal** → tracker issues whose tag now has a GitHub Release are closed. The same run does a
@@ -143,7 +142,7 @@ To re-check on demand, run "Upstream dsh tag watch" → "Run workflow" from the 
 Pushes made with `GITHUB_TOKEN` or a GitHub App installation token do **not** trigger workflows, so a
 tag pushed with the built-in token would never start `publish.yml`. `RELEASE_PAT` (fine-grained:
 Contents read/write plus **Workflows read/write**) is what makes the watcher's tag push start the
-pipeline. Without the secret the watcher only comments the manual commands — the manual path still
+pipeline. Without the secret the watcher only comments the manual commands. The manual path still
 works, it is just not automatic. `.github/workflows/pat-trigger-probe.yml` verifies that credential
 on demand.
 
@@ -164,7 +163,7 @@ jq '.failed_check, .message' ./diag/smoke-diag/smoke-diagnostic.json
 
 A failed publish also PATCHes one status comment on the tracker issue for that tag ("New upstream
 dsh release available: `<tag>`") with the same information, so the issue is the first place to look.
-CI smoke failures on `main` deliberately post no issue comment — use the commands above.
+CI smoke failures on `main` deliberately post no issue comment. Use the commands above.
 
 ### Retrying a failed publish
 
@@ -182,7 +181,7 @@ The watcher's 24-hour backoff only affects its own automatic re-tagging; a manua
 
 Weekly version updates for the dependencies that are pinned in this repository:
 
-- `github-actions` — the action pins in every workflow (`actions/checkout`, `docker/*`,
+- `github-actions`: the action pins in every workflow (`actions/checkout`, `docker/*`,
   `actions/upload-artifact`, `actions/download-artifact`).
 
 The base image deliberately follows the moving `debian:13-slim` tag and lives behind an `ARG`, which
@@ -192,7 +191,7 @@ builds are not a goal of this repository (see
 [build.md](build.md#toolchain-versions-float-by-design)). uv switched to the official installer
 script, so it is likewise not managed by Dependabot.
 
-Upstream dsh tags are intentionally *not* covered by Dependabot — it has no ecosystem for watching
+Upstream dsh tags are intentionally *not* covered by Dependabot. It has no ecosystem for watching
 another repository's git tags; that is the watcher workflow's job.
 
 ## Upgrading data volumes to the image-owned toolchain
@@ -201,8 +200,9 @@ The image carries the whole toolchain (uv/pnpm in `/usr/local/bin`, Rust toolcha
 `/opt/rust`, dsh in `/opt/deepseek-harness`) and the `/home/dsh` volume holds only data and caches.
 Volumes created by older images still hold seeded toolchain copies (`~/.local/bin` uv/uvx, the
 pnpm prefix under `~/.local/share/pnpm`, rustup proxies in `~/.cargo/bin`, and the `~/.rustup`
-tree). They are inert — PATH prefers the image-owned binaries and they can never shadow them — but
-waste space (~1GB for `~/.rustup`). Remove them manually inside the container if desired:
+tree). They are inert, because PATH prefers the image-owned binaries and they can never shadow
+them, but they waste space (~1GB for `~/.rustup`). Remove them manually inside the container if
+desired:
 
 ```bash
 rm -rf ~/.local/bin/uv ~/.local/bin/uvx ~/.local/bin/pnpm \
