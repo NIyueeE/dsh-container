@@ -40,12 +40,19 @@ node --check container/plugin/lib/client.js
 node --check container/plugin/scripts/extract-inline-assets.js
 node --check container/plugin/scripts/minify-client.mjs
 node --check container/plugin/scripts/refresh-build-record.mjs
-node --check tests/newest-tag.mjs tests/semver.mjs tests/compare-tags.mjs
+node --check tests/newest-tag.mjs tests/semver.mjs tests/newest-upstream.mjs tests/compare-tags.mjs
 # semver 稳定版必须高于同核心预发布版; 预发布版在没有稳定版时才是最新。
 [ "$(NEW_TAG=dsh-v0.2.1 EXISTING=$'dsh-v0.2.1\ndsh-v0.2.1-rc.2' node tests/newest-tag.mjs)" = "true" ] \
   || { echo "newest-tag: stable tag was not treated as newest" >&2; exit 1; }
 [ "$(NEW_TAG=dsh-v0.2.1-rc.2 EXISTING=$'dsh-v0.2.1\ndsh-v0.2.1-rc.2' node tests/newest-tag.mjs)" = "false" ] \
   || { echo "newest-tag: prerelease tag outranked its stable tag" >&2; exit 1; }
+# Containerfile 的 latest 默认值走同一条排序: 稳定版优先于同核心预发布版。
+[ "$(printf 'dsh-v0.2.1-rc.2\ndsh-v0.2.1-alpha.1\ndsh-v0.2.1\n' | node tests/newest-upstream.mjs)" = "dsh-v0.2.1" ] \
+  || { echo "newest-upstream: stable tag was not treated as newest" >&2; exit 1; }
+[ "$(printf 'dsh-v0.2.1-rc.2\ndsh-v0.2.1-alpha.1\n' | node tests/newest-upstream.mjs)" = "dsh-v0.2.1-rc.2" ] \
+  || { echo "newest-upstream: prerelease was not treated as newest without a stable tag" >&2; exit 1; }
+[ "$(printf 'not-a-tag\nv0.2.1\n' | node tests/newest-upstream.mjs)" = "" ] \
+  || { echo "newest-upstream: invalid tags were not rejected" >&2; exit 1; }
 [ "$(NEW_TAG=dsh-v0.2.1-rc.2 EXISTING=$'dsh-v0.2.0\ndsh-v0.2.1-rc.2' node tests/newest-tag.mjs)" = "true" ] \
   || { echo "newest-tag: standalone prerelease was not newest" >&2; exit 1; }
 # STRICT: 已存在的同名 tag 不算"更新"(发布守卫用它拒绝重发)。

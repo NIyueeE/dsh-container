@@ -10,10 +10,12 @@ plugin assets, telemetry default), which is stronger than grepping upstream for 
 The table is also the **review checklist** a human works through when a release fails: an item whose
 behavior is no longer observable in the smoke output is the first thing to inspect.
 
-**Supported upstream dsh: 0.2.1-alpha.3 and newer.** The image deliberately has no compatibility
-layer for older tags; `Containerfile` rejects a `DSH_TAG` below 0.2.1-alpha.3. (alpha.1 and alpha.2
-still gate settings persistence on `$host.isLoopback`; the image no longer injects the
-`__DSH_TRANSPORT__` row that lifted that gate.) The contract is written against
+**The image follows upstream's newest `dsh-v*` tag.** Releases are cut from the newest upstream
+tag, and `tests/smoke.sh` is the only gate that decides whether a tag may be published, so the
+build deliberately carries no version floor. Older tags carry no guarantee: `dsh-v0.2.1-alpha.1`
+and `alpha.2` still gate settings persistence on `$host.isLoopback`, and the image no longer
+injects the `__DSH_TRANSPORT__` row that lifted that gate, so those two tags lose settings over
+non-loopback access. Upstream removed the gate in `0.2.1-alpha.3`. The contract is written against
 `dsh-v0.2.1-rc.2` and stays valid for later tags unless a check reports drift.
 
 When a contract item changes, update this document and the affected enforcement point in
@@ -26,7 +28,7 @@ make a failing release pass.
 | # | Item | Upstream location (`dsh-v0.2.1-rc.2`) | Why this image needs it | Enforcement |
 |---|---|---|---|---|
 | 1 | Header-based `/api` trust fence (checks `Host`/loopback/`trustedHosts`, `Origin`, `sec-fetch-site`) | `packages/client/connection/src/api-request-trust.ts` | Caddy preserves the browser `Host`/`Origin` and is the only exposure path; `dsh-web` passes `--trusted-host` for the authorities derived from `DSH_PUBLIC_URL`/`DSH_TRUSTED_HOST`, and Caddy rejects any other Host with `403` before the request reaches dsh. The index token exchange itself does not apply the API fence, so the proxy-side Host allowlist is mandatory. The image never rewrites Host/Origin or injects cookies | smoke: 302 login redirect, 200 with session cookie, 401 without, untrusted `Host` 403, untrusted `Origin` 403, `Sec-Fetch-Site: cross-site` 403, trusted `Host` 200 |
-| 2 | `dsh web` accepts `--port`, `--trusted-host`, and `--public-url` | `apps/cli` arg pass-through + `packages/bundle/web-app/src/startup.ts` | `container/entrypoint.sh` parses `--port`; `container/dsh-web.sh` adds `--trusted-host` for each configured authority and always passes `--public-url` (0.2.1-alpha.3 is the minimum supported tag). dsh still binds `127.0.0.1`; upstream rejects `--host 0.0.0.0` by design | smoke: the stack starts with `--port`/`--trusted-host`/`--public-url`; a trusted host answers 200 |
+| 2 | `dsh web` accepts `--port`, `--trusted-host`, and `--public-url` | `apps/cli` arg pass-through + `packages/bundle/web-app/src/startup.ts` | `container/entrypoint.sh` parses `--port`; `container/dsh-web.sh` adds `--trusted-host` for each configured authority and always passes `--public-url` (the flag exists from 0.2.1-alpha.3 on). dsh still binds `127.0.0.1`; upstream rejects `--host 0.0.0.0` by design | smoke: the stack starts with `--port`/`--trusted-host`/`--public-url`; a trusted host answers 200 |
 | 3 | `dsh web` accepts `--no-open` | same | `container/dsh-web.sh` appends `--no-open` (the container has no browser) | smoke: the container starts headless and prints the login URL (no browser is launched) |
 | 4 | `dsh` launcher accepts root `--patch <file>` (used as `--patch <overlay> --profile web`; the `web` alias rejects parent flags by design) | `apps/cli/src/args.ts` | `container/dsh-web.sh` mounts the plugin overlay with the root flag combination; the `web` alias would be rejected by `rejectParentOptions` | smoke: `dsh --patch <overlay>` boots (the image always starts with the container overlay) |
 | 5 | `Connection.authenticatedUrl()` (process launch token) | `packages/client/connection/src/rpc.ts` | The container-adapt plugin reads the process launch token from it and writes `/tmp/dsh-caddy/launch-token`; Caddy redirects a browser without a session cookie to `/?token=...`, and dsh sets the browser-held session cookie. `ctx.webServer.port` is the other dependency | smoke: Caddy redirects to the plugin-written token, the exchange sets the session cookie |
@@ -73,9 +75,10 @@ Notes:
    boot manifest: its inline bundle URLs and `rev` change every image upgrade, so a cached entry
    would run the old frontend against the new server).
 3. Nothing in the served index is rewritten. The image does **not** inject
-   `__DSH_TRANSPORT__`; minimum supported dsh is 0.2.1-alpha.3, and the only remaining `isLoopback`
-   consumer is the settings-document controller, which `hasDocument: false` already hides.
-   Upstream's own insecure-context `randomUuid()` is used as-is; no polyfill is injected.
+   `__DSH_TRANSPORT__`; upstream removed the settings-persistence gate in 0.2.1-alpha.3, and the
+   only remaining `isLoopback` consumer is the settings-document controller, which
+   `hasDocument: false` already hides. Upstream's own insecure-context `randomUuid()` is used
+   as-is; no polyfill is injected.
 4. The served client bundles are minified and contain no inline image ≥ 100 KiB: the eight account
    onboarding illustrations are served from `/container-assets/<content-hash>` with `immutable`
    caching, and the delivered `.dsh-build` record matches the delivered artifacts.

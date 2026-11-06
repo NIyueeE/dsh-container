@@ -634,7 +634,7 @@ dl_gone="$(curl -sS -b "$cookie_jar" -D - -o /dev/null http://127.0.0.1:3081/dow
 printf '%s' "$dl_gone" | grep -qi 'content-disposition: attachment' \
   && die "removed download endpoint still serves /download/settings.yaml"
 
-# 最低支持 0.2.1-alpha.3: 不再注入 __DSH_TRANSPORT__ —— 0.2.1 上它唯一剩下的消费者
+# 自 0.2.1-alpha.3 起不再注入 __DSH_TRANSPORT__ —— 0.2.1 上它唯一剩下的消费者
 # 是设置文档 controller, 而按钮已由 hasDocument:false 隐藏; 这个负向断言防止
 # 兼容层被无意间重新加回来。
 [[ "$index_html" != *"__DSH_TRANSPORT__"* ]] \

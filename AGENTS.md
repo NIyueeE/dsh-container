@@ -10,8 +10,11 @@ A container image for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 built on `debian:13-slim` and published to GHCR as `ghcr.io/niyueee/dsh-container`. Users pull the
 image and run it with Docker/Podman; this repo is not an application you run directly.
 
-**Supported upstream dsh: 0.2.1-alpha.3 and newer.** The image has no compatibility layer for
-older tags; `Containerfile` rejects a `DSH_TAG` below 0.2.1-alpha.3.
+**The image follows upstream's newest `dsh-v*` tag.** The build has no version floor: `latest`
+resolves through the shared semver key, and `tests/smoke.sh` decides which tags may be published.
+Older tags carry no guarantee. `dsh-v0.2.1-alpha.1`/`alpha.2` lose settings over non-loopback
+access, because the image does not inject the `__DSH_TRANSPORT__` row that lifted that gate;
+upstream removed it in `0.2.1-alpha.3`.
 
 **Global agent instructions** live at `~/.dsh/AGENTS.md` (`$DSH_HOME`, first) and
 `~/.agents/AGENTS.md` (`$DSH_AGENTS_HOME`, second). dsh loads both as a user-global baseline
@@ -27,7 +30,6 @@ container-environment note for that file lives in
 | `container/entrypoint.sh` | Container entrypoint, installed as `/usr/local/bin/entrypoint`; also sets `TMPDIR=~/.dsh/tmp` (persistent dsh/agent scratch; `/tmp` itself stays ephemeral) |
 | `container/dsh-web.sh` | Stack supervisor: dsh web (mounted with the container-adapt plugin overlay) + launch-token wait + Caddy reverse proxy with token login redirect (auto-restart, `caddy reload` on token rotation), installed as `/usr/local/bin/dsh-web` |
 | `container/dsh-restart.sh` | Restart dsh web from inside the container, installed as `/usr/local/bin/dsh-restart` |
-| `container/dsh-version-floor.sh` | Shared build floor (`0.2.1-alpha.3`); rejects older tags, used by the `Containerfile` build |
 | `container/plugin/` | The single container-adaptation point, installed at `/opt/dsh-container-plugin`: the runtime Cordis plugin (`index.js` + `overlay.yml`, mounted via `dsh --patch`, with a Standard-Schema `Config`) writes dsh's launch token for Caddy's login redirect (the browser holds the session cookie), hides the headless-hostile "open settings document" button (wraps the `settingsController` service's `describe` so it reports `hasDocument: false`; upstream's own UI never renders it), serves the build-time-extracted images from `/container-assets/*`, and attaches a logger exporter so its own `ctx.logger` lines reach the container log; its client half (`lib/client.js` + `dsh.client`) registers a built-in `plugins.item` card (no enable/disable switch) with a summary and project link; `scripts/` holds the three build-time post-processing steps (extract inline images, esbuild minification, build-record refresh) |
 | `examples/compose.yaml`, `examples/dsh.container` | Orchestration examples; they pull the published image and are the user-facing deployment reference |
 | `docs/*.md` | User-facing guides (English): deployment, security, build, releasing, development |
@@ -39,7 +41,7 @@ container-environment note for that file lives in
 | `tests/smoke.sh` | The heavy gate's test suite: launch-token login redirect, session cookie, `Host`/`Origin`/`Sec-Fetch-Site` fence, workspace bootstrap, cache headers, plugin boot row and `/container-assets` post-processing, telemetry default, three-zone toolchain layout and volume shadowing, in-container rootless podman contract, sandbox launcher probe, supervisor restart/rotation, basic auth, trusted host, outbound-proxy regression, and image identity (provenance ↔ OCI labels ↔ platform ↔ tool versions). Fails closed: `--expect-dsh-tag` / `--expect-platform` are required, every wait has a timeout, `|| true` needs an `# ok:` reason (enforced by `validate-static.sh`), and every failure (explicit assertion or unexpected command exit) writes `smoke-diagnostic.{json,md}` with the check id, timings, container log tails and a reproduce command; the workflow validates the port contract and a custom internal port as part of the service-stack checks |
 | `tests/validate-docs.py` | Stdlib-only doc gate: `links` (every relative doc link resolves) and `parity` (README/README.zh heading, link and code-fence counts); run by the light gate and `just lint` |
 | `tests/validate-static.sh` | Single-source light gate: shell syntax/shellcheck, plugin contract + JS syntax, docs links/parity, removed auto-update remnants, the `smoke.sh` `\|\| true` audit, and (unless `--no-runtime`) compose/quadlet; used by `ci.yml`, the `publish.yml` light call, and `just lint` (which passes `--no-runtime`) |
-| `tests/semver.mjs`, `tests/newest-tag.mjs`, `tests/compare-tags.mjs` | One shared semver key for `dsh-v*` tags: `newest-tag.mjs` (publish downgrade guard; `STRICT=1` refuses an existing tag) and `compare-tags.mjs` (watcher + CI) both import `semver.mjs` |
+| `tests/semver.mjs`, `tests/newest-upstream.mjs`, `tests/newest-tag.mjs`, `tests/compare-tags.mjs` | One shared semver key for `dsh-v*` tags: `newest-upstream.mjs` (newest tag from stdin; the `Containerfile`'s `latest` default), `newest-tag.mjs` (publish downgrade guard; `STRICT=1` refuses an existing tag) and `compare-tags.mjs` (watcher + CI) all import `semver.mjs` |
 | `tests/validate-workflows.sh` | actionlint 1.7.7 + zizmor 1.31.1 in digest-pinned containers; run by the light gate and `just lint-workflows` |
 | `docs/upstream-contract.md` | The upstream contract: what this image depends on, how each item is enforced behaviorally by `tests/smoke.sh`, the anticipated-tightening matrix, and the human update protocol |
 | `.github/dependabot.yml` | Dependabot version updates: weekly `github-actions` only (the base image is a deliberate moving `debian:13-slim` tag behind an `ARG`, which the `docker` ecosystem cannot update) |
@@ -130,8 +132,8 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
 
    External configuration: `DSH_PUBLIC_URL` (`--public-url`, advertisement/agent context; default
    `http://127.0.0.1:3081/`) and `DSH_TRUSTED_HOST` (comma-separated extra authorities; derived
-   from `DSH_PUBLIC_URL` when unset). `--public-url` is always passed (0.2.1-alpha.3 is the
-   minimum supported tag). Basic auth remains `DSH_PROXY_USER` +
+   from `DSH_PUBLIC_URL` when unset). `--public-url` is always passed (the flag exists from
+   0.2.1-alpha.3 on). Basic auth remains `DSH_PROXY_USER` +
    `DSH_PROXY_PASSWORD` (Caddyfile `basicauth` on distro caddy 2.6, renamed `basic_auth` upstream
    in 2.7; password bcrypt-hashed via `caddy hash-password`, fed over stdin). Setting only one auth
    variable is a startup error, not a silent no-auth fallback.

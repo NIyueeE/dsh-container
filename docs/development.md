@@ -9,7 +9,6 @@ container/
   entrypoint.sh          # entrypoint: HOME restoration, rustup-home ownership self-heal, XDG_RUNTIME_DIR provisioning, --port parsing, then exec dsh-web
   dsh-web.sh             # stack supervisor: starts dsh web with the container-adapt plugin overlay, waits for/reconciles the launch token, runs the Caddy proxy with login redirect, auto-restarts both
   dsh-restart.sh         # restart dsh web inside the container, installed as /usr/local/bin/dsh-restart
-  dsh-version-floor.sh   # shared minimum-version check used by the Containerfile build
   healthcheck.sh         # container HEALTHCHECK: dsh web + Caddy expected unauthenticated statuses, installed as /usr/local/bin/healthcheck
   plugin/                # container-adapt plugin at /opt/dsh-container-plugin: host half (launch-token writer, settings-document button hide, /container-assets route), client half (built-in Plugins page card), and scripts/ (three build-time post-processing steps)
 examples/
@@ -22,6 +21,7 @@ tests/
   validate-workflows.sh  # actionlint + zizmor in digest-pinned containers
   validate-docs.py       # doc link resolution + README/README.zh parity
   semver.mjs             # shared semver key for dsh-v* tags
+  newest-upstream.mjs    # newest dsh-v* tag from stdin (shared key; the Containerfile's `latest` default)
   newest-tag.mjs         # semver-aware "is this the newest dsh-v* tag" helper (publish downgrade guard)
   compare-tags.mjs       # upstream-vs-this-repo newest-tag comparison for the watcher and CI
 docs/

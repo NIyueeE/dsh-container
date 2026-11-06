@@ -83,8 +83,10 @@ redirected to dsh's launch token, and the browser keeps the session cookie from 
 ## 4. Updating dsh and the image
 
 dsh is built into the image at `/opt/deepseek-harness` and there is no runtime npm auto-update.
-To run a different dsh version, publish/use an image built from that upstream tag (minimum
-0.2.1-alpha.3; `Containerfile` rejects older tags):
+To run a different dsh version, publish/use an image built from that upstream tag. The build
+accepts any tag you pass, but only the newest upstream tag is verified by the smoke gate: tags
+older than `dsh-v0.2.1-alpha.3` are unverified, and `alpha.1`/`alpha.2` lose settings over
+non-loopback access:
 
 **Upgrading from v0.2.x images:** those images npm-installed dsh into the persisted volume
 (`~/.local`). The stale copy is inert because PATH is image-first, so the image-provided dsh

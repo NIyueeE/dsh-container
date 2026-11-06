@@ -18,7 +18,8 @@
 # 刻意的固定项只有: DSH_TAG(发布身份)、构建期 esbuild 版本、GitHub Actions 的 commit
 # SHA, 以及 actionlint/zizmor 的容器 digest。
 # pnpm 版本从所构建 tag 的 packageManager 读取并安装到系统层; dsh 依赖树由官方
-# pnpm-lock.yaml 锁定。最低支持上游 dsh 0.2.1-alpha.3; 更早的 tag 构建时直接失败。
+# pnpm-lock.yaml 锁定。镜像只保证"上游最新 tag": latest 默认值按 tests/semver.mjs
+# 的排序解析, 能否发布由 tests/smoke.sh 的契约门决定, 构建期不设版本下限。
 # 本地构建可用 --build-arg 固定 DSH_TAG/RUST_TOOLCHAIN/UV_VERSION(一次性取证重建):
 #   podman build --format docker \
 #                --build-arg DSH_TAG=dsh-v0.2.1-rc.2 \
@@ -359,15 +360,19 @@ COPY container/dsh-web.sh /usr/local/bin/dsh-web
 COPY container/dsh-restart.sh /usr/local/bin/dsh-restart
 COPY container/healthcheck.sh /usr/local/bin/healthcheck
 COPY container/plugin /opt/dsh-container-plugin
-COPY container/dsh-version-floor.sh /tmp/dsh-version-floor
 RUN chmod 755 /usr/local/bin/entrypoint /usr/local/bin/dsh-web /usr/local/bin/dsh-restart /usr/local/bin/healthcheck
 
 # ---------------------------------------------------------------------------
 # 8. 拉取 dsh 官方源码并切换到指定 tag(默认 latest = 官方最新 tag)
-#    latest 用 git version sort 选最高 tag; 但 version sort 把同一核心的预发布
-#    版排在稳定版之后(如 0.2.1 < 0.2.1-rc.2), 而 semver 的稳定版更高 ——
-#    同一核心已有稳定版时改选稳定版。
+#    "最新"只有一条规则, 也只有一份实现: tests/semver.mjs 的 semver 排序键 ——
+#    watcher(upstream-tag.yml)与发布守卫(newest-tag.mjs)用的是同一个模块,
+#    构建期不再写第二套比较逻辑(旧实现用 git version sort 选 tag, 再把同一核心
+#    的稳定版挑回来, 那是在补 git 排序与 semver 的差异)。
+#    构建期不设版本下限: 旧 tag 能否用由 tests/smoke.sh 的契约门决定 —— 上游
+#    最新 tag 契约漂移时, 失败形态是带诊断的 smoke 红, 而不是一句"版本太老"
+#    (见 docs/upstream-contract.md)。
 # ---------------------------------------------------------------------------
+COPY tests/semver.mjs tests/newest-upstream.mjs /tmp/dsh-tags/
 RUN set -eux; \
     # 网络抖动不该让整次 15 分钟构建失败: clone 重试三次。
     clone_ok=0; \
@@ -382,19 +387,13 @@ RUN set -eux; \
     [ "$clone_ok" = 1 ]; \
     cd /opt/deepseek-harness; \
     if [ "${DSH_TAG}" = "latest" ]; then \
-      DSH_TAG="$(git tag --sort=-v:refname --list 'dsh-v*' | head -n1)"; \
-      case "$DSH_TAG" in \
-        *-*) stable="${DSH_TAG%-*}"; \
-             if git rev-parse --verify --quiet "refs/tags/$stable" >/dev/null; then \
-               DSH_TAG="$stable"; \
-             fi ;; \
-      esac; \
+      DSH_TAG="$(git tag --list 'dsh-v*' | node /tmp/dsh-tags/newest-upstream.mjs)"; \
       echo "resolved latest upstream dsh tag: $DSH_TAG"; \
     fi; \
     test -n "$DSH_TAG"; \
-    /tmp/dsh-version-floor "$DSH_TAG"; \
     git checkout "$DSH_TAG"; \
-    git rev-parse HEAD
+    git rev-parse HEAD; \
+    rm -rf /tmp/dsh-tags
 
 # ---------------------------------------------------------------------------
 # 9. 安装 pnpm(系统层真二进制: npm 默认 prefix /usr/local, 随镜像升级;
@@ -459,8 +458,14 @@ RUN --mount=type=cache,target=/root/.pnpm-store,id=pnpm-store \
     ln -sfn /opt/deepseek-harness/apps/cli/lib/bin.js /usr/local/bin/dsh; \
     chown -R dsh:dsh /opt/deepseek-harness; \
     mkdir -p /etc/dsh-container; \
+    # latest 构建时 provenance 记真正 checkout 的 tag, 而不是字面量 "latest" ——
+    # provenance 是镜像身份的记录(smoke 按 --expect-dsh-tag 校验), 不能写解析前的值。
+    dsh_tag="${DSH_TAG}"; \
+    if [ "$dsh_tag" = "latest" ]; then \
+      dsh_tag="$(git -C /opt/deepseek-harness describe --exact-match --tags)"; \
+    fi; \
     # -c 紧凑输出: 冒烟测试按 '"image":"ghcr.io/niyueee/dsh-container"' 精确 grep
-    jq -cn --arg version "${BUILD_VERSION}" --arg dsh_tag "${DSH_TAG}" \
+    jq -cn --arg version "${BUILD_VERSION}" --arg dsh_tag "$dsh_tag" \
           --arg revision "${BUILD_GIT_SHA}" \
           --arg node "$(node --version)" --arg pnpm "$(pnpm --version)" \
           --arg rust "$(rustc --version | awk '{print $2}')" \

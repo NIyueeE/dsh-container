@@ -43,7 +43,7 @@ sudo systemctl enable --now dsh.service
 | 工具链 | Node.js 24 LTS、pnpm、uv、Rust/cargo(含 rustfmt/clippy)、git + git-lfs、build-essential + musl-tools、Caddy、podman + crun、gh、yq,均为镜像持有的真实二进制,随镜像升级 |
 | agent 常用工具 | ripgrep、fd、python3、zip、openssh-client、tmux、sqlite3、vim.tiny/nano、less、rsync、wget、tree、htop、tzdata、patch,外加一组诊断工具(dig/nc/socat/traceroute/iperf3/nft、file、ncdu、strace、zstd/lz4、bc、moreutils、pv、uuid-runtime)、xdg-user-dirs(UI 默认 workspace)与开发工具(just、shellcheck)。全部烘干进系统层,全新容器开箱即用、无需重新下载(运行期 `apt install` 会随容器重建丢失) |
 | 嵌套容器 | 容器内(rootless)podman 已预配置 `XDG_RUNTIME_DIR`、subuid/subgid 与网络/sysctl 默认值;宿主运行时需允许非特权用户命名空间 + `/dev/fuse` + `/dev/net/tun`,且不得对容器的 `/proc` 加 masked/只读子挂载(`--security-opt unmask=ALL`、Quadlet `Unmask=ALL`、Docker `systempaths=unconfined`);嵌套容器内的资源限制(`--memory`/`--cpus`)不生效(cgroup v2 约束);见 [docs/deployment.md](docs/deployment.md) § In-container podman |
-| dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本,最低 0.2.1-alpha.3);运行期无自动更新 |
+| dsh | 从官方源码 tag 构建至 `/opt/deepseek-harness`(`DSH_TAG` 可钉版本;`latest` 构建上游最新 tag,这也是 smoke 门唯一验证的版本);运行期无自动更新 |
 | 暴露方式 | Caddy 反向代理(`0.0.0.0:3081` → dsh 的 `127.0.0.1:3080`);保留浏览器 `Host`/`Origin`,首次访问重定向到 dsh 的登录 token,保留可选 basic auth |
 | 守护 | `dsh web` 退出自动重启;`docker exec dsh dsh-restart` 手动重启 |
 | 远程兼容 | 一个容器适配插件(`container/plugin/`,经 `dsh --patch` 挂载):把 dsh 的 launch token 写给代理登录重定向(浏览器自己持有会话 cookie)、无桌面环境下隐藏"打开配置文件"按钮(`describe` 报告无本地文档)、`/container-assets/*` 提供构建期抽出的图片,并在插件页注册内置卡片 |
