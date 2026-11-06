@@ -8,13 +8,13 @@ that keep docs and examples aligned with code.
 
 A container image for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`),
 built on `debian:13-slim` and published to GHCR as `ghcr.io/niyueee/dsh-container`. Users pull the
-image and run it with Docker/Podman; this repo is not an application you run directly.
+image and run it with Docker/Podman; this repo is not an application you run directly. Treat it as
+a build pipeline: the published image is the product, and the git tag that triggers a build is a
+release label, not the artifact. § Release identity and version policy spells out what that means.
 
-**The image follows upstream's newest `dsh-v*` tag.** The build has no version floor: `latest`
-resolves through the shared semver key, and `tests/smoke.sh` decides which tags may be published.
-Older tags carry no guarantee. `dsh-v0.2.1-alpha.1`/`alpha.2` lose settings over non-loopback
-access, because the image does not inject the `__DSH_TRANSPORT__` row that lifted that gate;
-upstream removed it in `0.2.1-alpha.3`.
+**The image follows upstream's newest `dsh-v*` tag.** There is no version floor in the build;
+`tests/smoke.sh` decides which tags may be published. The reasoning, the identity chain, and the
+known edge cases are in § Release identity and version policy.
 
 **Global agent instructions** live at `~/.dsh/AGENTS.md` (`$DSH_HOME`, first) and
 `~/.agents/AGENTS.md` (`$DSH_AGENTS_HOME`, second). dsh loads both as a user-global baseline
@@ -178,6 +178,44 @@ The entrypoint (`container/entrypoint.sh`) does, in order:
   endpoint, no `settings-controller` row override. The overlay is a single plugin include.
 - dsh's agent workspace is the process cwd, so the entrypoint must `cd "$HOME"` (or, for tests,
   whichever directory it is configured to use).
+
+## Release identity and version policy (understand before editing)
+
+Identity lives in the tag name, and nowhere else:
+
+- the watcher creates the tag at the tip of `main` (`git tag "$upstream_tag" "$main_sha"` in
+  `upstream-tag.yml`), with the name identical to the upstream tag, and only when the newest
+  upstream tag is newer than this repository's newest tag;
+- `publish.yml` passes `DSH_TAG` and `BUILD_VERSION` from `github.ref_name`, so the `Containerfile`
+  checks out that exact upstream tag, and provenance plus the OCI label carry it (a `latest` build
+  records the tag it actually checked out, never the literal `latest`);
+- `tests/smoke.sh --expect-dsh-tag` asserts that whole chain before anything is merged.
+
+The commit a tag points at carries no identity, and neither does the build process:
+
+- two tags may point at the same commit. Each publish builds its own images from its own
+  `DSH_TAG`, smoke-tests those digests, and merges them under its own `:<tag>`. Nothing overwrites
+  another release's image, and `:latest` is re-judged at merge time, so concurrent publishes race
+  safely;
+- upstream may skip a version, or ship two tags inside one watcher interval. The watcher compares
+  the newest upstream tag with this repository's newest tag, so only the newest is tagged here and
+  intermediate upstream releases never get an image. That is intended;
+- rebuilds are not bit-reproducible. Consumers pull a manifest digest or a `:<tag>`, never a build.
+
+The version policy is one rule: **build upstream's newest tag and let `tests/smoke.sh` decide.**
+There is deliberately no version floor. The deleted `dsh-version-floor.sh` was a second,
+incomplete semver implementation (numeric-core compare plus a deny-list for
+`0.2.1-alpha.1`/`alpha.2`); `tests/semver.mjs` is now the only ordering, shared by the `latest`
+default (`tests/newest-upstream.mjs`), the watcher and the publish guard. When upstream's newest
+tag breaks the contract, the failure mode is a smoke red with a diagnostic, which is a better
+signal than "version too old". Older tags are unverified: `dsh-v0.2.1-alpha.1`/`alpha.2` lose
+settings over non-loopback access because the image does not inject the retired
+`__DSH_TRANSPORT__` row, and upstream removed that gate in `0.2.1-alpha.3`.
+
+One accepted ambiguity: the `:<commit-sha>` image alias comes from `github.sha`, so two releases
+cut from the same commit share it and the newer one takes it. Every other reference is
+tag-derived and stays exact, so pulling by digest or `:<tag>` is always correct. Do not redesign
+the alias without a user decision.
 
 ## Push & release discipline
 
