@@ -116,26 +116,26 @@ moving base-image tag is intentional):
 ### Upstream tag watcher (`.github/workflows/upstream-tag.yml`)
 
 Dependabot cannot watch another repository's git tags, so a small scheduled workflow does it.
-Running every 6 hours (`0 */6 * * *`, plus on every `dsh-v*` tag push and on manual dispatch), it
+Running every 3 hours (`0 */3 * * *`, plus on every `dsh-v*` tag push and on manual dispatch), it
 compares the newest `dsh-v*` tag of `deepseek-ai/deepseek-harness` with the newest `dsh-v*` tag of
 this repository (semver-aware, so a stable tag outranks its pre-releases:
 `dsh-v0.2.1-alpha.5` < `dsh-v0.2.1`). Only the newest upstream tag is ever released here, so when
 upstream ships two tags inside one interval the intermediate one gets no image in this repository.
 Actions' `schedule` is best-effort queueing: measured runs
-landed 4-9 h late, so a single daily run could take ~30 h to notice a new upstream tag; four runs a
-day cap the worst case at ~10-15 h.
+landed 4-9 h late, so a single daily run could take ~30 h to notice a new upstream tag; eight runs
+a day cap the worst case at ~7-12 h.
 
 - **upstream ahead** → opens one tracker issue ("New upstream dsh release available: …") with the
   release-notes link, the upstream diff, and the manual `git tag` / `git push` commands. When
   `RELEASE_PAT` is configured it also creates that tag at the tip of `main` and pushes it, which is
   what starts the publish pipeline, unless the tag already failed a publish within the last 24
   hours, in which case the watcher stays quiet (that backoff stops a broken tag from rebuilding
-  every 6 hours);
+  every 3 hours);
 - **tags equal** → tracker issues whose tag now has a GitHub Release are closed. The same run does a
   **release health check** on the newest tag: no Release ⇒ it opens/keeps "Release pipeline not
   published: `<tag>`" with the latest `publish.yml` run link and the `gh run download` commands.
   Runs triggered by a tag push skip the check (a publish takes ~25 minutes and would otherwise look
-  like a failure); the 6-hourly schedule picks it up.
+  like a failure); the 3-hourly schedule picks it up.
 
 The upstream repository can be overridden with the `DSH_UPSTREAM_REPO` repository variable
 (default `deepseek-ai/deepseek-harness`); the publish workflow uses it for the Release notes too.
