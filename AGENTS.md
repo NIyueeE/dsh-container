@@ -10,11 +10,10 @@ A container image for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 built on `debian:13-slim` and published to GHCR as `ghcr.io/niyueee/dsh-container`. Users pull the
 image and run it with Docker/Podman; this repo is not an application you run directly. Treat it as
 a build pipeline: the published image is the product, and the git tag that triggers a build is a
-release label, not the artifact. § Release identity and version policy spells out what that means.
+release label, not the artifact.
 
 **The image follows upstream's newest `dsh-v*` tag.** There is no version floor in the build;
-`tests/smoke.sh` decides which tags may be published. The reasoning, the identity chain, and the
-known edge cases are in § Release identity and version policy.
+`tests/smoke.sh` decides which tags may be published. See § Release identity and version policy.
 
 **Global agent instructions** live at `~/.dsh/AGENTS.md` (`$DSH_HOME`, first) and
 `~/.agents/AGENTS.md` (`$DSH_AGENTS_HOME`, second). dsh loads both as a user-global baseline

@@ -14,9 +14,9 @@ behavior is no longer observable in the smoke output is the first thing to inspe
 tag, and `tests/smoke.sh` is the only gate that decides whether a tag may be published, so the
 build deliberately carries no version floor. Older tags carry no guarantee: `dsh-v0.2.1-alpha.1`
 and `alpha.2` still gate settings persistence on `$host.isLoopback`, and the image no longer
-injects the `__DSH_TRANSPORT__` row that lifted that gate, so those two tags lose settings over
-non-loopback access. Upstream removed the gate in `0.2.1-alpha.3`. The contract is written against
-`dsh-v0.2.1-rc.2` and stays valid for later tags unless a check reports drift.
+injects the `__DSH_TRANSPORT__` row that used to lift it, so those two tags lose settings over
+non-loopback access. Upstream removed the gate itself in `0.2.1-alpha.3`. The contract is written
+against `dsh-v0.2.1-rc.2` and stays valid for later tags unless a check reports drift.
 
 When a contract item changes, update this document and the affected enforcement point in
 `container/*.sh`, and adjust `tests/smoke.sh` when the behavior itself changed. The smoke suite is

@@ -8,7 +8,7 @@ Each release pushes one multi-platform image (Linux `amd64` + `arm64`) with thre
 |---|---|---|
 | `dsh-v*` (e.g. `dsh-v0.2.1-rc.2`) | upstream dsh tags | the release artifact; image tag, release page tag, and built dsh source tag are all the same upstream tag |
 | `latest` | newest `dsh-v*` release | points to the most recent release; what the examples pull |
-| `<commit-sha>` | release builds | pins the exact published image (an immutable reference, not a reproducible recipe) |
+| `<commit-sha>` | release builds | names the image published from that repo commit; releases cut from the same commit share it, and the newer one takes it |
 
 The version tag keeps the full `dsh-` prefix and is not published as a bare `v*` tag, so it never
 collides with older container-image tags such as `v0.2.2`.
@@ -16,7 +16,9 @@ collides with older container-image tags such as `v0.2.2`.
 A `<commit-sha>` tag points at one digest; it does not make a rebuild bit-identical. The in-image
 toolchain floats by design (see [build.md](build.md#toolchain-versions-float-by-design)), so
 re-running a publish rebuilds with whatever upstream ships at that moment and produces a new digest.
-Pull by digest when you need the exact bytes that passed the smoke gate.
+Two releases cut from the same commit share the alias, and the later publish moves it to its own
+digest. Pull the `dsh-v*` tag or the digest when you need one specific release or the exact bytes
+that passed the smoke gate.
 
 Re-pushing an **older** `dsh-v*` tag is refused: the publish workflow's guard compares the tag with
 the newest existing `dsh-v*` tag and stops before building anything, leaving the tag in place for
@@ -117,7 +119,9 @@ Dependabot cannot watch another repository's git tags, so a small scheduled work
 Running every 6 hours (`0 */6 * * *`, plus on every `dsh-v*` tag push and on manual dispatch), it
 compares the newest `dsh-v*` tag of `deepseek-ai/deepseek-harness` with the newest `dsh-v*` tag of
 this repository (semver-aware, so a stable tag outranks its pre-releases:
-`dsh-v0.2.1-alpha.5` < `dsh-v0.2.1`). Actions' `schedule` is best-effort queueing: measured runs
+`dsh-v0.2.1-alpha.5` < `dsh-v0.2.1`). Only the newest upstream tag is ever released here, so when
+upstream ships two tags inside one interval the intermediate one gets no image in this repository.
+Actions' `schedule` is best-effort queueing: measured runs
 landed 4-9 h late, so a single daily run could take ~30 h to notice a new upstream tag; four runs a
 day cap the worst case at ~10-15 h.
 
