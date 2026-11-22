@@ -16,7 +16,9 @@ build deliberately carries no version floor. Older tags carry no guarantee: `dsh
 and `alpha.2` still gate settings persistence on `$host.isLoopback`, and the image no longer
 injects the `__DSH_TRANSPORT__` row that used to lift it, so those two tags lose settings over
 non-loopback access. Upstream removed the gate itself in `0.2.1-alpha.3`. The contract is written
-against `dsh-v0.2.1-rc.2` and stays valid for later tags unless a check reports drift.
+against `dsh-v0.2.1-rc.2` and stays valid for later tags unless a check reports drift; item 5
+changed shape in `0.2.3-alpha.1`, where the launch URL moved from `Connection` to the
+`host-authentication-token` plugin, and the container plugin now accepts both sources.
 
 When a contract item changes, update this document and the affected enforcement point in
 `container/*.sh`, and adjust `tests/smoke.sh` when the behavior itself changed. The smoke suite is
@@ -31,7 +33,7 @@ make a failing release pass.
 | 2 | `dsh web` accepts `--port`, `--trusted-host`, and `--public-url` | `apps/cli` arg pass-through + `packages/bundle/web-app/src/startup.ts` | `container/entrypoint.sh` parses `--port`; `container/dsh-web.sh` adds `--trusted-host` for each configured authority and always passes `--public-url` (the flag exists from 0.2.1-alpha.3 on). dsh still binds `127.0.0.1`; upstream rejects `--host 0.0.0.0` by design | smoke: the stack starts with `--port`/`--trusted-host`/`--public-url`; a trusted host answers 200 |
 | 3 | `dsh web` accepts `--no-open` | same | `container/dsh-web.sh` appends `--no-open` (the container has no browser) | smoke: the container starts headless and prints the login URL (no browser is launched) |
 | 4 | `dsh` launcher accepts root `--patch <file>` (used as `--patch <overlay> --profile web`; the `web` alias rejects parent flags by design) | `apps/cli/src/args.ts` | `container/dsh-web.sh` mounts the plugin overlay with the root flag combination; the `web` alias would be rejected by `rejectParentOptions` | smoke: `dsh --patch <overlay>` boots (the image always starts with the container overlay) |
-| 5 | `Connection.authenticatedUrl()` (process launch token) | `packages/client/connection/src/rpc.ts` | The container-adapt plugin reads the process launch token from it and writes `/tmp/dsh-caddy/launch-token`; Caddy redirects a browser without a session cookie to `/?token=...`, and dsh sets the browser-held session cookie. `ctx.webServer.port` is the other dependency | smoke: Caddy redirects to the plugin-written token, the exchange sets the session cookie |
+| 5 | A `webserver/entry-url` entry carrying the process launch token (up to 0.2.2: `Connection.authenticatedUrl()`) | `packages/host/authentication-token/src/index.ts` (0.2.3+); `packages/client/connection/src/rpc.ts` (≤ 0.2.2) | The container-adapt plugin reads the process launch token from the login URL `host-authentication-token` contributes as the `dsh web` entry (and falls back to `Connection.authenticatedUrl()` on older tags), then writes `/tmp/dsh-caddy/launch-token`; Caddy redirects a browser without a session cookie to `/?token=...`, and dsh sets the browser-held session cookie. `ctx.webServer.port` is the other dependency (legacy path) | smoke: Caddy redirects to the plugin-written token, the exchange sets the session cookie |
 | 6 | `settings/describe` hardcodes `hasDocument: true`, and the browser `SettingsDocumentAction` renders nothing unless its describe mirror reports `hasDocument: true` | `packages/api/settings-controller/src/index.ts` + `packages/client/ui-settings-general/src/client/SettingsDocumentAction.tsx` | The container-adapt plugin wraps the `settingsController` instance's `describe` so it reports `hasDocument: false` (Gateway resolves remote methods dynamically at invoke time, via `Reflect.get(callReceiver, 'describe')` + `Reflect.apply`, so an instance property shadowing the prototype works). The headless-hostile "Open settings document" button (no upstream fallback; would spawn the native text-editor command into nothing) never renders. No client code, no download endpoint | smoke: `settings/describe` reports `hasDocument:false`, the settings download endpoint is gone, `__DSH_TRANSPORT__` is absent |
 | 7 | `session-telemetry-otel` reads its `mode` from `process.env.DSH_TELEMETRY_MODE` (upstream default `FEEDBACK_ONLY`) | `packages/bundle/base/cordis.patch.yml` | `container/entrypoint.sh` defaults `DSH_TELEMETRY_MODE=DISABLED` so nothing leaves the container unless the user opts in; if upstream renames the variable or stops wiring it, that default silently stops working and the upstream default (upload the session prefix on explicit feedback) applies | smoke: the dsh process runs with `DSH_TELEMETRY_MODE=DISABLED` |
 
@@ -59,8 +61,9 @@ Notes:
 ## Behavioral contract (verified by `tests/smoke.sh`, not statically checkable)
 
 1. `dsh web` prints a one-time `?token=...` login URL. The container-adapt plugin (mounted via
-   `dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web`) writes the process launch
-   token to `/tmp/dsh-caddy/launch-token` as a state file. `dsh-web.sh` waits only for that file,
+   `dsh --patch /opt/dsh-container-plugin/overlay.yml --profile web`) reads that token from the
+   `webserver/entry-url` event (0.2.3+) or `Connection.authenticatedUrl()` (≤ 0.2.2) and writes it
+   to `/tmp/dsh-caddy/launch-token` as a state file. `dsh-web.sh` waits only for that file,
    generates a Caddyfile whose Host allowlist/redirect uses it, and `caddy reload`s when the token
    changes. Caddy redirects a request without a `dsh-auth-*` cookie to `/?token=...`; dsh mints the
    `HttpOnly; SameSite=Strict` cookie and the browser holds it. A still-valid browser cookie

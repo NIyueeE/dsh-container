@@ -16,8 +16,10 @@
 // Config 字段(从 overlay 条目的 config 传入), 不读环境变量。
 //
 // 上游核对:
-//   - Connection.authenticatedUrl() 返回带进程 launch token 的 URL; token 只用于
-//     首次浏览器登录, 不再在插件内 curl 交换 cookie;
+//   - 带进程 launch token 的登录 URL: 0.2.3 起由 host-authentication-token 插件
+//     作为 `dsh web` 条目推进 `webserver/entry-url` 事件; 0.2.2 及更早由
+//     Connection.authenticatedUrl() 直接返回。两条路径都只读 URL 的 token 参数,
+//     插件自己不生成凭证; token 只用于首次浏览器登录, 不在插件内交换 cookie;
 //   - dsh 的浏览器会话 cookie 由 Connection 在 index token 交换时 Set-Cookie,
 //     天然带 HttpOnly/SameSite=Strict, 并绑定浏览器实际使用的 authority;
 //   - dsh 的 Host/Origin 围栏原样生效: 外部 authority 由 dsh-web 的
@@ -62,6 +64,8 @@ const TOKEN_FILENAME = 'launch-token'
 
 /** launch token 只允许 Caddyfile 安全的 URL-safe 字符; 上游 token 是 base64url。 */
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/
+/** 上游登录 URL 里 token 的参数名。 */
+const TOKEN_QUERY = 'token'
 
 /**
  * 插件配置。Cordis 用 Standard Schema 校验(`resolveConfig()` 调
@@ -105,7 +109,7 @@ const ASSET_TYPES = {
 }
 const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable'
 
-/** token 写入重试次数与间隔(覆盖启动瞬间 connection 尚未就绪的窗口)。 */
+/** token 取用/写入的重试次数与间隔(覆盖启动瞬间 connection 未就绪与写盘瞬时失败)。 */
 const WRITE_RETRIES = 5
 const WRITE_RETRY_DELAY_MS = 500
 
@@ -126,24 +130,64 @@ async function writeFileAtomically(file, content) {
 }
 
 /**
- * 把当前进程的 launch token 写到 Caddy 读取的状态文件。浏览器首次访问 / 时,
- * Caddy 302 到 /?token=<token>; dsh 在 index 交换中给浏览器 Set-Cookie, 之后
- * 浏览器自己携带会话 cookie。插件不再发 HTTP 请求, 也不再碰 cookie。
+ * 上游 0.2.2 及更早: Connection 自己发带进程 token 的登录 URL。0.2.3-alpha.1 把
+ * 这个能力挪进 host-authentication-token 插件后方法消失, 这里返回 undefined,
+ * 由下面的 webserver/entry-url 路径接手。
  * @param ctx - 注入 webServer/connection 的 Cordis 上下文。
- * @param tokenFile - launch token 状态文件路径(由 config.runtimeDir 决定)。
+ * @returns URL-safe 的 launch token, 或当前上游不提供该方法时的 undefined。
  */
-async function writeLaunchToken(ctx, tokenFile) {
+function legacyLaunchToken(ctx) {
+  const authenticatedUrl = ctx.connection?.authenticatedUrl
+  if (typeof authenticatedUrl !== 'function') return undefined
+  const token = new URL(authenticatedUrl(`http://127.0.0.1:${String(ctx.webServer.port)}/`))
+    .searchParams.get(TOKEN_QUERY)
+  return token !== null && TOKEN_PATTERN.test(token) ? token : undefined
+}
+
+/**
+ * 上游 0.2.3 起: host-authentication-token 把登录 URL 作为 `dsh web` 条目推进
+ * webserver/entry-url 的 entries。entries 在 emit 期间由各监听器按注册顺序同步
+ * 追加, 本插件可能排在提供者之前, 因此调用方必须等 emit 返回(下一个微任务)再读。
+ * 只接受带一个 URL-safe token 参数的条目; 其它插件推进的入口 URL 一律跳过。
+ * @param entries - 事件携带的入口 URL 列表(可能为空)。
+ * @returns 找到的 launch token, 或 undefined。
+ */
+function tokenFromEntryUrls(entries) {
+  for (const entry of entries) {
+    if (typeof entry?.url !== 'string') continue
+    let url
+    try {
+      url = new URL(entry.url)
+    } catch {
+      continue
+    }
+    const token = url.searchParams.get(TOKEN_QUERY)
+    if (token !== null && TOKEN_PATTERN.test(token)) return token
+  }
+  return undefined
+}
+
+/**
+ * 把 launch token 原子写入状态文件。读 token 与写盘放在同一个重试循环里:
+ * 上游 0.2.2 的 connection 在启动瞬间可能还没就绪, 写盘也可能遇到瞬时错误,
+ * 两者都不该让 dsh-web 空等 120s 后 fail-fast。
+ * @param ctx - 插件上下文(日志走 ctx.logger)。
+ * @param tokenFile - launch token 状态文件路径。
+ * @param readToken - 每轮重试重新取 token 的函数。
+ * @param source - 取 token 的上游来源, 只用于日志。
+ * @returns 是否已成功写入。
+ */
+async function writeLaunchToken(ctx, tokenFile, readToken, source) {
   let lastError
   for (let attempt = 1; attempt <= WRITE_RETRIES; attempt += 1) {
     try {
-      const authenticated = ctx.connection.authenticatedUrl(`http://127.0.0.1:${String(ctx.webServer.port)}/`)
-      const token = new URL(authenticated).searchParams.get('token')
-      if (token === null || !TOKEN_PATTERN.test(token)) {
-        throw new Error('connection.authenticatedUrl() did not yield a URL-safe launch token')
+      const token = readToken()
+      if (token === undefined) {
+        throw new Error(`${source} did not yield a URL-safe launch token`)
       }
       await writeFileAtomically(tokenFile, token)
-      ctx.logger.info('launch token written for the proxy login redirect')
-      return
+      ctx.logger.info(`launch token written for the proxy login redirect (${source})`)
+      return true
     } catch (error) {
       lastError = error
       if (attempt < WRITE_RETRIES) {
@@ -151,7 +195,9 @@ async function writeLaunchToken(ctx, tokenFile) {
       }
     }
   }
-  throw lastError ?? new Error('launch token write failed')
+  const message = lastError instanceof Error ? lastError.message : String(lastError)
+  ctx.logger.error(`launch token write failed: ${message}`)
+  return false
 }
 
 /** describe 包装标记: 保证多次 apply(dsh web 每次启动/重启)幂等。 */
@@ -243,10 +289,25 @@ export function apply(ctx, config) {
   // 0) 日志可见性: 本 profile 无 console exporter, 自接一个(只导出本插件日志)。
   exportOwnLogs(ctx)
 
-  // 1) 把 launch token 交给 Caddy 的登录重定向。
-  void writeLaunchToken(ctx, join(config.runtimeDir, TOKEN_FILENAME)).catch((error) => {
-    ctx.logger.error(`launch token write failed: ${error instanceof Error ? error.message : String(error)}`)
-  })
+  // 1) 把 launch token 交给 Caddy 的登录重定向。上游 0.2.3 起 URL 从
+  //    webserver/entry-url 事件来(可能晚于插件激活), 更早的版本从
+  //    Connection.authenticatedUrl() 来; 取到一次即不再重复写。
+  const tokenFile = join(config.runtimeDir, TOKEN_FILENAME)
+  let tokenWritten = false
+  const adoptToken = (readToken, source) => {
+    if (tokenWritten) return
+    void writeLaunchToken(ctx, tokenFile, readToken, source).then((written) => {
+      if (written) tokenWritten = true
+    })
+  }
+  if (typeof ctx.connection?.authenticatedUrl === 'function') {
+    adoptToken(() => legacyLaunchToken(ctx), 'connection.authenticatedUrl')
+  } else {
+    ctx.on('webserver/entry-url', (_baseUrl, entries) => {
+      // entries 在 emit 返回后才完整, 见 tokenFromEntryUrls()。
+      queueMicrotask(() => { adoptToken(() => tokenFromEntryUrls(entries), 'webserver/entry-url') })
+    })
+  }
 
   // 2) 隐藏"打开配置文件"按钮: 上游把 hasDocument 当作"本地文档可用"信号,
   //    只有它为真时 SettingsDocumentAction 才渲染。容器无桌面且该操作无
@@ -259,7 +320,15 @@ export function apply(ctx, config) {
     ctx.logger.warn(`${ASSET_DIR} is missing; extracted client images will 404`)
   }
   ctx.effect(
-    () => ctx.webServer.register({ kind: 'prefix', path: ASSET_ROUTE, handler: createAssetHandler() }),
+    // auth 必须显式写 anonymous: 上游 0.2.3 起 WebRoute 的 auth 默认是 required,
+    // 而抽出的图片是公开静态资源(与旧版本行为一致)。浏览器请求本来带会话
+    // cookie, Caddy 才是网络边界。
+    () => ctx.webServer.register({
+      kind: 'prefix',
+      path: ASSET_ROUTE,
+      auth: 'anonymous',
+      handler: createAssetHandler(),
+    }),
     'container-adapt: extracted client image route',
   )
 }

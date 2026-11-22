@@ -20,11 +20,12 @@ import { runInNewContext } from 'node:vm'
 const ASSET_DIR = '/opt/dsh-container-plugin/assets'
 
 /** 收集 apply() 注册的 effect / 事件监听 / 路由处理器 / exporter, 并记录日志。 */
-function createStubContext() {
+function createStubContext({ launchUrl = true } = {}) {
   const effects = []
   const registrations = []
   const exporters = []
   const logs = []
+  const listeners = []
   const ctx = {
     webServer: {
       port: 3080,
@@ -33,8 +34,14 @@ function createStubContext() {
         return () => registrations.splice(registrations.indexOf(route), 1)
       },
     },
-    connection: { authenticatedUrl: (url) => `${url}?token=stub` },
+    // 0.2.2 及更早的 Connection 自己发登录 URL; 0.2.3 起该方法消失, 只有事件。
+    connection: launchUrl ? { authenticatedUrl: (url) => `${url}?token=stub` } : {},
     settingsController: { describe: () => ({ hasDocument: true }) },
+    on: (event, listener) => {
+      const entry = { event, listener }
+      listeners.push(entry)
+      return () => listeners.splice(listeners.indexOf(entry), 1)
+    },
     logger: {
       info: message => logs.push(['info', message]),
       warn: message => logs.push(['warn', message]),
@@ -50,7 +57,19 @@ function createStubContext() {
       return disposer
     },
   }
-  return { ctx, effects, registrations, exporters, logs }
+  return { ctx, effects, registrations, exporters, logs, listeners }
+}
+
+/** 等插件异步写出 token 文件并返回内容(写失败时保持空串)。 */
+async function readTokenFile(file) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      return await readFile(file, 'utf8')
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+  }
+  return ''
 }
 
 /** 真 Writable 形态的假响应(路由用 stream.pipeline 写 body)。 */
@@ -174,16 +193,29 @@ plugin.apply(ctx, { runtimeDir: join(scratch, 'caddy') })
 
 // launch token 是异步写出的; 等它落盘并断言内容/权限。
 const tokenFile = join(scratch, 'caddy', 'launch-token')
-let tokenText = ''
-for (let attempt = 0; attempt < 50; attempt += 1) {
-  try {
-    tokenText = await readFile(tokenFile, 'utf8')
-    break
-  } catch {
-    await new Promise(resolve => setTimeout(resolve, 20))
-  }
-}
-assert.equal(tokenText, 'stub', 'plugin must write the launch token from connection.authenticatedUrl()')
+assert.equal(await readTokenFile(tokenFile), 'stub', 'plugin must write the launch token from connection.authenticatedUrl()')
+
+// 上游 0.2.3 起 Connection 不再提供 authenticatedUrl: 登录 URL 由
+// host-authentication-token 推进 webserver/entry-url, 而 entries 在 emit 期间
+// 才被各监听器填满 —— 插件必须等 emit 返回(微任务)后再读, 否则拿到空列表。
+const evented = createStubContext({ launchUrl: false })
+const eventDir = join(scratch, 'event')
+plugin.apply(evented.ctx, { runtimeDir: eventDir })
+const entryListeners = evented.listeners.filter(listener => listener.event === 'webserver/entry-url')
+assert.equal(entryListeners.length, 1, 'without connection.authenticatedUrl the plugin must listen for webserver/entry-url')
+const entries = []
+entryListeners[0].listener('http://127.0.0.1:3081/', entries)
+// 模拟排在插件之后的提供者: 在 emit 返回前追加登录 URL(插件只能延后读取)。
+entries.push({ label: 'dsh web', url: 'http://127.0.0.1:3081/?token=event-token', open: true })
+assert.equal(
+  await readTokenFile(join(eventDir, 'launch-token')),
+  'event-token',
+  'the plugin must take the launch token from the webserver/entry-url event',
+)
+assert.ok(
+  evented.logs.some(([, message]) => String(message).includes('webserver/entry-url')),
+  'an event-sourced token write must name its source in the log',
+)
 
 // 并发/重复 apply 时每个写者必须使用自己的临时文件: 固定 `.tmp` 会互相
 // rename 对方的半成品。最终内容必须是某个完整 token, 且不留临时文件。
@@ -209,9 +241,9 @@ assert.deepEqual(raceFiles.filter(name => name.endsWith('.tmp')), [], 'atomic to
 
 assert.equal(registrations.length, 1, 'plugin must register exactly one web route')
 assert.deepEqual(
-  { kind: registrations[0].kind, path: registrations[0].path },
-  { kind: 'prefix', path: '/container-assets' },
-  'asset route must be the /container-assets prefix',
+  { kind: registrations[0].kind, path: registrations[0].path, auth: registrations[0].auth },
+  { kind: 'prefix', path: '/container-assets', auth: 'anonymous' },
+  'asset route must be the anonymous /container-assets prefix (0.2.3 defaults WebRoute.auth to required)',
 )
 
 // settings/describe 包装(遮蔽实例方法)与日志走 ctx.logger。
