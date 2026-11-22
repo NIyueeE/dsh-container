@@ -385,9 +385,20 @@ jobs:
         if: steps.decide.outputs.delete == 'true'
         run: |
           set -euo pipefail
-          git push --delete "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "refs/tags/$NEW_TAG"
+          # 这个 job 没有 checkout:`git push --delete` 会以 "not a git repository"
+          # 失败(dsh-v0.2.3-alpha.1 就是这样把孤儿 tag 留在了远端)。改用 API 删
+          # ref, 不依赖工作树; 先查再删, 已不存在时按成功处理。
+          ref="repos/$REPO/git/refs/tags/$NEW_TAG"
+          if gh api "$ref" >/dev/null 2>&1; then
+            gh api --method DELETE "$ref"
+            echo "deleted tag $NEW_TAG"
+          else
+            echo "tag $NEW_TAG is already gone; nothing to delete"
+          fi
 
       - name: Comment on the tracker issue
+        # 清理失败不能把失败报告也一起吞掉(alpha.1 的 tracker issue 就没收到评论)。
+        if: always()
         env:
           RUN_ID: ${{ github.run_id }}
           REASON: ${{ steps.decide.outputs.reason }}
