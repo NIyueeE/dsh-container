@@ -70,6 +70,8 @@ jobs:
       # keep-n-tagged 按"镜像"计数(index 及其 tag 算一份), 不是按 GHCR version 计数 ——
       # 后者会把子 manifest 也算进去, 12 个 version 其实只有 3 个 release。
       # exclude-tags: latest 是兜底, 保证发布流水线的默认入口永远在。
+      # older-than: 1 day 是防误杀 —— ghost 判定靠 404, 刚发布/刚合并的镜像在 registry
+      # 里还没稳定时可能被误判; 一天内的镜像不参与任何删除判定, 下周再处理没有损失。
       - name: Prune image versions (multi-arch aware)
         uses: dataaxiom/ghcr-cleanup-action@ac45a8c04b1eb4b27974ca79a0a74f344c93664b # v1.3.0
         with:
@@ -78,6 +80,7 @@ jobs:
           exclude-tags: latest
           delete-untagged: true
           delete-ghost-images: true
+          older-than: 1 day
           validate: true
           dry-run: ${{ inputs.dry_run || 'false' }}
 
@@ -104,9 +107,27 @@ jobs:
               "$registry/manifests/$1"
           }
 
-          # 这里保留的 release 数量很少, 一页 (n=1000) 足够覆盖。
-          tags="$(curl -fsSL -H "Authorization: Bearer $token" \
-            "$registry/tags/list?n=1000" | jq -r '.tags[]?')"
+          # tag 列表必须跟着 Link 头翻完: registry 的单页有上限, 只看第一页会漏检。
+          : > "$RUNNER_TEMP/tags.txt"
+          next="$registry/tags/list?n=1000"
+          pages=0
+          while [ -n "$next" ]; do
+            pages=$((pages + 1))
+            [ "$pages" -le 100 ] || { echo "::error::tag pagination did not terminate" >&2; exit 1; }
+            curl -fsS -D "$RUNNER_TEMP/tags-headers.txt" -o "$RUNNER_TEMP/tags-page.json" \
+              -H "Authorization: Bearer $token" "$next"
+            jq -r '.tags[]?' "$RUNNER_TEMP/tags-page.json" >> "$RUNNER_TEMP/tags.txt"
+            link="$(grep -i '^link:' "$RUNNER_TEMP/tags-headers.txt" | tr -d '\r' | tail -n1 || true)"
+            # 同一行可能带多个 <url>; rel=..., 只取 rel="next" 那个。
+            url="$(printf '%s' "$link" | tr ',' '\n' \
+              | sed -n 's/.*<\([^>]*\)>.*rel="next".*/\1/p' | head -n1)"
+            case "$url" in
+              "") next="" ;;
+              http://*|https://*) next="$url" ;;
+              *) next="https://ghcr.io${url}" ;;
+            esac
+          done
+          tags="$(sort -u "$RUNNER_TEMP/tags.txt")"
           [ -n "$tags" ] || { echo "::error::registry has no tags left after cleanup"; exit 1; }
           grep -qx 'latest' <<<"$tags" \
             || { echo "::error::the :latest tag is missing after cleanup"; exit 1; }
