@@ -37,7 +37,7 @@ justfile                 # build / debug / restart / test / lint recipes
 .github/workflows/
   ci.yml                 # light gate (static) on push/PR; heavy gate on main when the diff hits the runtime surface
   smoke.yml              # the only heavy gate: builds/pulls both architectures and runs tests/smoke.sh
-  publish.yml            # tag-triggered publish: guard -> light -> build matrix (both arches by digest) -> digest refs -> smoke -> Release
+  publish.yml            # tag-triggered publish: guard -> light -> build matrix (both arches by digest) -> digest refs -> smoke -> Release; plus a manual repair dispatch for an existing tag
   upstream-tag.yml       # 3-hourly watcher: opens the tracker issue and pushes the tag (RELEASE_PAT)
   maintenance.yml        # weekly cache + multi-arch-aware image version cleanup, then a resolve check
   pat-trigger-probe.yml  # on-demand verification that RELEASE_PAT's push triggers workflows

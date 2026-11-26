@@ -1,10 +1,14 @@
 name: Publish
 
-# 发布流水线 —— 唯一的触发源是 push 一个 dsh-v* tag:
-#   手动发版 = 自己推 tag; 自动发版 = upstream-tag.yml 用 RELEASE_PAT 推 tag。
+# 发布流水线。两个入口:
+#   - push dsh-v* tag: 正常发布(唯一自动路径)。降级守卫拒绝"比现有最新更旧"的 tag。
+#   - workflow_dispatch + tag 输入: 手动修复(repair)。只允许指定一个已存在的 dsh-v* tag,
+#     显式跳过降级判定, 用该 tag 自己的 commit 重建, 只重新合并 :<tag> 与 :<sha>;
+#     不碰 latest(除非这个 tag 本来就是最新)、不改 Release、失败也不删 git tag。
+#     用途: 镜像 tag 被误删/清坏之后, 从上游同一个 commit 把这一版重新造出来。
 #
 # 门禁顺序: guard(降级/幂等) → light(静态, 复用 ci.yml) → 双架构构建(按 digest 推送)
-#           → smoke(复用 smoke.yml, 双架构, 唯一重门) → 合并 manifest + Release。
+#           → smoke(复用 smoke.yml, 双架构, 唯一重门) → 合并 manifest + Release(push 时)。
 # 失败: 镜像标签尚未产生的, 删除远端 tag(不留孤儿); 已产生的保留 tag 并报告。
 #
 # smoke 测试的就是随后要合并的两个 digest —— 测试物即发布物。
@@ -12,6 +16,12 @@ name: Publish
 on:
   push:
     tags: ['dsh-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已存在的 dsh-v* tag(手动降级修复: 用它的 commit 重建并重新合并 :<tag>/:<sha>)'
+        required: true
+        type: string
 
 # 发布串行: latest 归属与 tag 清理都不能并发判定。
 concurrency:
@@ -31,6 +41,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       image: ${{ steps.resolve.outputs.image }}
+      tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
       sha: ${{ steps.resolve.outputs.sha }}
       refused: ${{ steps.resolve.outputs.refused }}
@@ -44,21 +55,17 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
-          NEW_TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
+          NEW_TAG: ${{ inputs.tag || github.ref_name }}
+          TRIGGER: ${{ github.event_name }}
         run: |
           set -euo pipefail
           image="ghcr.io/$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
-          sha="$(git rev-parse HEAD)"
           version="${NEW_TAG#dsh-v}"
+          [[ "$NEW_TAG" =~ ^dsh-v[0-9]+\.[0-9]+\.[0-9]+ ]] \
+            || { echo "unsupported tag: '$NEW_TAG' (expected dsh-vX.Y.Z...)" >&2; exit 1; }
 
-          # 降级守卫: 只拒绝"比现有最新更旧"的 tag; 同名 tag 允许重发(不带 STRICT)。
-          tags="$(git ls-remote --tags origin 'refs/tags/dsh-v*' \
-            | sed -E 's#.*refs/tags/##' | grep -v '\^{}' | sort -u)"
-          newest="$(NEW_TAG="$NEW_TAG" EXISTING="$tags" node tests/newest-tag.mjs)"
-          if [ "$newest" = "true" ]; then refused=false; else refused=true; fi
-
-          # 记录 tag 当前指向的 commit(注解 tag 需解引用), 只用于摘要排障。
+          # 记录 tag 当前指向的 commit(注解 tag 需解引用)。
           # 不做"发布过就跳过"的短路: Release 挂在 tag 名下, 无法区分"同一 commit
           # 重跑"与"tag 被移到新 commit 后重发", 而后者必须重新构建
           # (dsh-v0.2.2-alpha.2 的首次重发就是这样被误判成 no-op 的)。
@@ -70,8 +77,25 @@ jobs:
               tag_sha="$(gh api "repos/$REPO/git/tags/$tag_sha" --jq '.object.sha' 2>/dev/null || true)"
             fi
           fi
+
+          if [ "$TRIGGER" = "workflow_dispatch" ]; then
+            # 手动 repair: 只认这个 tag 自己的 commit; tag 不存在就失败关闭,
+            # 而不是悄悄拿 main 的 HEAD 去构建。
+            [ -n "$tag_sha" ] || { echo "tag '$NEW_TAG' does not exist in $REPO" >&2; exit 1; }
+            sha="$tag_sha"
+            refused=false
+          else
+            sha="$(git rev-parse HEAD)"
+            # 降级守卫: 只拒绝"比现有最新更旧"的 tag; 同名 tag 允许重发(不带 STRICT)。
+            tags="$(git ls-remote --tags origin 'refs/tags/dsh-v*' \
+              | sed -E 's#.*refs/tags/##' | grep -v '\^{}' | sort -u)"
+            newest="$(NEW_TAG="$NEW_TAG" EXISTING="$tags" node tests/newest-tag.mjs)"
+            if [ "$newest" = "true" ]; then refused=false; else refused=true; fi
+          fi
+
           {
             echo "image=$image"
+            echo "tag=$NEW_TAG"
             echo "version=$version"
             echo "sha=$sha"
             echo "refused=$refused"
@@ -81,6 +105,7 @@ jobs:
             echo
             echo "| field | value |"
             echo "|---|---|"
+            echo "| trigger | \`$TRIGGER\` |"
             echo "| tag | \`$NEW_TAG\` |"
             echo "| commit | \`$sha\` |"
             echo "| refused (older than newest) | \`$refused\` |"
@@ -88,6 +113,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$refused" = true ]; then
             echo "refusing to publish $NEW_TAG: not newer than the newest dsh-v* tag" >&2
+            echo "to rebuild it anyway, dispatch this workflow with the tag input (manual repair)" >&2
             exit 1
           fi
 
@@ -120,6 +146,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # repair 要构建 tag 自己的 commit, 而不是 dispatch 所在的 main。
+          ref: ${{ needs.guard.outputs.sha }}
           persist-credentials: false
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -142,10 +170,10 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=min,scope=${{ matrix.arch }},ignore-error=true
           build-args: |
-            BUILD_GIT_SHA=${{ github.sha }}
-            BUILD_GIT_REF=${{ github.ref_name }}
-            BUILD_VERSION=${{ github.ref_name }}
-            DSH_TAG=${{ github.ref_name }}
+            BUILD_GIT_SHA=${{ needs.guard.outputs.sha }}
+            BUILD_GIT_REF=${{ needs.guard.outputs.tag }}
+            BUILD_VERSION=${{ needs.guard.outputs.tag }}
+            DSH_TAG=${{ needs.guard.outputs.tag }}
 
       # matrix 的每个分支不能各自成为 needs.<job>.outputs.digest(同名输出会互相
       # 覆盖), 因此把 digest 落成短生命周期 artifact, 由下面的汇总 job 读回。
@@ -206,7 +234,8 @@ jobs:
       packages: read
     uses: ./.github/workflows/smoke.yml  # zizmor: ignore[self-repository] -- same-commit local call
     with:
-      dsh_tag: ${{ github.ref_name }}
+      dsh_tag: ${{ needs.guard.outputs.tag }}
+      ref: ${{ needs.guard.outputs.sha }}
       image_amd64: ${{ needs.build-refs.outputs.amd64 }}
       image_arm64: ${{ needs.build-refs.outputs.arm64 }}
       expect_version: ${{ needs.guard.outputs.version }}
@@ -238,8 +267,8 @@ jobs:
       - name: Merge the multi-arch manifest
         env:
           IMAGE: ${{ needs.guard.outputs.image }}
-          NEW_TAG: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
+          NEW_TAG: ${{ needs.guard.outputs.tag }}
+          SHA: ${{ needs.guard.outputs.sha }}
           REF_AMD64: ${{ needs.build-refs.outputs.amd64 }}
           REF_ARM64: ${{ needs.build-refs.outputs.arm64 }}
         run: |
@@ -259,7 +288,7 @@ jobs:
       - name: Assert the merged manifest has both platforms
         env:
           IMAGE: ${{ needs.guard.outputs.image }}
-          NEW_TAG: ${{ github.ref_name }}
+          NEW_TAG: ${{ needs.guard.outputs.tag }}
         run: |
           set -euo pipefail
           raw="$(docker buildx imagetools inspect --raw "$IMAGE:$NEW_TAG")"
@@ -273,30 +302,34 @@ jobs:
           [ "$platforms" = "linux/amd64,linux/arm64" ] \
             || { echo "merged manifest platforms are '$platforms', expected linux/amd64,linux/arm64" >&2; exit 1; }
 
+      # repair 不动 Release: 它本来就存在, 而且重建的产物和最初那条 Release 不是同一份。
       - name: Compose release notes
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ needs.guard.outputs.tag }}
         run: |
           set -euo pipefail
           body="$RUNNER_TEMP/release-body.md"
           : > "$body"
-          if upstream="$(gh api "repos/${UPSTREAM_REPO}/releases/tags/${GITHUB_REF_NAME}" --jq .body 2>/dev/null)" \
+          if upstream="$(gh api "repos/${UPSTREAM_REPO}/releases/tags/${NEW_TAG}" --jq .body 2>/dev/null)" \
               && [ -n "$upstream" ]; then
             {
-              printf '<details>\n<summary>Upstream <code>%s</code> release notes (quoted)</summary>\n\n' "$GITHUB_REF_NAME"
+              printf '<details>\n<summary>Upstream <code>%s</code> release notes (quoted)</summary>\n\n' "$NEW_TAG"
               printf '%s\n' "$upstream"
               printf '\n</details>\n\n'
             } >> "$body"
           else
-            echo "note: no upstream release notes found for ${GITHUB_REF_NAME}; linking only" >&2
+            echo "note: no upstream release notes found for ${NEW_TAG}; linking only" >&2
           fi
           printf -- '---\n\nUpstream release: https://github.com/%s/releases/tag/%s\n' \
-            "$UPSTREAM_REPO" "$GITHUB_REF_NAME" >> "$body"
+            "$UPSTREAM_REPO" "$NEW_TAG" >> "$body"
 
       - name: Create or update the GitHub Release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -307,9 +340,10 @@ jobs:
           fi
 
       - name: Close the tracker issue
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.guard.outputs.tag }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -324,7 +358,8 @@ jobs:
   finalize:
     name: Report failure and clean up the orphan tag
     needs: [guard, light, build, build-refs, smoke, publish]
-    if: failure() || cancelled()
+    # repair 绝不能删 git tag: 那是真实发布过的版本, 删了就把上游 tag 的唯一指针也弄丢了。
+    if: (failure() || cancelled()) && github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -335,8 +370,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
-      NEW_TAG: ${{ github.ref_name }}
-      SHA: ${{ github.sha }}
+      NEW_TAG: ${{ needs.guard.outputs.tag }}
+      SHA: ${{ needs.guard.outputs.sha }}
       IMAGE: ${{ needs.guard.outputs.image }}
       REFUSED: ${{ needs.guard.outputs.refused }}
     steps:

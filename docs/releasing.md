@@ -22,12 +22,17 @@ that passed the smoke gate.
 
 Re-pushing an **older** `dsh-v*` tag is refused: the publish workflow's guard compares the tag with
 the newest existing `dsh-v*` tag and stops before building anything, leaving the tag in place for
-inspection. Re-pushing the **newest** tag is allowed (that is how a failed publish is retried).
+inspection. Re-pushing the **newest** tag is allowed (that is how a failed publish is retried). An
+older tag whose image tag was lost can still be rebuilt through the manual repair dispatch
+(see [Repairing a published image tag](#repairing-a-published-image-tag)).
 
 ## Publish workflow (`.github/workflows/publish.yml`)
 
-A release **is** a tag push: `on: push: tags: ['dsh-v*']` is the only trigger. Pushing the tag is the
-manual path; the watcher below pushes it for you when a new upstream tag appears.
+A release **is** a tag push: `on: push: tags: ['dsh-v*']` is the only automatic trigger. Pushing the
+tag is the manual path; the watcher below pushes it for you when a new upstream tag appears. The
+workflow also accepts a manual `workflow_dispatch` with a `tag` input, which rebuilds an
+already-published tag instead of publishing a new release (see
+[Repairing a published image tag](#repairing-a-published-image-tag)).
 
 ```text
 git push origin dsh-v0.2.1-rc.2
@@ -180,6 +185,30 @@ git push -f origin dsh-v0.2.1-rc.2
 ```
 
 The watcher's 24-hour backoff only affects its own automatic re-tagging; a manual push always works.
+
+### Repairing a published image tag
+
+A GHCR image tag can be lost while its git tag and GitHub Release stay intact — for example when a
+registry cleanup deletes the per-platform manifests of a multi-arch index. The release can be rebuilt
+from the same upstream commit through the workflow's manual dispatch:
+
+```bash
+gh workflow run publish.yml --repo niyueee/dsh-container -f tag=dsh-v0.2.2-rc.5
+```
+
+A dispatch run differs from a tag push on purpose:
+
+- the downgrade guard is skipped, because the tag is named explicitly rather than inferred from the
+  pushed ref; the tag must already exist and match `dsh-v*`, otherwise the run fails closed;
+- the build checks out **the tag's own commit** (resolved by the guard) instead of the branch the
+  dispatch was started from;
+- `:<tag>` and `:<sha>` are re-merged, `:latest` moves only when the repaired tag already is the
+  newest, the Release is left untouched, and `finalize` is disabled so a failed repair can never
+  delete the git tag.
+
+The rebuilt image is not the artifact that was originally released: the in-image toolchain floats
+(see [build.md](build.md#toolchain-versions-float-by-design)), so only use this to restore a tag that
+cannot be pulled, not to "refresh" a healthy release.
 
 ### Dependabot (`.github/dependabot.yml`)
 
