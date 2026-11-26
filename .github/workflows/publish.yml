@@ -131,7 +131,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # 只按 digest 推送, 不带任何 tag: smoke 失败时这份 digest 永远不会被合并,
-      # 由 maintenance 清理 untagged 版本。
+      # 由 maintenance 清理 untagged 残留(它懂多架构索引, 不会误删平台子 manifest)。
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:

@@ -78,6 +78,15 @@ if grep -rnE 'DSH_AUTO_UPDATE[ =:]|dsh-update\.sh|update-dsh[ :]|DSH_VERSION[ =:
   exit 1
 fi
 
+echo "== GHCR cleanup guard"
+# 多架构镜像的平台子 manifest 和 attestation 在 GHCR 里就是 untagged version,
+# 用 actions/delete-package-versions 的 delete-only-untagged-versions 清它们,
+# 只会留下空壳 index, 所有 tag 的 pull 全部 404 (2026-11-23 的事故)。
+if grep -rnE '^[[:space:]]*delete-only-untagged-versions[[:space:]]*:' .github/workflows/; then
+  echo "workflow prunes untagged GHCR versions, which breaks multi-arch indexes" >&2
+  exit 1
+fi
+
 echo "== smoke.sh fail-closed audit"
 # smoke 里允许 `|| true` 只用于 trap/日志/探针, 且必须标注原因(见文件头的约定);
 # 未标注的宽容写法会让"失败被吞掉"悄悄回归。
